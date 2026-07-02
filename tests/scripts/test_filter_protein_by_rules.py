@@ -1,3 +1,4 @@
+import csv
 import io
 import os
 import sys
@@ -83,6 +84,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.modules.pop("constant_rules", None)
 
             self.assertTrue(os.path.exists(os.path.join(artifacts, "rule-results.tsv")))
+            self.assertTrue(os.path.exists(os.path.join(artifacts, "genomes", "g1")))
             self.assertEqual(read_fasta_as_dict(fasta_output), {
                 "p_true": "MT",
                 "p_maybe": "MM",
@@ -109,3 +111,31 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.modules.pop("constant_rules", None)
 
             self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true": "MT"})
+
+    def test_ignores_input_proteins_missing_from_manifest(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        self.write_manifest_and_sequences()
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_rule_module(tmpd)
+            artifacts = os.path.join(tmpd, "artifacts")
+            stdin = io.StringIO("p_true\tg1\np_missing\tg1\n")
+            stderr = io.StringIO()
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin), patch("sys.stderr", stderr):
+                    script.main([
+                        "-r", "constant_rules.mnsod_rule",
+                        "--artifacts-dir", artifacts,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("constant_rules", None)
+
+            self.assertIn("Ignoring p_missing\tg1", stderr.getvalue())
+            with open(os.path.join(artifacts, "rule-results.tsv"), "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(
+                [(row["protein accession"], row["genome accession"]) for row in rows],
+                [("p_true", "g1")],
+            )

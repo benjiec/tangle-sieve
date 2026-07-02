@@ -29,6 +29,7 @@ GFF_TYPE_START_CODON = "start_codon"
 GFF_TYPE_STOP_CODON = "stop_codon"
 
 _DUCKDB_TABLE_CACHE = {}
+_FASTA_FILE_CACHE = {}
 
 
 def _existing_path(path):
@@ -62,6 +63,22 @@ def _cached_table_name(table, path):
         _DUCKDB_TABLE_CACHE[key] = (schema.name, table.name)
     schema_name, table_name = _DUCKDB_TABLE_CACHE[key]
     return f"{schema_name}.{table_name}"
+
+
+def _file_cache_key_for_path(path):
+    if path is None or not os.path.exists(path):
+        return None
+    path = str(path)
+    stat = os.stat(path)
+    return (path, stat.st_mtime_ns, stat.st_size)
+
+
+def _cached_fasta(path):
+    path = _existing_path(path)
+    key = _file_cache_key_for_path(path)
+    if key not in _FASTA_FILE_CACHE:
+        _FASTA_FILE_CACHE[key] = read_fasta_as_dict(path)
+    return _FASTA_FILE_CACHE[key]
 
 
 def _rows_from_table(table, path, column_filters=None):
@@ -171,6 +188,7 @@ class CuratedProtein(object):
         for schema_name, _table_name in _DUCKDB_TABLE_CACHE.values():
             duckdb.execute(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
         _DUCKDB_TABLE_CACHE.clear()
+        _FASTA_FILE_CACHE.clear()
 
     def __init__(self, protein_accession, genome_accession):
         self.protein_accession = protein_accession
@@ -210,7 +228,7 @@ class CuratedProtein(object):
 
     def sequence(self):
         if self._sequence is None:
-            fasta = read_fasta_as_dict(_existing_path(self._protein_fasta_path()))
+            fasta = _cached_fasta(self._protein_fasta_path())
             if self.protein_accession not in fasta:
                 raise ValueError(f"Cannot find protein sequence {self.protein_accession}")
             self._sequence = fasta[self.protein_accession]
@@ -218,7 +236,7 @@ class CuratedProtein(object):
 
     def _genomic_sequences(self):
         if self._genomic_fasta is None:
-            self._genomic_fasta = read_fasta_as_dict(_existing_path(Defaults.ncbi_genome_fna(self.genome_accession)))
+            self._genomic_fasta = _cached_fasta(Defaults.ncbi_genome_fna(self.genome_accession))
         return self._genomic_fasta
 
     def _detected_protein_rows(self):
