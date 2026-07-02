@@ -3,17 +3,12 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tangle"
-version = "0.1.14"
+name = "sieve"
+version = "0.1.1"
 dependencies = [
-  "duckdb>=1.4.3",
-  "numpy>=1.24.0",
-  "pandas>=2.0.0",
-  "requests>=2.32",
-  "parsimonious>=0.11.0",
-  "biopython>=1.81"
+  "tangle @ git+https://github.com/benjiec/tangle.git@3b8c07f"
 ]
-description = "Tangle data models and core libraries"
+description = "Untangle data"
 requires-python = ">=3.9"
 
 [project.optional-dependencies]
@@ -22,5 +17,5 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["tangle", "scripts"]
+include = ["sieve", "scripts"]
 namespaces = true

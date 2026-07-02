@@ -6,7 +6,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from tangle.protein import CuratedProtein
+from sieve.protein import CuratedProtein
 from tangle.sequence import write_fasta_from_dict
 
 

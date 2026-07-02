@@ -31,7 +31,7 @@ from sieve.rules import (
     _parse_gimme_scan_output,
     _parse_targetp_output,
 )
-from tests.sieve.test_protein import DefaultsFixture
+from tests.test_protein import DefaultsFixture
 
 
 class RulesFixture(DefaultsFixture):
