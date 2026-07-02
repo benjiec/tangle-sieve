@@ -141,6 +141,39 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 [("p_true", "g1")],
             )
 
+    def test_preserves_rule_annotation_columns_in_recombined_results(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        self.write_manifest_and_sequences()
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            module_path = os.path.join(tmpd, "annotated_rules.py")
+            with open(module_path, "w", encoding="utf-8") as f:
+                f.write("\n".join([
+                    "from sieve.rules import Rules",
+                    "from tests.scripts.helpers import AnnotatedByProteinRule",
+                    "mnsod_rule = Rules(AnnotatedByProteinRule())",
+                    "",
+                ]))
+            artifacts = os.path.join(tmpd, "artifacts")
+            stdin = io.StringIO("p_true\tg1\np_false\tg1\n")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin):
+                    script.main([
+                        "-r", "annotated_rules.mnsod_rule",
+                        "--artifacts-dir", artifacts,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("annotated_rules", None)
+
+            with open(os.path.join(artifacts, "rule-results.tsv"), "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(
+                [(row["protein accession"], row["Example.call"]) for row in rows],
+                [("p_true", "p_true_call"), ("p_false", "p_false_call")],
+            )
+
     def test_writes_unfiltered_fasta_with_leader_for_all_filtered_inputs(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
         self.write_manifest_and_sequences()

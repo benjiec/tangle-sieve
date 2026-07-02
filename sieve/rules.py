@@ -76,6 +76,10 @@ def _safe_filename(value):
     return value[:120] or "rule"
 
 
+def _leader_sequence_id(context):
+    return f"{context.protein.protein_accession}_with_leader"
+
+
 def _rule_artifacts_dir(artifacts_dir, rule):
     if artifacts_dir is None:
         return None
@@ -116,6 +120,12 @@ class Rule(object):
                 print(f"{self.label} failed for {context.key}: {e}", file=sys.stderr)
                 results[context.key] = RULE_ERROR
         return results
+
+    def annotation_columns(self):
+        return []
+
+    def annotations_many(self, contexts, rule_results):
+        return {}
 
     def atomic_rules(self):
         return [self]
@@ -193,6 +203,27 @@ class Rules(object):
     def atomic_rules(self):
         return self.rule.atomic_rules()
 
+    def headers(self):
+        atomic_rules = self.atomic_rules()
+        annotation_columns = []
+        seen = set()
+        for rule in atomic_rules:
+            for column in rule.annotation_columns():
+                if column not in seen:
+                    annotation_columns.append(column)
+                    seen.add(column)
+        return (
+            ["protein accession", "genome accession", "pass all"]
+            + [rule.label for rule in atomic_rules]
+            + annotation_columns
+        )
+
+    def write_rows(self, output_tsv, rows):
+        with open(output_tsv, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.headers(), delimiter="\t")
+            writer.writeheader()
+            writer.writerows(rows)
+
     def check(self, protein_keys, output_tsv, artifacts_dir=None, trace=True):
         contexts = [
             RuleContext(CuratedProtein(protein_accession, genome_accession))
@@ -214,6 +245,12 @@ class Rules(object):
                 counts = _result_counts(rule_results.values())
                 print(f"[rules {i}/{total_rules}] done: {_format_result_counts(counts)}", file=sys.stderr)
 
+        atomic_annotations = {}
+        for rule in atomic_rules:
+            annotations = rule.annotations_many(contexts, atomic_results[rule.label])
+            for context_key, context_annotations in annotations.items():
+                atomic_annotations.setdefault(context_key, {}).update(context_annotations)
+
         rows = []
         for context in contexts:
             row = {
@@ -223,13 +260,10 @@ class Rules(object):
             }
             for rule in atomic_rules:
                 row[rule.label] = atomic_results[rule.label][context.key]
+            row.update(atomic_annotations.get(context.key, {}))
             rows.append(row)
 
-        headers = ["protein accession", "genome accession", "pass all"] + [rule.label for rule in atomic_rules]
-        with open(output_tsv, "w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=headers, delimiter="\t")
-            writer.writeheader()
-            writer.writerows(rows)
+        self.write_rows(output_tsv, rows)
         return rows
 
 
@@ -339,10 +373,15 @@ class LeaderRule(Rule):
     def __init__(self, prediction):
         self.prediction = prediction
         self.label = f"Leader.is_{prediction}()"
+        self._predictions_by_key = {}
+
+    def annotation_columns(self):
+        return ["Leader.call"]
 
     def evaluate_many(self, contexts, artifacts_dir=None):
-        sequence_ids = {f"seq{i}": context for i, context in enumerate(contexts)}
+        sequence_ids = {_leader_sequence_id(context): context for context in contexts}
         results = {context.key: RULE_ERROR for context in contexts}
+        self._predictions_by_key = {}
         try:
             with tempfile.TemporaryDirectory() as tmpd:
                 working_dir = artifacts_dir if artifacts_dir is not None else tmpd
@@ -382,8 +421,16 @@ class LeaderRule(Rule):
                 print(f"{self.label} missing TargetP row for {context.key}", file=sys.stderr)
                 results[context.key] = RULE_ERROR
             else:
+                self._predictions_by_key[context.key] = prediction
                 results[context.key] = _rule_bool(prediction == self.prediction)
         return results
+
+    def annotations_many(self, contexts, rule_results):
+        return {
+            context.key: {"Leader.call": self._predictions_by_key[context.key]}
+            for context in contexts
+            if context.key in self._predictions_by_key
+        }
 
 
 def _parse_targetp_output(text):

@@ -66,13 +66,7 @@ def group_protein_keys_by_genome(protein_keys):
 
 
 def write_rule_rows(rows, output_tsv, rules):
-    headers = ["protein accession", "genome accession", "pass all"] + [
-        rule.label for rule in rules.atomic_rules()
-    ]
-    with open(output_tsv, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=headers, delimiter="\t")
-        writer.writeheader()
-        writer.writerows(rows)
+    rules.write_rows(output_tsv, rows)
 
 
 def check_rules_by_genome(rules, protein_keys, output_tsv, artifacts_dir=None):
