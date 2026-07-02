@@ -1,0 +1,6 @@
+.tangle-venv
+__pycache__
+.*.swp
+tmp
+.*.twbr
+*.egg-info

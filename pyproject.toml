@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tangle"
+version = "0.1.14"
+dependencies = [
+  "duckdb>=1.4.3",
+  "numpy>=1.24.0",
+  "pandas>=2.0.0",
+  "requests>=2.32",
+  "parsimonious>=0.11.0",
+  "biopython>=1.81"
+]
+description = "Tangle data models and core libraries"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+dev = [
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tangle", "scripts"]
+namespaces = true
