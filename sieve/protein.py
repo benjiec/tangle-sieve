@@ -562,3 +562,6 @@ class ProteinHMMAlignment(object):
 
     def aa_at_hmm_pos_1b(self, hmm_pos_1b):
         return self.aa_hmm_pos_1b(hmm_pos_1b)
+
+    def hmm_positions_1b(self):
+        return self._by_hmm_pos.keys()

@@ -14,10 +14,19 @@ RULE_TRUE = "true"
 RULE_FALSE = "false"
 RULE_MAYBE = "maybe"
 RULE_ERROR = "error"
+RULE_YES = "yes"
+RULE_TOO_FAR = "too_far"
+
+RULE_PASSING = {RULE_TRUE, RULE_YES, RULE_TOO_FAR}
+RULE_STANDARD_ORDER = [RULE_TRUE, RULE_FALSE, RULE_MAYBE, RULE_ERROR, RULE_YES, RULE_TOO_FAR]
 
 
 def _rule_bool(value):
     return RULE_TRUE if value else RULE_FALSE
+
+
+def _rule_passes(value):
+    return value in RULE_PASSING
 
 
 def _merge_and(values):
@@ -27,16 +36,26 @@ def _merge_and(values):
         return RULE_ERROR
     if RULE_MAYBE in values:
         return RULE_MAYBE
+    if any(not _rule_passes(value) for value in values):
+        return RULE_FALSE
     return RULE_TRUE
 
 
 def _merge_or(values):
-    if RULE_TRUE in values:
+    if any(_rule_passes(value) for value in values):
         return RULE_TRUE
     if RULE_MAYBE in values:
         return RULE_MAYBE
     if RULE_ERROR in values:
         return RULE_ERROR
+    return RULE_FALSE
+
+
+def _normalize_pass_all(value):
+    if _rule_passes(value):
+        return RULE_TRUE
+    if value in (RULE_FALSE, RULE_MAYBE, RULE_ERROR):
+        return value
     return RULE_FALSE
 
 
@@ -48,11 +67,9 @@ def _result_counts(values):
 
 
 def _format_result_counts(counts):
-    return " ".join([
-        f"{key}={counts[key]}"
-        for key in (RULE_TRUE, RULE_FALSE, RULE_MAYBE, RULE_ERROR)
-        if counts.get(key, 0)
-    ]) or "no results"
+    ordered_keys = [key for key in RULE_STANDARD_ORDER if counts.get(key, 0)]
+    ordered_keys.extend(sorted(key for key in counts if key not in RULE_STANDARD_ORDER))
+    return " ".join([f"{key}={counts[key]}" for key in ordered_keys]) or "no results"
 
 
 def _target_prefix(value):
@@ -76,8 +93,16 @@ def _safe_filename(value):
     return value[:120] or "rule"
 
 
+def _safe_result_value(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "value"
+
+
 def _leader_sequence_id(context):
     return f"{context.protein.protein_accession}_with_leader"
+
+
+def _locus_sequence_id(context):
+    return f"{context.protein.protein_accession}_locus"
 
 
 def _rule_artifacts_dir(artifacts_dir, rule):
@@ -256,7 +281,7 @@ class Rules(object):
             row = {
                 "protein accession": context.protein.protein_accession,
                 "genome accession": context.protein.genome_accession,
-                "pass all": self.rule.resolve(context, atomic_results),
+                "pass all": _normalize_pass_all(self.rule.resolve(context, atomic_results)),
             }
             for rule in atomic_rules:
                 row[rule.label] = atomic_results[rule.label][context.key]
@@ -316,6 +341,9 @@ class HMMAlignment(object):
     def is_at(self, expected, hmm_pos):
         return HMMPositionRule(self.profile, expected, hmm_pos)
 
+    def matches_regex(self, pattern, hmm_pos):
+        return HMMRegexRule(self.profile, pattern, hmm_pos)
+
     def covers(self, start, end):
         return HMMCoverageRule(self.profile, start, end)
 
@@ -351,6 +379,32 @@ class HMMCoverageRule(Rule):
             if alignment.aa_at_hmm_pos_1b(hmm_pos) is None:
                 return RULE_FALSE
         return RULE_TRUE
+
+
+class HMMRegexRule(Rule):
+
+    def __init__(self, profile, pattern, hmm_pos):
+        self.profile = profile
+        self.pattern = pattern
+        self.hmm_pos = hmm_pos
+        self.label = f"HMMAlignment('{os.path.basename(profile)}').matches_regex('{pattern}', {hmm_pos})"
+
+    def evaluate(self, context):
+        alignment = context.hmm_alignment(self.profile)
+        aligned = []
+        hmm_pos = self.hmm_pos
+        while True:
+            aa = alignment.aa_at_hmm_pos_1b(hmm_pos)
+            if aa is None:
+                if hmm_pos not in alignment.hmm_positions_1b():
+                    break
+                aligned.append("-")
+            else:
+                aligned.append(aa[1])
+            hmm_pos += 1
+        if not aligned:
+            return RULE_FALSE
+        return _rule_bool(re.match(self.pattern, "".join(aligned)) is not None)
 
 
 class Leader(object):
@@ -519,7 +573,7 @@ class TFMotifWithinRule(Rule):
             raise ValueError("TFMotifs rules can only be scoped once")
 
     def evaluate_many(self, contexts, artifacts_dir=None):
-        sequence_ids = {f"seq{i}": context for i, context in enumerate(contexts)}
+        sequence_ids = {_locus_sequence_id(context): context for context in contexts}
         results = {context.key: RULE_ERROR for context in contexts}
         loci = {}
         try:
@@ -575,11 +629,17 @@ class TFMotifWithinRule(Rule):
                 motif_a_hits.append((hit_start, hit_end))
             if _motif_matches(hit.feature, self.motif_b):
                 motif_b_hits.append((hit_start, hit_end))
+        if not motif_a_hits and not motif_b_hits:
+            return f"missing_{_safe_result_value(self.motif_a)}_and_{_safe_result_value(self.motif_b)}"
+        if not motif_a_hits:
+            return f"missing_{_safe_result_value(self.motif_a)}"
+        if not motif_b_hits:
+            return f"missing_{_safe_result_value(self.motif_b)}"
         for a_start, a_end in motif_a_hits:
             for b_start, b_end in motif_b_hits:
                 if _edge_distance(a_start, a_end, b_start, b_end) <= self.distance:
-                    return RULE_TRUE
-        return RULE_MAYBE
+                    return RULE_YES
+        return RULE_TOO_FAR
 
 
 @dataclass
