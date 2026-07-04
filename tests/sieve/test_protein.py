@@ -119,6 +119,58 @@ class TestCuratedProtein(unittest.TestCase):
         self.assertEqual(protein.sequence_with_leader(), "KP")
         self.assertEqual(protein.genomic_locus_with_leader().sequence(), "AAACCC")
 
+    def test_hmm_detected_leader_trims_to_second_amino_acid_methionine(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "KMP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "AAAATGCCC"})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 1, 9, 1, 3),
+        ])
+
+        protein = CuratedProtein("p1", "g1")
+        locus = protein.genomic_locus_with_leader()
+
+        self.assertEqual(protein.sequence_with_leader(), "MP")
+        self.assertEqual(locus.start_1b, 4)
+        self.assertEqual(locus.end_1b, 9)
+        self.assertEqual(locus.sequence(), "ATGCCC")
+        self.assertEqual(locus.cds_intervals_1b, [(1, 6)])
+        self.assertEqual(locus.start_codon_interval_1b, (1, 3))
+
+    def test_hmm_detected_leader_trims_to_third_amino_acid_methionine(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "KKMP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "AAAAAAATGCCC"})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 1, 12, 1, 4),
+        ])
+
+        protein = CuratedProtein("p1", "g1")
+        locus = protein.genomic_locus_with_leader()
+
+        self.assertEqual(protein.sequence_with_leader(), "MP")
+        self.assertEqual(locus.start_1b, 7)
+        self.assertEqual(locus.end_1b, 12)
+        self.assertEqual(locus.sequence(), "ATGCCC")
+        self.assertEqual(locus.cds_intervals_1b, [(1, 6)])
+
+    def test_hmm_detected_leader_trims_to_second_amino_acid_methionine_on_reverse_strand(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "KMP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "GGGCATTTT"})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 9, 1, 1, 3),
+        ])
+
+        protein = CuratedProtein("p1", "g1")
+        locus = protein.genomic_locus_with_leader()
+
+        self.assertEqual(protein.sequence_with_leader(), "MP")
+        self.assertEqual(locus.start_1b, 6)
+        self.assertEqual(locus.end_1b, 1)
+        self.assertEqual(locus.sequence(), "ATGCCC")
+        self.assertEqual(locus.cds_intervals_1b, [(1, 6)])
+
     def test_hmm_detected_leader_does_not_extend_existing_methionine(self):
         self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
         self.fx.write_detected_proteins("g1", {"p1": "MP"})

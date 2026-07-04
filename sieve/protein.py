@@ -199,6 +199,7 @@ class CuratedProtein(object):
         self._genomic_fasta = None
         self._locus = None
         self._leader_prefix_cache = None
+        self._start_trim_len_cache = None
 
     @property
     def manifest_entry(self):
@@ -263,7 +264,7 @@ class CuratedProtein(object):
 
         return sorted(rows, key=sort_key)
 
-    def _hmm_detected_locus(self, leader_prefix_len=0):
+    def _hmm_detected_locus(self, leader_prefix_len=0, start_trim_len=0):
         rows = self._detected_rows_in_protein_order()
         contig_accessions = {row["query_accession"] for row in rows}
         if len(contig_accessions) != 1:
@@ -279,6 +280,11 @@ class CuratedProtein(object):
                 start -= leader_prefix_len * 3
             else:
                 start += leader_prefix_len * 3
+        if start_trim_len:
+            if start <= end:
+                start += start_trim_len * 3
+            else:
+                start -= start_trim_len * 3
         if start < 1 or end < 1:
             raise ValueError(f"Leader extension for {self.protein_accession} extends before the contig")
 
@@ -288,11 +294,18 @@ class CuratedProtein(object):
         sequence = extract_subsequence_strand_sensitive(contig_seq, start, end)
 
         cds_intervals = []
+        locus_left = min(start, end)
+        locus_right = max(start, end)
         for row in rows:
-            cds_intervals.append(_interval_relative_to_locus(start, end, row["query_start"], row["query_end"]))
+            feature_left = min(row["query_start"], row["query_end"])
+            feature_right = max(row["query_start"], row["query_end"])
+            clipped_left = max(locus_left, feature_left)
+            clipped_right = min(locus_right, feature_right)
+            if clipped_left <= clipped_right:
+                cds_intervals.append(_interval_relative_to_locus(start, end, clipped_left, clipped_right))
         cds_intervals = sorted(cds_intervals)
 
-        start_codon = (1, 3) if self.sequence().startswith("M") or leader_prefix_len else None
+        start_codon = (1, 3) if self.sequence()[start_trim_len:].startswith("M") or leader_prefix_len else None
 
         return GenomicLocus(
             genome_accession=self.genome_accession,
@@ -463,7 +476,7 @@ class CuratedProtein(object):
         if self._leader_prefix_cache is not None:
             return self._leader_prefix_cache
 
-        if self.sequence_source != SEQUENCE_SOURCE_HMM_DETECTED or self.sequence().startswith("M"):
+        if self.sequence_source != SEQUENCE_SOURCE_HMM_DETECTED or self.sequence().startswith("M") or self._start_trim_len():
             self._leader_prefix_cache = ""
             return self._leader_prefix_cache
 
@@ -491,13 +504,30 @@ class CuratedProtein(object):
             self._leader_prefix_cache = tail
         return self._leader_prefix_cache
 
+    def _start_trim_len(self):
+        if self._start_trim_len_cache is not None:
+            return self._start_trim_len_cache
+
+        self._start_trim_len_cache = 0
+        if self.sequence_source == SEQUENCE_SOURCE_HMM_DETECTED:
+            sequence = self.sequence()
+            if not sequence.startswith("M"):
+                for trim_len in (1, 2):
+                    if len(sequence) > trim_len and sequence[trim_len] == "M":
+                        self._start_trim_len_cache = trim_len
+                        break
+        return self._start_trim_len_cache
+
     def sequence_with_leader(self):
-        return self._leader_prefix() + self.sequence()
+        return self._leader_prefix() + self.sequence()[self._start_trim_len():]
 
     def genomic_locus_with_leader(self):
         if self.sequence_source != SEQUENCE_SOURCE_HMM_DETECTED:
             return self.genomic_locus()
-        return self._hmm_detected_locus(leader_prefix_len=len(self._leader_prefix()))
+        return self._hmm_detected_locus(
+            leader_prefix_len=len(self._leader_prefix()),
+            start_trim_len=self._start_trim_len(),
+        )
 
     def _detected_rows_for_query(self, path):
         return _rows_from_table(DetectedTable, path, column_filters=[
