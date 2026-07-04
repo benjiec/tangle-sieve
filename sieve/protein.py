@@ -484,9 +484,9 @@ class CuratedProtein(object):
         upstream_aa = str(Seq(upstream_dna).translate(table="Standard", to_stop=False)) if upstream_dna else ""
 
         tail = upstream_aa.split("*")[-1]
-        first_m = tail.find("M")
-        if first_m >= 0:
-            self._leader_prefix_cache = tail[first_m:]
+        last_m = tail.rfind("M")
+        if last_m >= 0:
+            self._leader_prefix_cache = tail[last_m:]
         else:
             self._leader_prefix_cache = tail
         return self._leader_prefix_cache

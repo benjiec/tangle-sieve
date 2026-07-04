@@ -238,7 +238,7 @@ class Rules(object):
                     annotation_columns.append(column)
                     seen.add(column)
         return (
-            ["protein accession", "genome accession", "pass all"]
+            ["protein accession", "genome accession", "contig accession", "pass all"]
             + [rule.label for rule in atomic_rules]
             + annotation_columns
         )
@@ -281,6 +281,7 @@ class Rules(object):
             row = {
                 "protein accession": context.protein.protein_accession,
                 "genome accession": context.protein.genome_accession,
+                "contig accession": self._contig_accession(context),
                 "pass all": _normalize_pass_all(self.rule.resolve(context, atomic_results)),
             }
             for rule in atomic_rules:
@@ -290,6 +291,12 @@ class Rules(object):
 
         self.write_rows(output_tsv, rows)
         return rows
+
+    def _contig_accession(self, context):
+        try:
+            return context.protein.genomic_locus_with_leader().contig_accession
+        except Exception:
+            return ""
 
 
 class DetectedTargetRule(Rule):

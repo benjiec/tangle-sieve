@@ -128,6 +128,17 @@ class TestRules(unittest.TestCase):
             self.assertEqual(rows[0]["pass all"], RULE_TRUE)
             self.assertEqual(self.read_tsv(out)[0]["Pfam.matches('PF02777')"], RULE_TRUE)
 
+    def test_rules_check_includes_contig_accession_when_locus_is_available(self):
+        self.fx.write_three_exon_gene("p1", "g1", "+")
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            out = os.path.join(tmpd, "rules.tsv")
+            rows = Rules(Pfam.matches("PF00001")).check([("p1", "g1")], out)
+            tsv_rows = self.read_tsv(out)
+
+        self.assertEqual(rows[0]["contig accession"], "ctg1")
+        self.assertEqual(tsv_rows[0]["contig accession"], "ctg1")
+
     def test_rules_check_traces_each_atomic_rule_concisely(self):
         self.fx.write_protein_fixture("p1", "g1")
         DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [

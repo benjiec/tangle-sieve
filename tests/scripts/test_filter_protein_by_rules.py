@@ -87,8 +87,8 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomes", "g1")))
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_locus_with_leader.tsv")))
             self.assertEqual(read_fasta_as_dict(fasta_output), {
-                "p_true": "MT",
-                "p_maybe": "MM",
+                "p_true_with_leader": "MT",
+                "p_maybe_with_leader": "MM",
             })
 
     def test_can_exclude_maybe_from_fasta(self):
@@ -111,7 +111,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.path.remove(tmpd)
                 sys.modules.pop("constant_rules", None)
 
-            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true": "MT"})
+            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader": "MT"})
 
     def test_ignores_input_proteins_missing_from_manifest(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
@@ -170,8 +170,8 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             with open(os.path.join(artifacts, "rule-results.tsv"), "r", encoding="utf-8", newline="") as f:
                 rows = list(csv.DictReader(f, delimiter="\t"))
             self.assertEqual(
-                [(row["protein accession"], row["Example.call"]) for row in rows],
-                [("p_true", "p_true_call"), ("p_false", "p_false_call")],
+                [(row["protein accession"], row["contig accession"], row["Example.call"]) for row in rows],
+                [("p_true", "", "p_true_call"), ("p_false", "", "p_false_call")],
             )
 
     def test_writes_unfiltered_fasta_with_leader_for_all_filtered_inputs(self):
@@ -196,11 +196,11 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.path.remove(tmpd)
                 sys.modules.pop("constant_rules", None)
 
-            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true": "MT"})
+            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader": "MT"})
             self.assertEqual(read_fasta_as_dict(unfiltered_fasta_output), {
-                "p_true": "MT",
-                "p_maybe": "MM",
-                "p_false": "MF",
+                "p_true_with_leader": "MT",
+                "p_maybe_with_leader": "MM",
+                "p_false_with_leader": "MF",
             })
 
     def test_writes_genomic_locus_with_leader_artifact(self):

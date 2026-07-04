@@ -90,6 +90,22 @@ class TestCuratedProtein(unittest.TestCase):
         self.assertEqual(locus.end_1b, 12)
         self.assertEqual(locus.sequence(), "ATGAAACCCGGG")
 
+    def test_hmm_detected_leader_uses_last_upstream_methionine(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "PG"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "ATGAAAATGCCCGGG"})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 10, 15, 1, 2),
+        ])
+
+        protein = CuratedProtein("p1", "g1")
+        locus = protein.genomic_locus_with_leader()
+
+        self.assertEqual(protein.sequence_with_leader(), "MPG")
+        self.assertEqual(locus.start_1b, 7)
+        self.assertEqual(locus.end_1b, 15)
+        self.assertEqual(locus.sequence(), "ATGCCCGGG")
+
     def test_hmm_detected_leader_stops_at_stop_codon_boundary(self):
         self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
         self.fx.write_detected_proteins("g1", {"p1": "P"})
