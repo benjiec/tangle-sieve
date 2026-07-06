@@ -30,6 +30,7 @@ GFF_TYPE_STOP_CODON = "stop_codon"
 
 _DUCKDB_TABLE_CACHE = {}
 _FASTA_FILE_CACHE = {}
+LEADER_CANDIDATE_MAX_PROTEIN_START_1B = 10
 
 
 def _existing_path(path):
@@ -553,7 +554,7 @@ class CuratedProtein(object):
         tail = self._leader_tail()
         sequence = self.sequence()
         combined = tail + sequence
-        last_candidate_index = min(len(combined), len(tail) + 3)
+        last_candidate_index = min(len(combined), len(tail) + LEADER_CANDIDATE_MAX_PROTEIN_START_1B)
         candidates = [
             LeaderSequenceCandidate(
                 accession=f"{self.protein_accession}_with_leader_{_leader_start_label(index - len(tail) + 1)}_M",
@@ -564,6 +565,15 @@ class CuratedProtein(object):
             for index, aa in enumerate(combined[:last_candidate_index])
             if aa == "M"
         ]
+        if not candidates:
+            candidates = [
+                LeaderSequenceCandidate(
+                    accession=self.protein_accession,
+                    start_label="",
+                    start_aa_1b=1,
+                    sequence=self.sequence(),
+                )
+            ]
         self._leader_sequence_candidates_cache = candidates
         return self._leader_sequence_candidates_cache
 

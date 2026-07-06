@@ -413,22 +413,28 @@ class TestRules(unittest.TestCase):
             "start=u2:noTP;start=u1:SP;start=2:mTP;start=3:noTP",
         )
 
-    def test_leader_rule_is_false_without_any_m_start_candidates(self):
+    def test_leader_rule_calls_targetp_on_original_sequence_without_any_m_start_candidates(self):
         self.fx.write_manifest([
             self.fx.manifest_row("p1", "g1"),
         ])
         self.fx.write_ncbi_proteins("g1", {"p1": "RYDA"})
 
-        with patch("sieve.rules.subprocess.run") as run:
+        def fake_run(cmd, check, capture_output, text):
+            fasta_path = cmd[cmd.index("-v") + 1].split(":", 1)[0] + "/query.faa"
+            with open(fasta_path, "r", encoding="utf-8") as f:
+                fasta_text = f.read()
+            self.assertIn(">p1\nRYDA\n", fasta_text)
+            return CompletedProcess(cmd, 0, stdout="p1\tnoTP\t0.8\t0.1\t0.1\t\n", stderr="")
+
+        with patch("sieve.rules.subprocess.run", side_effect=fake_run):
             with tempfile.TemporaryDirectory() as tmpd:
                 rows = Rules(Leader.is_mTP()).check(
                     [("p1", "g1")],
                     os.path.join(tmpd, "rules.tsv"),
                 )
 
-        run.assert_not_called()
         self.assertEqual(rows[0]["Leader.is_mTP()"], RULE_FALSE)
-        self.assertNotIn("Leader.call", rows[0])
+        self.assertEqual(rows[0]["Leader.call"], "start=:noTP")
 
     def test_leader_rule_writes_call_annotation_to_tsv(self):
         self.fx.write_manifest([

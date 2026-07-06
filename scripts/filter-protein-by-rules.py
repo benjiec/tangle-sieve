@@ -9,7 +9,7 @@ import tempfile
 from collections import defaultdict
 
 from tangle import open_file_to_write
-from sieve.protein import CuratedProtein
+from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_HMM_DETECTED
 from sieve.rule_loader import load_rules
 from sieve.rules import RULE_MAYBE, RULE_TRUE
 
@@ -98,6 +98,7 @@ def write_locus_artifact(protein_keys, output_tsv):
         "protein accession",
         "genome accession",
         "contig accession",
+        "sequence accession",
         "locus start 1b",
         "locus end 1b",
         "strand",
@@ -118,7 +119,23 @@ def write_locus_artifact(protein_keys, output_tsv):
                         "genome accession": genome_accession,
                     }
                     try:
-                        locus = CuratedProtein(protein_accession, genome_accession).genomic_locus_with_leader()
+                        protein = CuratedProtein(protein_accession, genome_accession)
+                        candidates = protein.sequences_with_leader()
+                        if protein.sequence_source == SEQUENCE_SOURCE_HMM_DETECTED:
+                            start_candidates = [
+                                candidate for candidate in candidates
+                                if candidate.start_label
+                            ]
+                            earliest_start_aa_1b = min(
+                                [candidate.start_aa_1b for candidate in start_candidates],
+                                default=1,
+                            )
+                            locus = protein._hmm_detected_locus(
+                                leader_prefix_len=max(0, 1 - earliest_start_aa_1b),
+                                start_trim_len=0,
+                            )
+                        else:
+                            locus = protein.genomic_locus_with_leader()
                         base_row = row | {
                             "contig accession": locus.contig_accession,
                             "locus start 1b": locus.start_1b,
@@ -128,30 +145,43 @@ def write_locus_artifact(protein_keys, output_tsv):
                             "error": "",
                         }
                         feature_rows = []
-                        start_position = locus.start_codon_position_1b()
-                        if start_position is not None:
-                            feature_rows.append(base_row | {
-                                "feature type": "start",
-                                "feature index": 1,
-                                "feature position 1b": start_position,
-                            })
+                        if protein.sequence_source == SEQUENCE_SOURCE_HMM_DETECTED:
+                            for candidate in start_candidates:
+                                feature_rows.append(base_row | {
+                                    "feature type": "start",
+                                    "feature index": "",
+                                    "sequence accession": candidate.accession,
+                                    "feature position 1b": (candidate.start_aa_1b - earliest_start_aa_1b) * 3 + 1,
+                                })
+                        else:
+                            start_position = locus.start_codon_position_1b()
+                            if start_position is not None:
+                                feature_rows.append(base_row | {
+                                    "feature type": "start",
+                                    "feature index": "",
+                                    "sequence accession": protein_accession,
+                                    "feature position 1b": start_position,
+                                })
                         stop_position = locus.stop_codon_position_1b()
                         if stop_position is not None:
                             feature_rows.append(base_row | {
                                 "feature type": "stop",
                                 "feature index": 1,
+                                "sequence accession": "",
                                 "feature position 1b": stop_position,
                             })
                         for i, position in enumerate(locus.dss_positions_1b(), start=1):
                             feature_rows.append(base_row | {
                                 "feature type": "dss",
                                 "feature index": i,
+                                "sequence accession": "",
                                 "feature position 1b": position,
                             })
                         for i, position in enumerate(locus.ass_positions_1b(), start=1):
                             feature_rows.append(base_row | {
                                 "feature type": "ass",
                                 "feature index": i,
+                                "sequence accession": "",
                                 "feature position 1b": position,
                             })
                         if feature_rows:
@@ -160,6 +190,7 @@ def write_locus_artifact(protein_keys, output_tsv):
                             writer.writerow(base_row | {
                                 "feature type": "",
                                 "feature index": "",
+                                "sequence accession": protein_accession,
                                 "feature position 1b": "",
                             })
                     except Exception as e:

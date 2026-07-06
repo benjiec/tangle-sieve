@@ -9,7 +9,7 @@ from unittest.mock import patch
 from tangle.manifest import ManifestTable
 from tangle.sequence import read_fasta_as_dict
 
-from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_NCBI
+from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_HMM_DETECTED, SEQUENCE_SOURCE_NCBI
 from tests.fixtures import DefaultsFixture
 from tests.scripts.helpers import load_script
 
@@ -51,6 +51,26 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             "p_maybe": "MM",
             "p_false": "MF",
         })
+
+    def detected_protein_row(self, protein_accession, genome_accession, contig_accession, q_start, q_end, t_start, t_end):
+        return dict(
+            detection_type="model",
+            detection_method="hmm",
+            batch="b1",
+            query_accession=contig_accession,
+            query_database=genome_accession,
+            query_type="contig",
+            target_accession=protein_accession,
+            target_database=genome_accession,
+            target_type="protein",
+            target_model="HMM1",
+            query_start=q_start,
+            query_end=q_end,
+            target_start=t_start,
+            target_end=t_end,
+            evalue=0.001,
+            bitscore=10,
+        )
 
     def write_rule_module(self, tmpd):
         module_path = os.path.join(tmpd, "constant_rules.py")
@@ -372,14 +392,21 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 encoding="utf-8",
                 newline="",
             ) as f:
-                rows = list(csv.DictReader(f, delimiter="\t"))
+                reader = csv.DictReader(f, delimiter="\t")
+                rows = list(reader)
+            self.assertEqual(reader.fieldnames[:4], [
+                "protein accession",
+                "genome accession",
+                "contig accession",
+                "sequence accession",
+            ])
             self.assertEqual(
                 [
                     (row["feature type"], row["feature index"], row["feature position 1b"])
                     for row in rows
                 ],
                 [
-                    ("start", "1", "7"),
+                    ("start", "", "7"),
                     ("stop", "1", "19"),
                     ("dss", "1", "12"),
                     ("ass", "1", "16"),
@@ -392,3 +419,107 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 self.assertEqual(row["locus end 1b"], "24")
                 self.assertEqual(row["strand"], "+")
                 self.assertEqual(row["error"], "")
+
+    def test_writes_hmm_detected_leader_candidate_starts_to_locus_artifact(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
+            dict(
+                sequence_accession="p_locus",
+                sequence_database="g1",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_HMM_DETECTED,
+            ),
+        ])
+        self.fx.write_detected_proteins("g1", {"p_locus": "KMMP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "NNNATGATGAAAATGATGCCC"})
+        self.fx.write_detected_rows("g1", [
+            self.detected_protein_row("p_locus", "g1", "ctg1", 10, 21, 1, 4),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_rule_module(tmpd)
+            artifacts = os.path.join(tmpd, "artifacts")
+            stdin = io.StringIO("p_locus\tg1\n")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin):
+                    script.main([
+                        "-r", "constant_rules.mnsod_rule",
+                        "--artifacts-dir", artifacts,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("constant_rules", None)
+
+            with open(
+                os.path.join(artifacts, "genomic_locus_with_leader.tsv"),
+                "r",
+                encoding="utf-8",
+                newline="",
+            ) as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+
+        start_rows = [row for row in rows if row["feature type"] == "start"]
+        self.assertEqual(
+            [
+                (
+                    row["feature index"],
+                    row["sequence accession"],
+                    row["feature position 1b"],
+                )
+                for row in start_rows
+            ],
+            [
+                ("", "p_locus_with_leader_u2_M", "1"),
+                ("", "p_locus_with_leader_u1_M", "4"),
+                ("", "p_locus_with_leader_2_M", "10"),
+                ("", "p_locus_with_leader_3_M", "13"),
+            ],
+        )
+        for row in rows:
+            self.assertEqual(row["contig accession"], "ctg1")
+            self.assertEqual(row["locus start 1b"], "4")
+            self.assertEqual(row["locus end 1b"], "21")
+
+    def test_hmm_detected_locus_artifact_has_no_start_for_original_sequence_fallback(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
+            dict(
+                sequence_accession="p_locus",
+                sequence_database="g1",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_HMM_DETECTED,
+            ),
+        ])
+        self.fx.write_detected_proteins("g1", {"p_locus": "RYDA"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "CGTTATGATGCT"})
+        self.fx.write_detected_rows("g1", [
+            self.detected_protein_row("p_locus", "g1", "ctg1", 1, 12, 1, 4),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_rule_module(tmpd)
+            artifacts = os.path.join(tmpd, "artifacts")
+            stdin = io.StringIO("p_locus\tg1\n")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin):
+                    script.main([
+                        "-r", "constant_rules.mnsod_rule",
+                        "--artifacts-dir", artifacts,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("constant_rules", None)
+
+            with open(
+                os.path.join(artifacts, "genomic_locus_with_leader.tsv"),
+                "r",
+                encoding="utf-8",
+                newline="",
+            ) as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+
+        self.assertEqual([row["feature type"] for row in rows], [""])
+        self.assertEqual(rows[0]["protein accession"], "p_locus")
+        self.assertEqual(rows[0]["sequence accession"], "p_locus")
