@@ -154,6 +154,12 @@ class Rule(object):
     def resolve(self, context, atomic_results):
         return atomic_results[self.label][context.key]
 
+    def resolve_row(self, row):
+        return row[self.label]
+
+    def filter_sequence_candidates(self, protein, candidates, row):
+        return candidates
+
 
 def _as_rule(value):
     if not isinstance(value, Rule):
@@ -189,6 +195,14 @@ class AndRule(CompositeRule):
     def resolve(self, context, atomic_results):
         return _merge_and([rule.resolve(context, atomic_results) for rule in self.rules])
 
+    def resolve_row(self, row):
+        return _merge_and([rule.resolve_row(row) for rule in self.rules])
+
+    def filter_sequence_candidates(self, protein, candidates, row):
+        for rule in self.rules:
+            candidates = rule.filter_sequence_candidates(protein, candidates, row)
+        return candidates
+
 
 class OrRule(CompositeRule):
 
@@ -201,6 +215,17 @@ class OrRule(CompositeRule):
 
     def resolve(self, context, atomic_results):
         return _merge_or([rule.resolve(context, atomic_results) for rule in self.rules])
+
+    def resolve_row(self, row):
+        return _merge_or([rule.resolve_row(row) for rule in self.rules])
+
+    def filter_sequence_candidates(self, protein, candidates, row):
+        filtered = {}
+        for rule in self.rules:
+            if _rule_passes(rule.resolve_row(row)):
+                for candidate in rule.filter_sequence_candidates(protein, candidates, row):
+                    filtered[candidate.accession] = candidate
+        return list(filtered.values())
 
 
 class RuleContext(object):
@@ -244,6 +269,11 @@ class Rules(object):
             writer = csv.DictWriter(f, fieldnames=self.headers(), delimiter="\t")
             writer.writeheader()
             writer.writerows(rows)
+
+    def sequence_candidates_for_row(self, row):
+        protein = CuratedProtein(row["protein accession"], row["genome accession"])
+        candidates = protein.sequences_with_leader()
+        return self.rule.filter_sequence_candidates(protein, candidates, row)
 
     def check(self, protein_keys, output_tsv, artifacts_dir=None, trace=True):
         contexts = [
@@ -511,9 +541,35 @@ class LeaderRule(Rule):
             if context.key in self._predictions_by_key
         }
 
+    def filter_sequence_candidates(self, protein, candidates, row):
+        if not _rule_passes(row[self.label]):
+            return []
+        matching_starts = {
+            start
+            for start, prediction in _parse_leader_calls(row.get("Leader.call", ""))
+            if prediction == self.prediction
+        }
+        return [
+            candidate for candidate in candidates
+            if candidate.start_label in matching_starts
+        ]
+
 
 def _format_leader_calls(calls):
     return ";".join([f"start={start}:{prediction}" for start, prediction in calls])
+
+
+def _parse_leader_calls(value):
+    calls = []
+    for raw_call in value.split(";"):
+        raw_call = raw_call.strip()
+        if not raw_call:
+            continue
+        if not raw_call.startswith("start=") or ":" not in raw_call:
+            continue
+        start, prediction = raw_call[len("start="):].split(":", 1)
+        calls.append((start, prediction))
+    return calls
 
 
 def _parse_targetp_output(text):

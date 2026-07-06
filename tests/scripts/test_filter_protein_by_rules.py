@@ -62,6 +62,34 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 "",
             ]))
 
+    def write_leader_rule_module(self, tmpd):
+        module_path = os.path.join(tmpd, "leader_rules.py")
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write("\n".join([
+                "from sieve.rules import Leader, Rules",
+                "mnsod_rule = Rules(Leader.is_mTP())",
+                "",
+            ]))
+
+    def write_leader_and_rule_module(self, tmpd):
+        module_path = os.path.join(tmpd, "leader_and_rules.py")
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write("\n".join([
+                "from sieve.rules import Leader, Rules",
+                "from tests.scripts.helpers import ConstantByProteinRule",
+                "mnsod_rule = Rules(Leader.is_mTP() & ConstantByProteinRule())",
+                "",
+            ]))
+
+    def write_leader_or_rule_module(self, tmpd):
+        module_path = os.path.join(tmpd, "leader_or_rules.py")
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write("\n".join([
+                "from sieve.rules import Leader, Rules",
+                "mnsod_rule = Rules(Leader.is_mTP() | Leader.is_SP())",
+                "",
+            ]))
+
     def test_writes_rule_tsv_and_fasta(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
         self.write_manifest_and_sequences()
@@ -113,6 +141,103 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.modules.pop("constant_rules", None)
 
             self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader_1_M": "MT"})
+
+    def test_screened_fasta_uses_rule_filtered_sequence_candidates(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        self.write_manifest_and_sequences()
+
+        def fake_run(cmd, check, capture_output, text):
+            return_value = "\n".join([
+                "# TargetP-2.0",
+                "p_maybe_with_leader_1_M\tnoTP\t0.8\t0.1\t0.1\t",
+                "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
+                "",
+            ])
+            return type("Completed", (), {"returncode": 0, "stdout": return_value, "stderr": ""})()
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_leader_rule_module(tmpd)
+            fasta_output = os.path.join(tmpd, "res.faa")
+            stdin = io.StringIO("p_maybe\tg1\n")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin), patch("sieve.rules.subprocess.run", side_effect=fake_run):
+                    script.main([
+                        "-r", "leader_rules.mnsod_rule",
+                        "--fasta-output", fasta_output,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("leader_rules", None)
+
+            self.assertEqual(read_fasta_as_dict(fasta_output), {
+                "p_maybe_with_leader_2_M": "M",
+            })
+
+    def test_screened_fasta_applies_and_sequence_candidate_filters(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        self.write_manifest_and_sequences()
+
+        def fake_run(cmd, check, capture_output, text):
+            return_value = "\n".join([
+                "# TargetP-2.0",
+                "p_maybe_with_leader_1_M\tnoTP\t0.8\t0.1\t0.1\t",
+                "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
+                "",
+            ])
+            return type("Completed", (), {"returncode": 0, "stdout": return_value, "stderr": ""})()
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_leader_and_rule_module(tmpd)
+            fasta_output = os.path.join(tmpd, "res.faa")
+            stdin = io.StringIO("p_maybe\tg1\n")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin), patch("sieve.rules.subprocess.run", side_effect=fake_run):
+                    script.main([
+                        "-r", "leader_and_rules.mnsod_rule",
+                        "--fasta-output", fasta_output,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("leader_and_rules", None)
+
+            self.assertEqual(read_fasta_as_dict(fasta_output), {
+                "p_maybe_with_leader_2_M": "M",
+            })
+
+    def test_screened_fasta_unions_or_sequence_candidate_filters(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        self.write_manifest_and_sequences()
+
+        def fake_run(cmd, check, capture_output, text):
+            return_value = "\n".join([
+                "# TargetP-2.0",
+                "p_maybe_with_leader_1_M\tSP\t0.1\t0.8\t0.1\t",
+                "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
+                "",
+            ])
+            return type("Completed", (), {"returncode": 0, "stdout": return_value, "stderr": ""})()
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_leader_or_rule_module(tmpd)
+            fasta_output = os.path.join(tmpd, "res.faa")
+            stdin = io.StringIO("p_maybe\tg1\n")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin), patch("sieve.rules.subprocess.run", side_effect=fake_run):
+                    script.main([
+                        "-r", "leader_or_rules.mnsod_rule",
+                        "--fasta-output", fasta_output,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("leader_or_rules", None)
+
+            self.assertEqual(read_fasta_as_dict(fasta_output), {
+                "p_maybe_with_leader_1_M": "MM",
+                "p_maybe_with_leader_2_M": "M",
+            })
 
     def test_ignores_input_proteins_missing_from_manifest(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))

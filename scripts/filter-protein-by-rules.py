@@ -180,17 +180,20 @@ def write_protein_key_fasta(protein_keys, fasta_output, sequence_getter):
                 CuratedProtein.clear_cache()
 
 
-def write_rule_fasta(rows, fasta_output, include_maybe=True):
+def write_rule_fasta(rows, fasta_output, rules, include_maybe=True):
     accepted = {RULE_TRUE}
     if include_maybe:
         accepted.add(RULE_MAYBE)
 
-    protein_keys = [
-        (row["protein accession"], row["genome accession"])
-        for row in rows
-        if row["pass all"] in accepted
-    ]
-    write_protein_key_fasta(protein_keys, fasta_output, lambda protein: protein.sequences_with_leader())
+    with open_file_to_write(fasta_output, "wt") as f:
+        for row in rows:
+            if row["pass all"] not in accepted:
+                continue
+            try:
+                for candidate in rules.sequence_candidates_for_row(row):
+                    f.write(f">{candidate.accession}\n{candidate.sequence}\n")
+            finally:
+                CuratedProtein.clear_cache()
 
 
 def main(argv=None):
@@ -229,6 +232,7 @@ def main(argv=None):
             write_rule_fasta(
                 rows,
                 args.fasta_output,
+                rules,
                 include_maybe=not args.fasta_excludes_maybe,
             )
         if args.unfiltered_fasta_output is not None:
