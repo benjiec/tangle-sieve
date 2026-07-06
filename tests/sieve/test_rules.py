@@ -14,6 +14,7 @@ from tangle.detected import DetectedTable
 from sieve.protein import (
     CuratedProtein,
     ProteinHMMAlignment,
+    SEQUENCE_SOURCE_HMM_DETECTED,
     SEQUENCE_SOURCE_NCBI,
 )
 from sieve.rules import (
@@ -61,6 +62,26 @@ class RulesFixture(DefaultsFixture):
             query_end=10,
             target_start=1,
             target_end=10,
+        )
+
+    def detected_protein_row(self, protein_accession, genome_accession, contig_accession, q_start, q_end, t_start, t_end):
+        return dict(
+            detection_type="model",
+            detection_method="hmm",
+            batch="b1",
+            query_accession=contig_accession,
+            query_database=genome_accession,
+            query_type="contig",
+            target_accession=protein_accession,
+            target_database=genome_accession,
+            target_type="protein",
+            target_model="HMM1",
+            query_start=q_start,
+            query_end=q_end,
+            target_start=t_start,
+            target_end=t_end,
+            evalue=0.001,
+            bitscore=10,
         )
 
     def write_protein_fixture(self, protein_accession, genome_accession, sequence="MGP"):
@@ -192,7 +213,7 @@ class TestRules(unittest.TestCase):
         self.fx.write_three_exon_gene("p1", "g1", "+")
         targetp_output = "\n".join([
             "# TargetP-2.0",
-            "p1_with_leader\tmTP\t0.1\t0.2\t0.7\tCS pos: 1-2. AA-AA. Pr: 0.1",
+            "p1_with_leader_1_M\tmTP\t0.1\t0.2\t0.7\tCS pos: 1-2. AA-AA. Pr: 0.1",
             "",
         ])
         gimme_output = "\n".join([
@@ -246,7 +267,7 @@ class TestRules(unittest.TestCase):
             mount_arg = cmd[cmd.index("-v") + 1]
             mounted_path = mount_arg.split(":", 1)[0]
             self.assertTrue(os.path.isabs(mounted_path))
-            return CompletedProcess(cmd, 0, stdout="p1_with_leader\tmTP\t0.1\t0.2\t0.7\t\n", stderr="")
+            return CompletedProcess(cmd, 0, stdout="p1_with_leader_1_M\tmTP\t0.1\t0.2\t0.7\t\n", stderr="")
 
         with patch("sieve.rules.subprocess.run", side_effect=fake_run):
             with tempfile.TemporaryDirectory() as tmpd:
@@ -332,13 +353,13 @@ class TestRules(unittest.TestCase):
             fasta_path = cmd[cmd.index("-v") + 1].split(":", 1)[0] + "/query.faa"
             with open(fasta_path, "r", encoding="utf-8") as f:
                 fasta_text = f.read()
-            self.assertIn(">p1_with_leader\nMA\n", fasta_text)
-            self.assertIn(">p2_with_leader\nMG\n", fasta_text)
+            self.assertIn(">p1_with_leader_1_M\nMA\n", fasta_text)
+            self.assertIn(">p2_with_leader_1_M\nMG\n", fasta_text)
             return CompletedProcess(cmd, 0, stdout="\n".join([
                 "# TargetP-2.0",
                 "# ID\tPrediction\tnoTP\tSP\tmTP\tCS Position",
-                "p1_with_leader\tmTP\t0.1\t0.2\t0.7\tCS pos: 1-2. AA-AA. Pr: 0.1",
-                "p2_with_leader\tSP\t0.1\t0.8\t0.1\tCS pos: 1-2. AA-AA. Pr: 0.1",
+                "p1_with_leader_1_M\tmTP\t0.1\t0.2\t0.7\tCS pos: 1-2. AA-AA. Pr: 0.1",
+                "p2_with_leader_1_M\tSP\t0.1\t0.8\t0.1\tCS pos: 1-2. AA-AA. Pr: 0.1",
                 "",
             ]), stderr="")
 
@@ -350,7 +371,64 @@ class TestRules(unittest.TestCase):
                 )
 
         self.assertEqual([row["Leader.is_mTP()"] for row in rows], [RULE_TRUE, RULE_FALSE])
-        self.assertEqual([row["Leader.call"] for row in rows], ["mTP", "SP"])
+        self.assertEqual([row["Leader.call"] for row in rows], ["start=1:mTP", "start=1:SP"])
+
+    def test_leader_rule_checks_all_alternative_start_candidates(self):
+        self.fx.write_manifest([
+            self.fx.manifest_row("p1", "g1", source=SEQUENCE_SOURCE_HMM_DETECTED),
+        ])
+        self.fx.write_detected_proteins("g1", {"p1": "KMMP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "NNNATGATGAAAATGATGCCC"})
+        self.fx.write_detected_rows("g1", [
+            self.fx.detected_protein_row("p1", "g1", "ctg1", 10, 21, 1, 4),
+        ])
+
+        def fake_run(cmd, check, capture_output, text):
+            fasta_path = cmd[cmd.index("-v") + 1].split(":", 1)[0] + "/query.faa"
+            with open(fasta_path, "r", encoding="utf-8") as f:
+                fasta_text = f.read()
+            self.assertIn(">p1_with_leader_u2_M\nMMKMMP\n", fasta_text)
+            self.assertIn(">p1_with_leader_u1_M\nMKMMP\n", fasta_text)
+            self.assertIn(">p1_with_leader_2_M\nMMP\n", fasta_text)
+            self.assertIn(">p1_with_leader_3_M\nMP\n", fasta_text)
+            return CompletedProcess(cmd, 0, stdout="\n".join([
+                "# TargetP-2.0",
+                "p1_with_leader_u2_M\tnoTP\t0.8\t0.1\t0.1\t",
+                "p1_with_leader_u1_M\tSP\t0.1\t0.8\t0.1\t",
+                "p1_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
+                "p1_with_leader_3_M\tnoTP\t0.8\t0.1\t0.1\t",
+                "",
+            ]), stderr="")
+
+        with patch("sieve.rules.subprocess.run", side_effect=fake_run):
+            with tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(Leader.is_mTP()).check(
+                    [("p1", "g1")],
+                    os.path.join(tmpd, "rules.tsv"),
+                )
+
+        self.assertEqual(rows[0]["Leader.is_mTP()"], RULE_TRUE)
+        self.assertEqual(
+            rows[0]["Leader.call"],
+            "start=u2:noTP;start=u1:SP;start=2:mTP;start=3:noTP",
+        )
+
+    def test_leader_rule_is_false_without_any_m_start_candidates(self):
+        self.fx.write_manifest([
+            self.fx.manifest_row("p1", "g1"),
+        ])
+        self.fx.write_ncbi_proteins("g1", {"p1": "RYDA"})
+
+        with patch("sieve.rules.subprocess.run") as run:
+            with tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(Leader.is_mTP()).check(
+                    [("p1", "g1")],
+                    os.path.join(tmpd, "rules.tsv"),
+                )
+
+        run.assert_not_called()
+        self.assertEqual(rows[0]["Leader.is_mTP()"], RULE_FALSE)
+        self.assertNotIn("Leader.call", rows[0])
 
     def test_leader_rule_writes_call_annotation_to_tsv(self):
         self.fx.write_manifest([
@@ -362,7 +440,7 @@ class TestRules(unittest.TestCase):
             return CompletedProcess(cmd, 0, stdout="\n".join([
                 "# TargetP-2.0",
                 "# ID\tPrediction\tnoTP\tSP\tmTP\tCS Position",
-                "p1_with_leader\tmTP\t0.1\t0.2\t0.7\tCS pos: 1-2. AA-AA. Pr: 0.1",
+                "p1_with_leader_1_M\tmTP\t0.1\t0.2\t0.7\tCS pos: 1-2. AA-AA. Pr: 0.1",
                 "",
             ]), stderr="")
 
@@ -373,7 +451,7 @@ class TestRules(unittest.TestCase):
                 rows = self.read_tsv(out)
 
         self.assertEqual(rows[0]["Leader.is_mTP()"], RULE_TRUE)
-        self.assertEqual(rows[0]["Leader.call"], "mTP")
+        self.assertEqual(rows[0]["Leader.call"], "start=1:mTP")
 
     def test_tf_motifs_pass_for_hits_within_intron_on_forward_gene_even_opposite_hit_strands(self):
         self.fx.write_three_exon_gene("p1", "g1", "+")

@@ -174,8 +174,8 @@ def write_protein_key_fasta(protein_keys, fasta_output, sequence_getter):
         for genome_accession, genome_keys in group_protein_keys_by_genome(protein_keys):
             try:
                 for protein_accession, _genome_accession in genome_keys:
-                    sequence = sequence_getter(CuratedProtein(protein_accession, genome_accession))
-                    f.write(f">{protein_accession}_with_leader\n{sequence}\n")
+                    for candidate in sequence_getter(CuratedProtein(protein_accession, genome_accession)):
+                        f.write(f">{candidate.accession}\n{candidate.sequence}\n")
             finally:
                 CuratedProtein.clear_cache()
 
@@ -190,7 +190,7 @@ def write_rule_fasta(rows, fasta_output, include_maybe=True):
         for row in rows
         if row["pass all"] in accepted
     ]
-    write_protein_key_fasta(protein_keys, fasta_output, lambda protein: protein.sequence_with_leader())
+    write_protein_key_fasta(protein_keys, fasta_output, lambda protein: protein.sequences_with_leader())
 
 
 def main(argv=None):
@@ -235,7 +235,7 @@ def main(argv=None):
             write_protein_key_fasta(
                 protein_keys,
                 args.unfiltered_fasta_output,
-                lambda protein: protein.sequence_with_leader(),
+                lambda protein: protein.sequences_with_leader(),
             )
     return 0
 

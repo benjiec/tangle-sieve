@@ -87,8 +87,9 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomes", "g1")))
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_locus_with_leader.tsv")))
             self.assertEqual(read_fasta_as_dict(fasta_output), {
-                "p_true_with_leader": "MT",
-                "p_maybe_with_leader": "MM",
+                "p_true_with_leader_1_M": "MT",
+                "p_maybe_with_leader_1_M": "MM",
+                "p_maybe_with_leader_2_M": "M",
             })
 
     def test_can_exclude_maybe_from_fasta(self):
@@ -111,7 +112,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.path.remove(tmpd)
                 sys.modules.pop("constant_rules", None)
 
-            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader": "MT"})
+            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader_1_M": "MT"})
 
     def test_ignores_input_proteins_missing_from_manifest(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
@@ -196,11 +197,12 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.path.remove(tmpd)
                 sys.modules.pop("constant_rules", None)
 
-            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader": "MT"})
+            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader_1_M": "MT"})
             self.assertEqual(read_fasta_as_dict(unfiltered_fasta_output), {
-                "p_true_with_leader": "MT",
-                "p_maybe_with_leader": "MM",
-                "p_false_with_leader": "MF",
+                "p_true_with_leader_1_M": "MT",
+                "p_maybe_with_leader_1_M": "MM",
+                "p_maybe_with_leader_2_M": "M",
+                "p_false_with_leader_1_M": "MF",
             })
 
     def test_writes_genomic_locus_with_leader_artifact(self):

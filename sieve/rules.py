@@ -97,10 +97,6 @@ def _safe_result_value(value):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "value"
 
 
-def _leader_sequence_id(context):
-    return f"{context.protein.protein_accession}_with_leader"
-
-
 def _locus_sequence_id(context):
     return f"{context.protein.protein_accession}_locus"
 
@@ -440,9 +436,22 @@ class LeaderRule(Rule):
         return ["Leader.call"]
 
     def evaluate_many(self, contexts, artifacts_dir=None):
-        sequence_ids = {_leader_sequence_id(context): context for context in contexts}
-        results = {context.key: RULE_ERROR for context in contexts}
+        sequence_contexts = {}
+        sequence_candidates = {}
+        candidate_counts_by_key = {}
+        for context in contexts:
+            candidates = context.protein.sequences_with_leader()
+            candidate_counts_by_key[context.key] = len(candidates)
+            for candidate in candidates:
+                sequence_contexts[candidate.accession] = context
+                sequence_candidates[candidate.accession] = candidate
+        results = {
+            context.key: RULE_ERROR if candidate_counts_by_key[context.key] else RULE_FALSE
+            for context in contexts
+        }
         self._predictions_by_key = {}
+        if not sequence_candidates:
+            return results
         try:
             with tempfile.TemporaryDirectory() as tmpd:
                 working_dir = artifacts_dir if artifacts_dir is not None else tmpd
@@ -450,8 +459,8 @@ class LeaderRule(Rule):
                     os.makedirs(artifacts_dir, exist_ok=True)
                 fasta_path = os.path.join(working_dir, "query.faa")
                 fasta = {
-                    sequence_id: context.protein.sequence_with_leader()
-                    for sequence_id, context in sequence_ids.items()
+                    sequence_id: candidate.sequence
+                    for sequence_id, candidate in sequence_candidates.items()
                 }
                 write_fasta_from_dict(fasta, fasta_path)
                 cmd = [
@@ -476,22 +485,35 @@ class LeaderRule(Rule):
             print(f"{self.label} batch failed: {e}", file=sys.stderr)
             return results
 
-        for sequence_id, context in sequence_ids.items():
+        calls_by_key = {context.key: [] for context in contexts}
+        for sequence_id, context in sequence_contexts.items():
             prediction = predictions.get(sequence_id)
             if prediction is None:
                 print(f"{self.label} missing TargetP row for {context.key}", file=sys.stderr)
                 results[context.key] = RULE_ERROR
             else:
-                self._predictions_by_key[context.key] = prediction
-                results[context.key] = _rule_bool(prediction == self.prediction)
+                candidate = sequence_candidates[sequence_id]
+                calls_by_key[context.key].append((candidate.start_label, prediction))
+
+        for context in contexts:
+            if len(calls_by_key[context.key]) != candidate_counts_by_key[context.key]:
+                continue
+            self._predictions_by_key[context.key] = calls_by_key[context.key]
+            results[context.key] = _rule_bool(
+                any(prediction == self.prediction for _start, prediction in calls_by_key[context.key])
+            )
         return results
 
     def annotations_many(self, contexts, rule_results):
         return {
-            context.key: {"Leader.call": self._predictions_by_key[context.key]}
+            context.key: {"Leader.call": _format_leader_calls(self._predictions_by_key[context.key])}
             for context in contexts
             if context.key in self._predictions_by_key
         }
+
+
+def _format_leader_calls(calls):
+    return ";".join([f"start={start}:{prediction}" for start, prediction in calls])
 
 
 def _parse_targetp_output(text):

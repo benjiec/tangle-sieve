@@ -145,6 +145,12 @@ def _gff_attr_values(attrs, key):
     return [v for v in value.split(",") if v]
 
 
+def _leader_start_label(start_aa_1b):
+    if start_aa_1b >= 1:
+        return str(start_aa_1b)
+    return f"u{1 - start_aa_1b}"
+
+
 @dataclass
 class GenomicLocus:
     genome_accession: str
@@ -181,6 +187,14 @@ class GenomicLocus:
         return [left for left, _right in self.cds_intervals_1b[1:]]
 
 
+@dataclass
+class LeaderSequenceCandidate:
+    accession: str
+    start_label: str
+    start_aa_1b: int
+    sequence: str
+
+
 class CuratedProtein(object):
 
     @staticmethod
@@ -199,6 +213,8 @@ class CuratedProtein(object):
         self._genomic_fasta = None
         self._locus = None
         self._leader_prefix_cache = None
+        self._leader_tail_cache = None
+        self._leader_sequence_candidates_cache = None
         self._start_trim_len_cache = None
 
     @property
@@ -503,6 +519,56 @@ class CuratedProtein(object):
         else:
             self._leader_prefix_cache = tail
         return self._leader_prefix_cache
+
+    def _leader_tail(self):
+        if self._leader_tail_cache is not None:
+            return self._leader_tail_cache
+
+        if self.sequence_source != SEQUENCE_SOURCE_HMM_DETECTED:
+            self._leader_tail_cache = ""
+            return self._leader_tail_cache
+
+        locus = self.genomic_locus()
+        contig_seq = self._genomic_sequences()[locus.contig_accession]
+        if locus.strand == 1:
+            upstream_end = locus.start_1b - 1
+            frame_start = upstream_end % 3
+            upstream_dna = contig_seq[frame_start:upstream_end]
+        else:
+            upstream_start = locus.start_1b + 1
+            right_len = len(contig_seq) - upstream_start + 1
+            usable_len = right_len - (right_len % 3)
+            upstream_dna = str(Seq(contig_seq[upstream_start - 1:upstream_start - 1 + usable_len]).reverse_complement())
+
+        usable_len = (len(upstream_dna) // 3) * 3
+        upstream_dna = upstream_dna[len(upstream_dna) - usable_len:]
+        upstream_aa = str(Seq(upstream_dna).translate(table="Standard", to_stop=False)) if upstream_dna else ""
+        self._leader_tail_cache = upstream_aa.split("*")[-1]
+        return self._leader_tail_cache
+
+    def leader_sequence_candidates(self):
+        if self._leader_sequence_candidates_cache is not None:
+            return self._leader_sequence_candidates_cache
+
+        tail = self._leader_tail()
+        sequence = self.sequence()
+        combined = tail + sequence
+        last_candidate_index = min(len(combined), len(tail) + 3)
+        candidates = [
+            LeaderSequenceCandidate(
+                accession=f"{self.protein_accession}_with_leader_{_leader_start_label(index - len(tail) + 1)}_M",
+                start_label=_leader_start_label(index - len(tail) + 1),
+                start_aa_1b=index - len(tail) + 1,
+                sequence=combined[index:],
+            )
+            for index, aa in enumerate(combined[:last_candidate_index])
+            if aa == "M"
+        ]
+        self._leader_sequence_candidates_cache = candidates
+        return self._leader_sequence_candidates_cache
+
+    def sequences_with_leader(self):
+        return self.leader_sequence_candidates()
 
     def _start_trim_len(self):
         if self._start_trim_len_cache is not None:

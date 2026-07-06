@@ -106,6 +106,53 @@ class TestCuratedProtein(unittest.TestCase):
         self.assertEqual(locus.end_1b, 15)
         self.assertEqual(locus.sequence(), "ATGCCCGGG")
 
+    def test_hmm_detected_leader_sequence_candidates_include_upstream_and_first_three_protein_positions(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "KMMP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "NNNATGATGAAAATGATGCCC"})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 10, 21, 1, 4),
+        ])
+
+        candidates = CuratedProtein("p1", "g1").leader_sequence_candidates()
+
+        self.assertEqual(
+            [
+                (candidate.accession, candidate.start_label, candidate.start_aa_1b, candidate.sequence)
+                for candidate in candidates
+            ],
+            [
+                ("p1_with_leader_u2_M", "u2", -1, "MMKMMP"),
+                ("p1_with_leader_u1_M", "u1", 0, "MKMMP"),
+                ("p1_with_leader_2_M", "2", 2, "MMP"),
+                ("p1_with_leader_3_M", "3", 3, "MP"),
+            ],
+        )
+
+    def test_ncbi_leader_sequence_candidates_include_first_three_protein_positions(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MMMG"})
+
+        candidates = CuratedProtein("p1", "g1").leader_sequence_candidates()
+
+        self.assertEqual(
+            [
+                (candidate.accession, candidate.start_label, candidate.start_aa_1b, candidate.sequence)
+                for candidate in candidates
+            ],
+            [
+                ("p1_with_leader_1_M", "1", 1, "MMMG"),
+                ("p1_with_leader_2_M", "2", 2, "MMG"),
+                ("p1_with_leader_3_M", "3", 3, "MG"),
+            ],
+        )
+
+    def test_leader_sequence_candidates_are_empty_without_m_in_first_three_positions_or_upstream_tail(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
+        self.fx.write_ncbi_proteins("g1", {"p1": "RYDA"})
+
+        self.assertEqual(CuratedProtein("p1", "g1").leader_sequence_candidates(), [])
+
     def test_hmm_detected_leader_stops_at_stop_codon_boundary(self):
         self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
         self.fx.write_detected_proteins("g1", {"p1": "P"})
