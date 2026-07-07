@@ -6,7 +6,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from sieve.protein import CuratedProtein
+from sieve.protein import CuratedProtein, LeaderSequenceCandidate
 from tangle.sequence import write_fasta_from_dict
 
 
@@ -442,25 +442,43 @@ class HMMRegexRule(Rule):
 
 class Leader(object):
 
-    @staticmethod
-    def is_mTP():
-        return LeaderRule("mTP")
+    def __init__(self, window_start=-30, window_end=3, pfam_accession=None):
+        self.window_start = window_start
+        self.window_end = window_end
+        self.pfam_accession = pfam_accession
 
-    @staticmethod
-    def is_SP():
-        return LeaderRule("SP")
+    def upstreamOfPfam(self, accession):
+        return Leader(self.window_start, self.window_end, accession)
 
-    @staticmethod
-    def is_noTP():
-        return LeaderRule("noTP")
+    def betweenAA(self, start, end):
+        return Leader(start, end, self.pfam_accession)
+
+    def is_mTP(self):
+        return LeaderRule("mTP", self.window_start, self.window_end, self.pfam_accession)
+
+    def is_SP(self):
+        return LeaderRule("SP", self.window_start, self.window_end, self.pfam_accession)
+
+    def is_noTP(self):
+        return LeaderRule("noTP", self.window_start, self.window_end, self.pfam_accession)
 
 
 class LeaderRule(Rule):
 
-    def __init__(self, prediction):
+    def __init__(self, prediction, window_start=-30, window_end=3, pfam_accession=None):
         self.prediction = prediction
-        self.label = f"Leader.is_{prediction}()"
+        self.window_start = window_start
+        self.window_end = window_end
+        self.pfam_accession = pfam_accession
+        self.label = self._label()
         self._predictions_by_key = {}
+
+    def _label(self):
+        base = "Leader()"
+        if self.pfam_accession is not None:
+            base += f".upstreamOfPfam('{self.pfam_accession}')"
+        base += f".betweenAA({self.window_start}, {self.window_end})"
+        return f"{base}.is_{self.prediction}()"
 
     def annotation_columns(self):
         return ["Leader.call"]
@@ -470,7 +488,7 @@ class LeaderRule(Rule):
         sequence_candidates = {}
         candidate_counts_by_key = {}
         for context in contexts:
-            candidates = context.protein.sequences_with_leader()
+            candidates = self._scoped_candidates(context.protein)
             candidate_counts_by_key[context.key] = len(candidates)
             for candidate in candidates:
                 sequence_contexts[candidate.accession] = context
@@ -554,9 +572,74 @@ class LeaderRule(Rule):
             if candidate.start_label in matching_starts
         ]
 
+    def _scoped_candidates(self, protein):
+        candidates = [
+            candidate for candidate in protein.sequences_with_leader()
+            if candidate.start_label
+        ]
+        anchor = 1
+        if self.pfam_accession is not None:
+            anchor = _earliest_pfam_anchor(protein, self.pfam_accession)
+            if anchor is None:
+                return _original_sequence_candidate(protein)
+
+        filtered = [
+            candidate for candidate in candidates
+            if _coord_in_window(
+                _candidate_coord_relative_to_anchor(candidate.start_aa_1b, anchor),
+                self.window_start,
+                self.window_end,
+            )
+        ]
+        if filtered:
+            return filtered
+        return _original_sequence_candidate(protein)
+
 
 def _format_leader_calls(calls):
     return ";".join([f"start={start}:{prediction}" for start, prediction in calls])
+
+
+def _candidate_coord_relative_to_anchor(candidate_start_aa_1b, anchor_aa_1b):
+    if candidate_start_aa_1b >= anchor_aa_1b:
+        return candidate_start_aa_1b - anchor_aa_1b + 1
+    return candidate_start_aa_1b - anchor_aa_1b
+
+
+def _coord_in_window(coord, start, end):
+    low = min(start, end)
+    high = max(start, end)
+    return coord != 0 and low <= coord <= high
+
+
+def _original_sequence_candidate(protein):
+    for candidate in protein.sequences_with_leader():
+        if not candidate.start_label:
+            return [candidate]
+    return [
+        LeaderSequenceCandidate(
+            accession=protein.protein_accession,
+            start_label="",
+            start_aa_1b=1,
+            sequence=protein.sequence(),
+        )
+    ]
+
+
+def _earliest_pfam_anchor(protein, accession):
+    anchors = []
+    for row in protein.detected_pfam():
+        target = row["target_accession"]
+        if not _motif_matches(target, accession):
+            continue
+        query_start = min(row["query_start"], row["query_end"])
+        target_start = row.get("target_start")
+        if target_start is None:
+            target_start = 1
+        anchors.append(query_start - (target_start - 1))
+    if not anchors:
+        return None
+    return min(anchors)
 
 
 def _parse_leader_calls(value):

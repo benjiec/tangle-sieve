@@ -87,7 +87,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
         with open(module_path, "w", encoding="utf-8") as f:
             f.write("\n".join([
                 "from sieve.rules import Leader, Rules",
-                "mnsod_rule = Rules(Leader.is_mTP())",
+                "mnsod_rule = Rules(Leader().is_mTP())",
                 "",
             ]))
 
@@ -97,7 +97,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             f.write("\n".join([
                 "from sieve.rules import Leader, Rules",
                 "from tests.scripts.helpers import ConstantByProteinRule",
-                "mnsod_rule = Rules(Leader.is_mTP() & ConstantByProteinRule())",
+                "mnsod_rule = Rules(Leader().is_mTP() & ConstantByProteinRule())",
                 "",
             ]))
 
@@ -106,7 +106,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
         with open(module_path, "w", encoding="utf-8") as f:
             f.write("\n".join([
                 "from sieve.rules import Leader, Rules",
-                "mnsod_rule = Rules(Leader.is_mTP() | Leader.is_SP())",
+                "mnsod_rule = Rules(Leader().is_mTP() | Leader().is_SP())",
                 "",
             ]))
 
