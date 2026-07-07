@@ -681,6 +681,115 @@ class TestRules(unittest.TestCase):
         self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-30, 0).is_mTP()"], RULE_FALSE)
         self.assertEqual(rows[0]["Leader.call"], "start=:noTP")
 
+    def test_leader_upstream_of_pfam_uses_ncbi_spliced_prefix_before_anchor(self):
+        cases = [
+            ("+", "ATGAAACCCCCCCCCCCGCTGCTGCT", [(1, 6), (16, 27)]),
+            ("-", "AGCAGCAGCGGGGGGGGGTTTCAT", [(19, 24), (1, 12)]),
+        ]
+        for strand, contig_sequence, cds_intervals in cases:
+            with self.subTest(strand=strand):
+                CuratedProtein.clear_cache()
+                self.fx.write_manifest([
+                    self.fx.manifest_row("p1", "g1", source=SEQUENCE_SOURCE_NCBI),
+                ])
+                self.fx.write_ncbi_proteins("g1", {"p1": "MKAAAA"})
+                self.fx.write_genomic_fasta("g1", {"ctg1": contig_sequence})
+                cds_rows = [
+                    f"ctg1\tsrc\tCDS\t{start}\t{end}\t.\t{strand}\t0\tID=cds{i};Parent=tx1;protein_id=p1"
+                    for i, (start, end) in enumerate(cds_intervals, start=1)
+                ]
+                self.fx.write_gff("g1", "\n".join([
+                    f"ctg1\tsrc\tmRNA\t1\t{len(contig_sequence)}\t.\t{strand}\t.\tID=tx1",
+                    *cds_rows,
+                    "",
+                ]))
+                row = self.fx.detected_row("p1", "g1", "PF00081.28", "Pfam")
+                row.update(query_start=5, query_end=12, target_start=1, target_end=8)
+                DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [row])
+
+                with patch(
+                    "sieve.rules.subprocess.run",
+                    side_effect=self.fake_targetp_with_expected_ids([
+                        "p1",
+                        "p1_with_leader_u4_PF00081_M",
+                    ], {"p1": "noTP"}),
+                ):
+                    with tempfile.TemporaryDirectory() as tmpd:
+                        rule = Leader().upstreamOfPfam("PF00081").betweenAA(-5, 0).is_mTP()
+                        rows = Rules(rule).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
+
+                self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"], RULE_TRUE)
+                self.assertEqual(rows[0]["Leader.call"], "start=:noTP;start=u4_PF00081:mTP")
+
+    def test_leader_upstream_of_pfam_uses_hmm_detected_spliced_prefix_before_anchor(self):
+        cases = [
+            ("+", "ATGAAACCCCCCCCCCCGCTGCTGCT", [(1, 6), (16, 27)]),
+            ("-", "AGCAGCAGCGGGGGGGGGTTTCAT", [(24, 19), (12, 1)]),
+        ]
+        for strand, contig_sequence, rowspecs in cases:
+            with self.subTest(strand=strand):
+                CuratedProtein.clear_cache()
+                self.fx.write_manifest([
+                    self.fx.manifest_row("p1", "g1", source=SEQUENCE_SOURCE_HMM_DETECTED),
+                ])
+                self.fx.write_detected_proteins("g1", {"p1": "MKAAAA"})
+                self.fx.write_genomic_fasta("g1", {"ctg1": contig_sequence})
+                self.fx.write_detected_rows("g1", [
+                    self.fx.detected_protein_row("p1", "g1", "ctg1", rowspecs[0][0], rowspecs[0][1], 37, 38),
+                    self.fx.detected_protein_row("p1", "g1", "ctg1", rowspecs[1][0], rowspecs[1][1], 39, 42),
+                ])
+                row = self.fx.detected_row("p1", "g1", "PF00081.28", "Pfam")
+                row.update(query_start=5, query_end=12, target_start=1, target_end=8)
+                DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [row])
+
+                with patch(
+                    "sieve.rules.subprocess.run",
+                    side_effect=self.fake_targetp_with_expected_ids([
+                        "p1_with_leader_u4_PF00081_M",
+                    ]),
+                ):
+                    with tempfile.TemporaryDirectory() as tmpd:
+                        rule = Leader().upstreamOfPfam("PF00081").betweenAA(-5, 0).is_mTP()
+                        rows = Rules(rule).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
+
+                self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"], RULE_TRUE)
+                self.assertEqual(rows[0]["Leader.call"], "start=u4_PF00081:mTP")
+
+    def test_leader_upstream_of_pfam_for_hmm_detected_also_uses_raw_upstream_anchor_context(self):
+        coding_with_missing_middle = "GCTGCTATGAAAGCTGCT"
+        cases = [
+            ("+", coding_with_missing_middle, [(1, 6), (13, 18)]),
+            ("-", str(Seq(coding_with_missing_middle).reverse_complement()), [(18, 13), (6, 1)]),
+        ]
+        for strand, contig_sequence, rowspecs in cases:
+            with self.subTest(strand=strand):
+                CuratedProtein.clear_cache()
+                self.fx.write_manifest([
+                    self.fx.manifest_row("p1", "g1", source=SEQUENCE_SOURCE_HMM_DETECTED),
+                ])
+                self.fx.write_detected_proteins("g1", {"p1": "AAAA"})
+                self.fx.write_genomic_fasta("g1", {"ctg1": contig_sequence})
+                self.fx.write_detected_rows("g1", [
+                    self.fx.detected_protein_row("p1", "g1", "ctg1", rowspecs[0][0], rowspecs[0][1], 37, 38),
+                    self.fx.detected_protein_row("p1", "g1", "ctg1", rowspecs[1][0], rowspecs[1][1], 39, 40),
+                ])
+                row = self.fx.detected_row("p1", "g1", "PF00081.28", "Pfam")
+                row.update(query_start=4, query_end=12, target_start=1, target_end=9)
+                DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [row])
+
+                with patch(
+                    "sieve.rules.subprocess.run",
+                    side_effect=self.fake_targetp_with_expected_ids([
+                        "p1_with_leader_u3_PF00081_M",
+                    ]),
+                ):
+                    with tempfile.TemporaryDirectory() as tmpd:
+                        rule = Leader().upstreamOfPfam("PF00081").betweenAA(-5, 0).is_mTP()
+                        rows = Rules(rule).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
+
+                self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"], RULE_TRUE)
+                self.assertEqual(rows[0]["Leader.call"], "start=u3_PF00081:mTP")
+
     def test_leader_upstream_of_pfam_scoping_handles_ncbi_forward_and_reverse_gff_loci(self):
         coding = "GCTGCTATGATGGCTATG"
         cases = [

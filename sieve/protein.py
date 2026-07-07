@@ -630,45 +630,52 @@ class CuratedProtein(object):
     def leader_sequence_candidates_at_anchor(self, anchor_aa_1b, anchor_label, window_start, window_end):
         original_candidates = self._original_sequence_candidate() if self.sequence_source == SEQUENCE_SOURCE_NCBI else []
         try:
-            locus = self.genomic_locus()
-            if anchor_aa_1b >= 1:
-                codon_start, _codon_end = self.protein_codon_interval_1b(anchor_aa_1b)
-                tail = self._leader_tail_upstream_of_genomic_pos(locus, codon_start)
-                suffix = self.sequence()[anchor_aa_1b - 1:]
-            else:
-                protein_start_1b = self._protein_start_genomic_1b(locus)
-                upstream_tail = self._leader_tail_upstream_of_genomic_pos(locus, protein_start_1b)
-                anchor_index = len(upstream_tail) + anchor_aa_1b - 1
-                if anchor_index < 0:
-                    return original_candidates or self._original_sequence_candidate()
-                tail = upstream_tail[:anchor_index]
-                suffix = upstream_tail[anchor_index:] + self.sequence()
+            contexts = self._leader_contexts_at_anchor(anchor_aa_1b)
         except Exception:
             return original_candidates or self._original_sequence_candidate()
 
-        combined = tail + suffix
         low = min(window_start, window_end)
         high = max(window_start, window_end)
         candidates = []
-        for index, aa in enumerate(combined):
-            if aa != "M":
+        seen_start_labels = set()
+        for context, anchor_index in contexts:
+            if anchor_index < 0 or anchor_index >= len(context):
                 continue
-            if index < len(tail):
-                relative_start = index - len(tail)
-            else:
-                relative_start = index - len(tail) + 1
-            if relative_start == 0 or relative_start < low or relative_start > high:
-                continue
-            start_label = f"{_leader_relative_label(relative_start)}_{anchor_label}"
-            candidates.append(LeaderSequenceCandidate(
-                accession=f"{self.protein_accession}_with_leader_{start_label}_M",
-                start_label=start_label,
-                start_aa_1b=relative_start,
-                sequence=combined[index:],
-            ))
+            for index, aa in enumerate(context):
+                if aa != "M":
+                    continue
+                if index < anchor_index:
+                    relative_start = index - anchor_index
+                else:
+                    relative_start = index - anchor_index + 1
+                if relative_start < low or relative_start > high:
+                    continue
+                start_label = f"{_leader_relative_label(relative_start)}_{anchor_label}"
+                if start_label in seen_start_labels:
+                    continue
+                seen_start_labels.add(start_label)
+                candidates.append(LeaderSequenceCandidate(
+                    accession=f"{self.protein_accession}_with_leader_{start_label}_M",
+                    start_label=start_label,
+                    start_aa_1b=relative_start,
+                    sequence=context[index:],
+                ))
         if candidates:
             return original_candidates + candidates
         return original_candidates or self._original_sequence_candidate()
+
+    def _leader_contexts_at_anchor(self, anchor_aa_1b):
+        locus = self.genomic_locus()
+        protein_start_1b = self._protein_start_genomic_1b(locus)
+        blind_tail = self._leader_tail_upstream_of_genomic_pos(locus, protein_start_1b)
+        contexts = [
+            (blind_tail + self.sequence(), len(blind_tail) + anchor_aa_1b - 1),
+        ]
+        if self.sequence_source == SEQUENCE_SOURCE_HMM_DETECTED and anchor_aa_1b >= 1:
+            codon_start, _codon_end = self.protein_codon_interval_1b(anchor_aa_1b)
+            raw_tail = self._leader_tail_upstream_of_genomic_pos(locus, codon_start)
+            contexts.append((raw_tail + self.sequence()[anchor_aa_1b - 1:], len(raw_tail)))
+        return contexts
 
     def _original_sequence_candidate(self):
         return [
