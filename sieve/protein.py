@@ -106,6 +106,12 @@ def _interval_relative_to_locus(locus_start, locus_end, feature_start, feature_e
     return (min(rel_start, rel_end), max(rel_start, rel_end))
 
 
+def _genomic_pos_from_locus_relative(locus, relative_pos_1b):
+    if locus.strand == 1:
+        return locus.start_1b + relative_pos_1b - 1
+    return locus.start_1b - relative_pos_1b + 1
+
+
 def _parse_gff_attributes(raw):
     attrs = {}
     for part in raw.strip().split(";"):
@@ -525,18 +531,20 @@ class CuratedProtein(object):
         if self._leader_tail_cache is not None:
             return self._leader_tail_cache
 
-        if self.sequence_source != SEQUENCE_SOURCE_HMM_DETECTED:
+        try:
+            locus = self.genomic_locus()
+        except Exception:
             self._leader_tail_cache = ""
             return self._leader_tail_cache
 
-        locus = self.genomic_locus()
+        protein_start_1b = self._protein_start_genomic_1b(locus)
         contig_seq = self._genomic_sequences()[locus.contig_accession]
         if locus.strand == 1:
-            upstream_end = locus.start_1b - 1
+            upstream_end = protein_start_1b - 1
             frame_start = upstream_end % 3
             upstream_dna = contig_seq[frame_start:upstream_end]
         else:
-            upstream_start = locus.start_1b + 1
+            upstream_start = protein_start_1b + 1
             right_len = len(contig_seq) - upstream_start + 1
             usable_len = right_len - (right_len % 3)
             upstream_dna = str(Seq(contig_seq[upstream_start - 1:upstream_start - 1 + usable_len]).reverse_complement())
@@ -546,6 +554,15 @@ class CuratedProtein(object):
         upstream_aa = str(Seq(upstream_dna).translate(table="Standard", to_stop=False)) if upstream_dna else ""
         self._leader_tail_cache = upstream_aa.split("*")[-1]
         return self._leader_tail_cache
+
+    def _protein_start_genomic_1b(self, locus):
+        if self.sequence_source == SEQUENCE_SOURCE_NCBI:
+            start_position = locus.start_codon_position_1b()
+            if start_position is None and locus.cds_intervals_1b:
+                start_position = locus.cds_intervals_1b[0][0]
+            if start_position is not None:
+                return _genomic_pos_from_locus_relative(locus, start_position)
+        return locus.start_1b
 
     def leader_sequence_candidates(self):
         if self._leader_sequence_candidates_cache is not None:

@@ -148,6 +148,78 @@ class TestCuratedProtein(unittest.TestCase):
             ],
         )
 
+    def test_ncbi_forward_leader_sequence_candidates_include_upstream_tail(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "ATGATGAAAATGCCC"})
+        self.fx.write_gff("g1", "\n".join([
+            "ctg1\tsrc\tmRNA\t10\t15\t.\t+\t.\tID=tx1",
+            "ctg1\tsrc\tCDS\t10\t15\t.\t+\t0\tID=cds1;Parent=tx1;protein_id=p1",
+            "ctg1\tsrc\tstart_codon\t10\t12\t.\t+\t0\tParent=tx1",
+            "",
+        ]))
+
+        candidates = CuratedProtein("p1", "g1").leader_sequence_candidates()
+
+        self.assertEqual(
+            [
+                (candidate.accession, candidate.start_label, candidate.start_aa_1b, candidate.sequence)
+                for candidate in candidates
+            ],
+            [
+                ("p1_with_leader_u3_M", "u3", -2, "MMKMP"),
+                ("p1_with_leader_u2_M", "u2", -1, "MKMP"),
+                ("p1_with_leader_1_M", "1", 1, "MP"),
+            ],
+        )
+
+    def test_ncbi_reverse_leader_sequence_candidates_include_upstream_tail(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "A" * 12 + "GGGCATTTTCATCAT"})
+        self.fx.write_gff("g1", "\n".join([
+            "ctg1\tsrc\tmRNA\t13\t27\t.\t-\t.\tID=tx1",
+            "ctg1\tsrc\tCDS\t13\t18\t.\t-\t0\tID=cds1;Parent=tx1;protein_id=p1",
+            "ctg1\tsrc\tstart_codon\t16\t18\t.\t-\t0\tParent=tx1",
+            "",
+        ]))
+
+        candidates = CuratedProtein("p1", "g1").leader_sequence_candidates()
+
+        self.assertEqual(
+            [
+                (candidate.accession, candidate.start_label, candidate.start_aa_1b, candidate.sequence)
+                for candidate in candidates
+            ],
+            [
+                ("p1_with_leader_u3_M", "u3", -2, "MMKMP"),
+                ("p1_with_leader_u2_M", "u2", -1, "MKMP"),
+                ("p1_with_leader_1_M", "1", 1, "MP"),
+            ],
+        )
+
+    def test_ncbi_leader_sequence_candidates_stop_at_upstream_stop_codon_boundary(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
+        self.fx.write_ncbi_proteins("g1", {"p1": "P"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "ATGTAAATGAAACCC"})
+        self.fx.write_gff("g1", "\n".join([
+            "ctg1\tsrc\tmRNA\t13\t15\t.\t+\t.\tID=tx1",
+            "ctg1\tsrc\tCDS\t13\t15\t.\t+\t0\tID=cds1;Parent=tx1;protein_id=p1",
+            "",
+        ]))
+
+        candidates = CuratedProtein("p1", "g1").leader_sequence_candidates()
+
+        self.assertEqual(
+            [
+                (candidate.accession, candidate.start_label, candidate.start_aa_1b, candidate.sequence)
+                for candidate in candidates
+            ],
+            [
+                ("p1_with_leader_u2_M", "u2", -1, "MKP"),
+            ],
+        )
+
     def test_leader_sequence_candidates_fall_back_to_original_sequence_without_m_in_first_ten_positions_or_upstream_tail(self):
         self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
         self.fx.write_ncbi_proteins("g1", {"p1": "RYDAAAAAAAM"})
