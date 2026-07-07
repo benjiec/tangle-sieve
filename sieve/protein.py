@@ -593,18 +593,29 @@ class CuratedProtein(object):
         raise ValueError(f"Unsupported sequence source: {self.sequence_source}")
 
     def _hmm_detected_codon_interval_1b(self, protein_aa_1b):
-        for row in self._detected_rows_in_protein_order():
-            target_start = min(row["target_start"], row["target_end"])
-            target_end = max(row["target_start"], row["target_end"])
-            if not target_start <= protein_aa_1b <= target_end:
+        rows = self._detected_rows_in_protein_order()
+        protein_start = 1
+        for row in rows:
+            fragment_aa_len = (abs(row["query_end"] - row["query_start"]) + 1) // 3
+            protein_end = protein_start + fragment_aa_len - 1
+            if not protein_start <= protein_aa_1b <= protein_end:
+                protein_start = protein_end + 1
                 continue
-            offset = protein_aa_1b - target_start
+            offset = protein_aa_1b - protein_start
             if row["query_start"] <= row["query_end"]:
                 codon_start = row["query_start"] + offset * 3
                 return (codon_start, codon_start + 2)
             codon_start = row["query_start"] - offset * 3
             return (codon_start, codon_start - 2)
-        raise ValueError(f"Cannot map protein coordinate {protein_aa_1b} for {self.protein_accession}")
+
+        last = rows[-1]
+        last_protein_start = protein_start - ((abs(last["query_end"] - last["query_start"]) + 1) // 3)
+        offset = protein_aa_1b - last_protein_start
+        if last["query_start"] <= last["query_end"]:
+            codon_start = last["query_start"] + offset * 3
+            return (codon_start, codon_start + 2)
+        codon_start = last["query_start"] - offset * 3
+        return (codon_start, codon_start - 2)
 
     def _ncbi_codon_interval_1b(self, protein_aa_1b):
         locus = self.genomic_locus()

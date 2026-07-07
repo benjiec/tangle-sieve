@@ -106,6 +106,34 @@ class TestCuratedProtein(unittest.TestCase):
         self.assertEqual(protein.protein_codon_interval_1b(3), (9, 7))
         self.assertEqual(protein.protein_codon_interval_1b(4), (6, 4))
 
+    def test_hmm_detected_forward_protein_coordinates_ignore_hmm_profile_coordinates(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "AAAA"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "A" * 30})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 10, 21, 35, 38),
+        ])
+
+        protein = CuratedProtein("p1", "g1")
+
+        self.assertEqual(protein.protein_codon_interval_1b(1), (10, 12))
+        self.assertEqual(protein.protein_codon_interval_1b(2), (13, 15))
+        self.assertEqual(protein.protein_codon_interval_1b(4), (19, 21))
+
+    def test_hmm_detected_reverse_protein_coordinates_ignore_hmm_profile_coordinates(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "AAAA"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "A" * 40})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 21, 10, 35, 38),
+        ])
+
+        protein = CuratedProtein("p1", "g1")
+
+        self.assertEqual(protein.protein_codon_interval_1b(1), (21, 19))
+        self.assertEqual(protein.protein_codon_interval_1b(2), (18, 16))
+        self.assertEqual(protein.protein_codon_interval_1b(4), (12, 10))
+
     def test_ncbi_forward_protein_coordinates_map_across_cds_intervals(self):
         self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
         self.fx.write_ncbi_proteins("g1", {"p1": "MMMM"})
