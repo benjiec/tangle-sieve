@@ -630,13 +630,22 @@ class CuratedProtein(object):
     def leader_sequence_candidates_at_anchor(self, anchor_aa_1b, anchor_label, window_start, window_end):
         original_candidates = self._original_sequence_candidate() if self.sequence_source == SEQUENCE_SOURCE_NCBI else []
         try:
-            codon_start, _codon_end = self.protein_codon_interval_1b(anchor_aa_1b)
             locus = self.genomic_locus()
-            tail = self._leader_tail_upstream_of_genomic_pos(locus, codon_start)
+            if anchor_aa_1b >= 1:
+                codon_start, _codon_end = self.protein_codon_interval_1b(anchor_aa_1b)
+                tail = self._leader_tail_upstream_of_genomic_pos(locus, codon_start)
+                suffix = self.sequence()[anchor_aa_1b - 1:]
+            else:
+                protein_start_1b = self._protein_start_genomic_1b(locus)
+                upstream_tail = self._leader_tail_upstream_of_genomic_pos(locus, protein_start_1b)
+                anchor_index = len(upstream_tail) + anchor_aa_1b - 1
+                if anchor_index < 0:
+                    return original_candidates or self._original_sequence_candidate()
+                tail = upstream_tail[:anchor_index]
+                suffix = upstream_tail[anchor_index:] + self.sequence()
         except Exception:
             return original_candidates or self._original_sequence_candidate()
 
-        suffix = self.sequence()[anchor_aa_1b - 1:]
         combined = tail + suffix
         low = min(window_start, window_end)
         high = max(window_start, window_end)

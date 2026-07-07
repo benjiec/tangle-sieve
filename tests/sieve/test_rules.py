@@ -604,6 +604,32 @@ class TestRules(unittest.TestCase):
         self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"], RULE_TRUE)
         self.assertEqual(rows[0]["Leader.call"], "start=u3_PF00081:mTP")
 
+    def test_leader_upstream_of_pfam_for_hmm_detected_handles_domain_anchor_before_protein_start(self):
+        self.fx.write_manifest([
+            self.fx.manifest_row("p1", "g1", source=SEQUENCE_SOURCE_HMM_DETECTED),
+        ])
+        self.fx.write_detected_proteins("g1", {"p1": "AAA"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "ATGAAAGCTGCTGCT"})
+        self.fx.write_detected_rows("g1", [
+            self.fx.detected_protein_row("p1", "g1", "ctg1", 7, 15, 35, 37),
+        ])
+        row = self.fx.detected_row("p1", "g1", "PF00081.28", "Pfam")
+        row.update(query_start=1, query_end=20, target_start=2, target_end=21)
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [row])
+
+        with patch(
+            "sieve.rules.subprocess.run",
+            side_effect=self.fake_targetp_with_expected_ids([
+                "p1_with_leader_u1_PF00081_M",
+            ]),
+        ):
+            with tempfile.TemporaryDirectory() as tmpd:
+                rule = Leader().upstreamOfPfam("PF00081").betweenAA(-5, 0).is_mTP()
+                rows = Rules(rule).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
+
+        self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"], RULE_TRUE)
+        self.assertEqual(rows[0]["Leader.call"], "start=u1_PF00081:mTP")
+
     def test_leader_upstream_of_pfam_uses_earliest_inferred_domain_start(self):
         self.fx.write_manifest([
             self.fx.manifest_row("p1", "g1"),
