@@ -135,7 +135,9 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomes", "g1")))
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_locus_with_leader.tsv")))
             self.assertEqual(read_fasta_as_dict(fasta_output), {
+                "p_true": "MT",
                 "p_true_with_leader_1_M": "MT",
+                "p_maybe": "MM",
                 "p_maybe_with_leader_1_M": "MM",
                 "p_maybe_with_leader_2_M": "M",
             })
@@ -160,7 +162,10 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.path.remove(tmpd)
                 sys.modules.pop("constant_rules", None)
 
-            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader_1_M": "MT"})
+            self.assertEqual(read_fasta_as_dict(fasta_output), {
+                "p_true": "MT",
+                "p_true_with_leader_1_M": "MT",
+            })
 
     def test_screened_fasta_uses_rule_filtered_sequence_candidates(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
@@ -169,6 +174,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
         def fake_run(cmd, check, capture_output, text):
             return_value = "\n".join([
                 "# TargetP-2.0",
+                "p_maybe\tnoTP\t0.8\t0.1\t0.1\t",
                 "p_maybe_with_leader_1_M\tnoTP\t0.8\t0.1\t0.1\t",
                 "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
                 "",
@@ -201,6 +207,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
         def fake_run(cmd, check, capture_output, text):
             return_value = "\n".join([
                 "# TargetP-2.0",
+                "p_maybe\tnoTP\t0.8\t0.1\t0.1\t",
                 "p_maybe_with_leader_1_M\tnoTP\t0.8\t0.1\t0.1\t",
                 "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
                 "",
@@ -233,6 +240,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
         def fake_run(cmd, check, capture_output, text):
             return_value = "\n".join([
                 "# TargetP-2.0",
+                "p_maybe\tnoTP\t0.8\t0.1\t0.1\t",
                 "p_maybe_with_leader_1_M\tSP\t0.1\t0.8\t0.1\t",
                 "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
                 "",
@@ -342,11 +350,17 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.path.remove(tmpd)
                 sys.modules.pop("constant_rules", None)
 
-            self.assertEqual(read_fasta_as_dict(fasta_output), {"p_true_with_leader_1_M": "MT"})
-            self.assertEqual(read_fasta_as_dict(unfiltered_fasta_output), {
+            self.assertEqual(read_fasta_as_dict(fasta_output), {
+                "p_true": "MT",
                 "p_true_with_leader_1_M": "MT",
+            })
+            self.assertEqual(read_fasta_as_dict(unfiltered_fasta_output), {
+                "p_true": "MT",
+                "p_true_with_leader_1_M": "MT",
+                "p_maybe": "MM",
                 "p_maybe_with_leader_1_M": "MM",
                 "p_maybe_with_leader_2_M": "M",
+                "p_false": "MF",
                 "p_false_with_leader_1_M": "MF",
             })
 

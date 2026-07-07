@@ -112,6 +112,16 @@ def _genomic_pos_from_locus_relative(locus, relative_pos_1b):
     return locus.start_1b - relative_pos_1b + 1
 
 
+def _cds_pos_to_locus_pos(cds_intervals_1b, cds_pos_1b):
+    remaining = cds_pos_1b
+    for start, end in cds_intervals_1b:
+        length = end - start + 1
+        if remaining <= length:
+            return start + remaining - 1
+        remaining -= length
+    raise ValueError(f"CDS coordinate {cds_pos_1b} is outside CDS intervals")
+
+
 def _parse_gff_attributes(raw):
     attrs = {}
     for part in raw.strip().split(";"):
@@ -156,6 +166,12 @@ def _leader_start_label(start_aa_1b):
     if start_aa_1b >= 1:
         return str(start_aa_1b)
     return f"u{1 - start_aa_1b}"
+
+
+def _leader_relative_label(relative_aa):
+    if relative_aa >= 1:
+        return str(relative_aa)
+    return f"u{abs(relative_aa)}"
 
 
 @dataclass
@@ -538,13 +554,17 @@ class CuratedProtein(object):
             return self._leader_tail_cache
 
         protein_start_1b = self._protein_start_genomic_1b(locus)
+        self._leader_tail_cache = self._leader_tail_upstream_of_genomic_pos(locus, protein_start_1b)
+        return self._leader_tail_cache
+
+    def _leader_tail_upstream_of_genomic_pos(self, locus, first_codon_base_1b):
         contig_seq = self._genomic_sequences()[locus.contig_accession]
         if locus.strand == 1:
-            upstream_end = protein_start_1b - 1
+            upstream_end = first_codon_base_1b - 1
             frame_start = upstream_end % 3
             upstream_dna = contig_seq[frame_start:upstream_end]
         else:
-            upstream_start = protein_start_1b + 1
+            upstream_start = first_codon_base_1b + 1
             right_len = len(contig_seq) - upstream_start + 1
             usable_len = right_len - (right_len % 3)
             upstream_dna = str(Seq(contig_seq[upstream_start - 1:upstream_start - 1 + usable_len]).reverse_complement())
@@ -552,8 +572,7 @@ class CuratedProtein(object):
         usable_len = (len(upstream_dna) // 3) * 3
         upstream_dna = upstream_dna[len(upstream_dna) - usable_len:]
         upstream_aa = str(Seq(upstream_dna).translate(table="Standard", to_stop=False)) if upstream_dna else ""
-        self._leader_tail_cache = upstream_aa.split("*")[-1]
-        return self._leader_tail_cache
+        return upstream_aa.split("*")[-1]
 
     def _protein_start_genomic_1b(self, locus):
         if self.sequence_source == SEQUENCE_SOURCE_NCBI:
@@ -563,6 +582,83 @@ class CuratedProtein(object):
             if start_position is not None:
                 return _genomic_pos_from_locus_relative(locus, start_position)
         return locus.start_1b
+
+    def protein_codon_interval_1b(self, protein_aa_1b):
+        if protein_aa_1b < 1:
+            raise ValueError(f"Protein coordinate must be 1 or greater: {protein_aa_1b}")
+        if self.sequence_source == SEQUENCE_SOURCE_HMM_DETECTED:
+            return self._hmm_detected_codon_interval_1b(protein_aa_1b)
+        if self.sequence_source == SEQUENCE_SOURCE_NCBI:
+            return self._ncbi_codon_interval_1b(protein_aa_1b)
+        raise ValueError(f"Unsupported sequence source: {self.sequence_source}")
+
+    def _hmm_detected_codon_interval_1b(self, protein_aa_1b):
+        for row in self._detected_rows_in_protein_order():
+            target_start = min(row["target_start"], row["target_end"])
+            target_end = max(row["target_start"], row["target_end"])
+            if not target_start <= protein_aa_1b <= target_end:
+                continue
+            offset = protein_aa_1b - target_start
+            if row["query_start"] <= row["query_end"]:
+                codon_start = row["query_start"] + offset * 3
+                return (codon_start, codon_start + 2)
+            codon_start = row["query_start"] - offset * 3
+            return (codon_start, codon_start - 2)
+        raise ValueError(f"Cannot map protein coordinate {protein_aa_1b} for {self.protein_accession}")
+
+    def _ncbi_codon_interval_1b(self, protein_aa_1b):
+        locus = self.genomic_locus()
+        cds_pos_1b = (protein_aa_1b - 1) * 3 + 1
+        locus_start = _cds_pos_to_locus_pos(locus.cds_intervals_1b, cds_pos_1b)
+        locus_end = _cds_pos_to_locus_pos(locus.cds_intervals_1b, cds_pos_1b + 2)
+        return (
+            _genomic_pos_from_locus_relative(locus, locus_start),
+            _genomic_pos_from_locus_relative(locus, locus_end),
+        )
+
+    def leader_sequence_candidates_at_anchor(self, anchor_aa_1b, anchor_label, window_start, window_end):
+        original_candidates = self._original_sequence_candidate() if self.sequence_source == SEQUENCE_SOURCE_NCBI else []
+        try:
+            codon_start, _codon_end = self.protein_codon_interval_1b(anchor_aa_1b)
+            locus = self.genomic_locus()
+            tail = self._leader_tail_upstream_of_genomic_pos(locus, codon_start)
+        except Exception:
+            return original_candidates or self._original_sequence_candidate()
+
+        suffix = self.sequence()[anchor_aa_1b - 1:]
+        combined = tail + suffix
+        low = min(window_start, window_end)
+        high = max(window_start, window_end)
+        candidates = []
+        for index, aa in enumerate(combined):
+            if aa != "M":
+                continue
+            if index < len(tail):
+                relative_start = index - len(tail)
+            else:
+                relative_start = index - len(tail) + 1
+            if relative_start == 0 or relative_start < low or relative_start > high:
+                continue
+            start_label = f"{_leader_relative_label(relative_start)}_{anchor_label}"
+            candidates.append(LeaderSequenceCandidate(
+                accession=f"{self.protein_accession}_with_leader_{start_label}_M",
+                start_label=start_label,
+                start_aa_1b=relative_start,
+                sequence=combined[index:],
+            ))
+        if candidates:
+            return original_candidates + candidates
+        return original_candidates or self._original_sequence_candidate()
+
+    def _original_sequence_candidate(self):
+        return [
+            LeaderSequenceCandidate(
+                accession=self.protein_accession,
+                start_label="",
+                start_aa_1b=1,
+                sequence=self.sequence(),
+            )
+        ]
 
     def leader_sequence_candidates(self):
         if self._leader_sequence_candidates_cache is not None:
@@ -583,14 +679,9 @@ class CuratedProtein(object):
             if aa == "M"
         ]
         if not candidates:
-            candidates = [
-                LeaderSequenceCandidate(
-                    accession=self.protein_accession,
-                    start_label="",
-                    start_aa_1b=1,
-                    sequence=self.sequence(),
-                )
-            ]
+            candidates = self._original_sequence_candidate()
+        elif self.sequence_source == SEQUENCE_SOURCE_NCBI:
+            candidates = self._original_sequence_candidate() + candidates
         self._leader_sequence_candidates_cache = candidates
         return self._leader_sequence_candidates_cache
 

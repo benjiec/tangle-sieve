@@ -567,22 +567,34 @@ class LeaderRule(Rule):
             for start, prediction in _parse_leader_calls(row.get("Leader.call", ""))
             if prediction == self.prediction
         }
+        if self.pfam_accession is not None:
+            candidates = self._scoped_candidates(protein)
         return [
             candidate for candidate in candidates
             if candidate.start_label in matching_starts
         ]
 
     def _scoped_candidates(self, protein):
-        candidates = [
-            candidate for candidate in protein.sequences_with_leader()
-            if candidate.start_label
-        ]
         anchor = 1
         if self.pfam_accession is not None:
             anchor = _earliest_pfam_anchor(protein, self.pfam_accession)
             if anchor is None:
                 return _original_sequence_candidate(protein)
+            return protein.leader_sequence_candidates_at_anchor(
+                anchor,
+                _target_prefix(self.pfam_accession),
+                self.window_start,
+                self.window_end,
+            )
 
+        candidates = [
+            candidate for candidate in protein.sequences_with_leader()
+            if candidate.start_label
+        ]
+        original_candidates = [
+            candidate for candidate in protein.sequences_with_leader()
+            if not candidate.start_label
+        ]
         filtered = [
             candidate for candidate in candidates
             if _coord_in_window(
@@ -592,7 +604,9 @@ class LeaderRule(Rule):
             )
         ]
         if filtered:
-            return filtered
+            return original_candidates + filtered
+        if original_candidates:
+            return original_candidates
         return _original_sequence_candidate(protein)
 
 

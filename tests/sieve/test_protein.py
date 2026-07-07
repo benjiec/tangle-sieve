@@ -74,6 +74,74 @@ class TestCuratedProtein(unittest.TestCase):
         self.assertEqual(locus.dss_positions_1b(), [6])
         self.assertEqual(locus.ass_positions_1b(), [10])
 
+    def test_hmm_detected_forward_protein_coordinates_map_to_contig_codons(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "AAAA"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "A" * 30})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 4, 9, 1, 2),
+            self.detected_row("p1", "g1", "ctg1", 16, 21, 3, 4),
+        ])
+
+        protein = CuratedProtein("p1", "g1")
+
+        self.assertEqual(protein.protein_codon_interval_1b(1), (4, 6))
+        self.assertEqual(protein.protein_codon_interval_1b(2), (7, 9))
+        self.assertEqual(protein.protein_codon_interval_1b(3), (16, 18))
+        self.assertEqual(protein.protein_codon_interval_1b(4), (19, 21))
+
+    def test_hmm_detected_reverse_protein_coordinates_map_to_contig_codons(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
+        self.fx.write_detected_proteins("g1", {"p1": "AAAA"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "A" * 30})
+        self.fx.write_detected_rows("g1", [
+            self.detected_row("p1", "g1", "ctg1", 21, 16, 1, 2),
+            self.detected_row("p1", "g1", "ctg1", 9, 4, 3, 4),
+        ])
+
+        protein = CuratedProtein("p1", "g1")
+
+        self.assertEqual(protein.protein_codon_interval_1b(1), (21, 19))
+        self.assertEqual(protein.protein_codon_interval_1b(2), (18, 16))
+        self.assertEqual(protein.protein_codon_interval_1b(3), (9, 7))
+        self.assertEqual(protein.protein_codon_interval_1b(4), (6, 4))
+
+    def test_ncbi_forward_protein_coordinates_map_across_cds_intervals(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MMMM"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "A" * 30})
+        self.fx.write_gff("g1", "\n".join([
+            "ctg1\tsrc\tmRNA\t4\t24\t.\t+\t.\tID=tx1",
+            "ctg1\tsrc\tCDS\t4\t9\t.\t+\t0\tID=cds1;Parent=tx1;protein_id=p1",
+            "ctg1\tsrc\tCDS\t16\t21\t.\t+\t0\tID=cds2;Parent=tx1;protein_id=p1",
+            "",
+        ]))
+
+        protein = CuratedProtein("p1", "g1")
+
+        self.assertEqual(protein.protein_codon_interval_1b(1), (4, 6))
+        self.assertEqual(protein.protein_codon_interval_1b(2), (7, 9))
+        self.assertEqual(protein.protein_codon_interval_1b(3), (16, 18))
+        self.assertEqual(protein.protein_codon_interval_1b(4), (19, 21))
+
+    def test_ncbi_reverse_protein_coordinates_map_across_cds_intervals(self):
+        self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_NCBI)])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MMMM"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "A" * 30})
+        self.fx.write_gff("g1", "\n".join([
+            "ctg1\tsrc\tmRNA\t4\t24\t.\t-\t.\tID=tx1",
+            "ctg1\tsrc\tCDS\t16\t21\t.\t-\t0\tID=cds1;Parent=tx1;protein_id=p1",
+            "ctg1\tsrc\tCDS\t4\t9\t.\t-\t0\tID=cds2;Parent=tx1;protein_id=p1",
+            "",
+        ]))
+
+        protein = CuratedProtein("p1", "g1")
+
+        self.assertEqual(protein.protein_codon_interval_1b(1), (21, 19))
+        self.assertEqual(protein.protein_codon_interval_1b(2), (18, 16))
+        self.assertEqual(protein.protein_codon_interval_1b(3), (9, 7))
+        self.assertEqual(protein.protein_codon_interval_1b(4), (6, 4))
+
     def test_hmm_detected_leader_extends_to_upstream_methionine(self):
         self.fx.write_manifest([self.manifest_row("p1", "g1", SEQUENCE_SOURCE_HMM_DETECTED)])
         self.fx.write_detected_proteins("g1", {"p1": "PG"})
@@ -141,6 +209,7 @@ class TestCuratedProtein(unittest.TestCase):
                 for candidate in candidates
             ],
             [
+                ("p1", "", 1, "MMMGAAAAAMM"),
                 ("p1_with_leader_1_M", "1", 1, "MMMGAAAAAMM"),
                 ("p1_with_leader_2_M", "2", 2, "MMGAAAAAMM"),
                 ("p1_with_leader_3_M", "3", 3, "MGAAAAAMM"),
@@ -167,6 +236,7 @@ class TestCuratedProtein(unittest.TestCase):
                 for candidate in candidates
             ],
             [
+                ("p1", "", 1, "MP"),
                 ("p1_with_leader_u3_M", "u3", -2, "MMKMP"),
                 ("p1_with_leader_u2_M", "u2", -1, "MKMP"),
                 ("p1_with_leader_1_M", "1", 1, "MP"),
@@ -192,6 +262,7 @@ class TestCuratedProtein(unittest.TestCase):
                 for candidate in candidates
             ],
             [
+                ("p1", "", 1, "MP"),
                 ("p1_with_leader_u3_M", "u3", -2, "MMKMP"),
                 ("p1_with_leader_u2_M", "u2", -1, "MKMP"),
                 ("p1_with_leader_1_M", "1", 1, "MP"),
@@ -216,6 +287,7 @@ class TestCuratedProtein(unittest.TestCase):
                 for candidate in candidates
             ],
             [
+                ("p1", "", 1, "P"),
                 ("p1_with_leader_u2_M", "u2", -1, "MKP"),
             ],
         )
