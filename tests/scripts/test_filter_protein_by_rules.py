@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from tangle.detected import DetectedTable
 from tangle.manifest import ManifestTable
 from tangle.sequence import read_fasta_as_dict
 
@@ -110,6 +111,15 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 "",
             ]))
 
+    def write_pfam_anchor_leader_rule_module(self, tmpd):
+        module_path = os.path.join(tmpd, "pfam_anchor_leader_rules.py")
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write("\n".join([
+                "from sieve.rules import Leader, Rules",
+                "mnsod_rule = Rules(Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP())",
+                "",
+            ]))
+
     def test_writes_rule_tsv_and_fasta(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
         self.write_manifest_and_sequences()
@@ -134,12 +144,15 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(artifacts, "rule-results.tsv")))
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomes", "g1")))
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_locus_with_leader.tsv")))
+            with open(os.path.join(artifacts, "rule-results.tsv"), "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(
+                [(row["protein accession"], row["sequence accession"]) for row in rows],
+                [("p_true", "p_true"), ("p_maybe", "p_maybe"), ("p_false", "p_false")],
+            )
             self.assertEqual(read_fasta_as_dict(fasta_output), {
                 "p_true": "MT",
-                "p_true_with_leader_1_M": "MT",
                 "p_maybe": "MM",
-                "p_maybe_with_leader_1_M": "MM",
-                "p_maybe_with_leader_2_M": "M",
             })
 
     def test_can_exclude_maybe_from_fasta(self):
@@ -164,7 +177,6 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
 
             self.assertEqual(read_fasta_as_dict(fasta_output), {
                 "p_true": "MT",
-                "p_true_with_leader_1_M": "MT",
             })
 
     def test_screened_fasta_uses_rule_filtered_sequence_candidates(self):
@@ -240,8 +252,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
         def fake_run(cmd, check, capture_output, text):
             return_value = "\n".join([
                 "# TargetP-2.0",
-                "p_maybe\tnoTP\t0.8\t0.1\t0.1\t",
-                "p_maybe_with_leader_1_M\tSP\t0.1\t0.8\t0.1\t",
+                "p_maybe\tSP\t0.1\t0.8\t0.1\t",
                 "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
                 "",
             ])
@@ -263,7 +274,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.modules.pop("leader_or_rules", None)
 
             self.assertEqual(read_fasta_as_dict(fasta_output), {
-                "p_maybe_with_leader_1_M": "MM",
+                "p_maybe": "MM",
                 "p_maybe_with_leader_2_M": "M",
             })
 
@@ -324,8 +335,8 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             with open(os.path.join(artifacts, "rule-results.tsv"), "r", encoding="utf-8", newline="") as f:
                 rows = list(csv.DictReader(f, delimiter="\t"))
             self.assertEqual(
-                [(row["protein accession"], row["contig accession"], row["Example.call"]) for row in rows],
-                [("p_true", "", "p_true_call"), ("p_false", "", "p_false_call")],
+                [(row["protein accession"], row["sequence accession"], row["contig accession"], row["Example.call"]) for row in rows],
+                [("p_true", "p_true", "", "p_true_call"), ("p_false", "p_false", "", "p_false_call")],
             )
 
     def test_writes_unfiltered_fasta_with_leader_for_all_filtered_inputs(self):
@@ -352,17 +363,81 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
 
             self.assertEqual(read_fasta_as_dict(fasta_output), {
                 "p_true": "MT",
-                "p_true_with_leader_1_M": "MT",
             })
             self.assertEqual(read_fasta_as_dict(unfiltered_fasta_output), {
                 "p_true": "MT",
-                "p_true_with_leader_1_M": "MT",
                 "p_maybe": "MM",
-                "p_maybe_with_leader_1_M": "MM",
-                "p_maybe_with_leader_2_M": "M",
                 "p_false": "MF",
-                "p_false_with_leader_1_M": "MF",
             })
+
+    def test_unfiltered_fasta_uses_rule_scoped_leader_accessions(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        self.fx.write_manifest([
+            dict(
+                sequence_accession="p1",
+                sequence_database="g1",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_HMM_DETECTED,
+            ),
+        ])
+        self.fx.write_detected_proteins("g1", {"p1": "AAAA"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "GCTGCTATGAAAGCTGCT"})
+        self.fx.write_detected_rows("g1", [
+            self.detected_protein_row("p1", "g1", "ctg1", 1, 6, 37, 38),
+            self.detected_protein_row("p1", "g1", "ctg1", 13, 18, 39, 40),
+        ])
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [
+            dict(
+                detection_type="sequence",
+                detection_method="hmm",
+                batch="b1",
+                query_accession="p1",
+                query_database="g1",
+                query_type="protein",
+                target_accession="PF00081.28",
+                target_database="Pfam",
+                target_type="protein",
+                query_start=4,
+                query_end=12,
+                target_start=1,
+                target_end=9,
+                evalue=0.001,
+                bitscore=10,
+            ),
+        ])
+
+        def fake_run(cmd, check, capture_output, text):
+            fasta_path = cmd[cmd.index("-v") + 1].split(":", 1)[0] + "/query.faa"
+            ids = list(read_fasta_as_dict(fasta_path).keys())
+            self.assertEqual(ids, ["p1_with_leader_u3_PF00081_anchor_M"])
+            stdout = "# TargetP-2.0\np1_with_leader_u3_PF00081_anchor_M\tmTP\t0.1\t0.1\t0.8\t\n"
+            return type("Completed", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_pfam_anchor_leader_rule_module(tmpd)
+            fasta_output = os.path.join(tmpd, "res.faa")
+            unfiltered_fasta_output = os.path.join(tmpd, "unfiltered.faa")
+            stdin = io.StringIO("p1\tg1\n")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin), patch("sieve.rules.subprocess.run", side_effect=fake_run):
+                    script.main([
+                        "-r", "pfam_anchor_leader_rules.mnsod_rule",
+                        "--fasta-output", fasta_output,
+                        "--unfiltered-fasta-output", unfiltered_fasta_output,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("pfam_anchor_leader_rules", None)
+
+            self.assertEqual(
+                set(read_fasta_as_dict(fasta_output).keys()),
+                {"p1_with_leader_u3_PF00081_anchor_M"},
+            )
+            self.assertEqual(
+                set(read_fasta_as_dict(unfiltered_fasta_output).keys()),
+                {"p1_with_leader_u3_PF00081_anchor_M"},
+            )
 
     def test_writes_genomic_locus_with_leader_artifact(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))

@@ -638,7 +638,7 @@ class CuratedProtein(object):
         high = max(window_start, window_end)
         candidates = []
         seen_start_labels = set()
-        for context, anchor_index in contexts:
+        for context, anchor_index, context_label_suffix in contexts:
             if anchor_index < 0 or anchor_index >= len(context):
                 continue
             for index, aa in enumerate(context):
@@ -650,7 +650,7 @@ class CuratedProtein(object):
                     relative_start = index - anchor_index + 1
                 if relative_start < low or relative_start > high:
                     continue
-                start_label = f"{_leader_relative_label(relative_start)}_{anchor_label}"
+                start_label = f"{_leader_relative_label(relative_start)}_{anchor_label}{context_label_suffix}"
                 if start_label in seen_start_labels:
                     continue
                 seen_start_labels.add(start_label)
@@ -669,12 +669,12 @@ class CuratedProtein(object):
         protein_start_1b = self._protein_start_genomic_1b(locus)
         blind_tail = self._leader_tail_upstream_of_genomic_pos(locus, protein_start_1b)
         contexts = [
-            (blind_tail + self.sequence(), len(blind_tail) + anchor_aa_1b - 1),
+            (blind_tail + self.sequence(), len(blind_tail) + anchor_aa_1b - 1, ""),
         ]
         if self.sequence_source == SEQUENCE_SOURCE_HMM_DETECTED and anchor_aa_1b >= 1:
             codon_start, _codon_end = self.protein_codon_interval_1b(anchor_aa_1b)
             raw_tail = self._leader_tail_upstream_of_genomic_pos(locus, codon_start)
-            contexts.append((raw_tail + self.sequence()[anchor_aa_1b - 1:], len(raw_tail)))
+            contexts.append((raw_tail + self.sequence()[anchor_aa_1b - 1:], len(raw_tail), "_anchor"))
         return contexts
 
     def _original_sequence_candidate(self):

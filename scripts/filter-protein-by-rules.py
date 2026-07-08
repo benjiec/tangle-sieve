@@ -200,17 +200,6 @@ def write_locus_artifact(protein_keys, output_tsv):
                 CuratedProtein.clear_cache()
 
 
-def write_protein_key_fasta(protein_keys, fasta_output, sequence_getter):
-    with open_file_to_write(fasta_output, "wt") as f:
-        for genome_accession, genome_keys in group_protein_keys_by_genome(protein_keys):
-            try:
-                for protein_accession, _genome_accession in genome_keys:
-                    for candidate in sequence_getter(CuratedProtein(protein_accession, genome_accession)):
-                        f.write(f">{candidate.accession}\n{candidate.sequence}\n")
-            finally:
-                CuratedProtein.clear_cache()
-
-
 def write_rule_fasta(rows, fasta_output, rules, include_maybe=True):
     accepted = {RULE_TRUE}
     if include_maybe:
@@ -222,6 +211,16 @@ def write_rule_fasta(rows, fasta_output, rules, include_maybe=True):
                 continue
             try:
                 for candidate in rules.sequence_candidates_for_row(row):
+                    f.write(f">{candidate.accession}\n{candidate.sequence}\n")
+            finally:
+                CuratedProtein.clear_cache()
+
+
+def write_unfiltered_rule_fasta(rows, fasta_output, rules):
+    with open_file_to_write(fasta_output, "wt") as f:
+        for row in rows:
+            try:
+                for candidate in rules.scoped_sequence_candidates_for_row(row):
                     f.write(f">{candidate.accession}\n{candidate.sequence}\n")
             finally:
                 CuratedProtein.clear_cache()
@@ -267,10 +266,10 @@ def main(argv=None):
                 include_maybe=not args.fasta_excludes_maybe,
             )
         if args.unfiltered_fasta_output is not None:
-            write_protein_key_fasta(
-                protein_keys,
+            write_unfiltered_rule_fasta(
+                rows,
                 args.unfiltered_fasta_output,
-                lambda protein: protein.sequences_with_leader(),
+                rules,
             )
     return 0
 

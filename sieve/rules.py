@@ -150,8 +150,14 @@ class Rule(object):
     def annotations_many(self, contexts, rule_results):
         return {}
 
+    def sequence_result(self, row, candidate):
+        return row[self.label]
+
     def atomic_rules(self):
         return [self]
+
+    def uses_leader_candidates(self):
+        return False
 
     def resolve(self, context, atomic_results):
         return atomic_results[self.label][context.key]
@@ -160,6 +166,9 @@ class Rule(object):
         return row[self.label]
 
     def filter_sequence_candidates(self, protein, candidates, row):
+        return candidates
+
+    def scope_sequence_candidates(self, protein, candidates, row):
         return candidates
 
 
@@ -184,6 +193,9 @@ class CompositeRule(Rule):
                     seen.add(atomic.label)
         return rules
 
+    def uses_leader_candidates(self):
+        return any(rule.uses_leader_candidates() for rule in self.rules)
+
 
 class AndRule(CompositeRule):
 
@@ -203,6 +215,11 @@ class AndRule(CompositeRule):
     def filter_sequence_candidates(self, protein, candidates, row):
         for rule in self.rules:
             candidates = rule.filter_sequence_candidates(protein, candidates, row)
+        return candidates
+
+    def scope_sequence_candidates(self, protein, candidates, row):
+        for rule in self.rules:
+            candidates = rule.scope_sequence_candidates(protein, candidates, row)
         return candidates
 
 
@@ -228,6 +245,16 @@ class OrRule(CompositeRule):
                 for candidate in rule.filter_sequence_candidates(protein, candidates, row):
                     filtered[candidate.accession] = candidate
         return list(filtered.values())
+
+    def scope_sequence_candidates(self, protein, candidates, row):
+        scoped = {}
+        rules = [rule for rule in self.rules if rule.uses_leader_candidates()]
+        if not rules:
+            rules = self.rules
+        for rule in rules:
+            for candidate in rule.scope_sequence_candidates(protein, candidates, row):
+                scoped[candidate.accession] = candidate
+        return list(scoped.values())
 
 
 class RuleContext(object):
@@ -261,7 +288,7 @@ class Rules(object):
                     annotation_columns.append(column)
                     seen.add(column)
         return (
-            ["protein accession", "genome accession", "contig accession", "pass all"]
+            ["protein accession", "sequence accession", "genome accession", "contig accession", "pass all"]
             + [rule.label for rule in atomic_rules]
             + annotation_columns
         )
@@ -274,8 +301,31 @@ class Rules(object):
 
     def sequence_candidates_for_row(self, row):
         protein = CuratedProtein(row["protein accession"], row["genome accession"])
-        candidates = protein.sequences_with_leader()
+        candidates = self._row_sequence_candidates(protein, row)
         return self.rule.filter_sequence_candidates(protein, candidates, row)
+
+    def scoped_sequence_candidates_for_row(self, row):
+        protein = CuratedProtein(row["protein accession"], row["genome accession"])
+        return self._row_sequence_candidates(protein, row)
+
+    def uses_leader_candidates(self):
+        return self.rule.uses_leader_candidates()
+
+    def _scoped_sequence_candidates(self, protein, row):
+        if not self.uses_leader_candidates():
+            return _original_sequence_candidate(protein)
+        candidates = protein.sequences_with_leader()
+        return _dedupe_sequence_candidates(self.rule.scope_sequence_candidates(protein, candidates, row))
+
+    def _row_sequence_candidates(self, protein, row):
+        candidates = self._scoped_sequence_candidates(protein, row)
+        sequence_accession = row.get("sequence accession")
+        if not sequence_accession:
+            return candidates
+        return [
+            candidate for candidate in candidates
+            if candidate.accession == sequence_accession
+        ]
 
     def check(self, protein_keys, output_tsv, artifacts_dir=None, trace=True):
         contexts = [
@@ -310,12 +360,18 @@ class Rules(object):
                 "protein accession": context.protein.protein_accession,
                 "genome accession": context.protein.genome_accession,
                 "contig accession": self._contig_accession(context),
-                "pass all": _normalize_pass_all(self.rule.resolve(context, atomic_results)),
             }
             for rule in atomic_rules:
                 row[rule.label] = atomic_results[rule.label][context.key]
             row.update(atomic_annotations.get(context.key, {}))
-            rows.append(row)
+            for candidate in self._scoped_sequence_candidates(context.protein, row):
+                candidate_row = row.copy()
+                candidate_row["sequence accession"] = candidate.accession
+                _apply_sequence_annotations(candidate_row, candidate)
+                for rule in atomic_rules:
+                    candidate_row[rule.label] = rule.sequence_result(candidate_row, candidate)
+                candidate_row["pass all"] = _normalize_pass_all(self.rule.resolve_row(candidate_row))
+                rows.append(candidate_row)
 
         self.write_rows(output_tsv, rows)
         return rows
@@ -485,6 +541,16 @@ class LeaderRule(Rule):
     def annotation_columns(self):
         return ["Leader.call"]
 
+    def uses_leader_candidates(self):
+        return True
+
+    def sequence_result(self, row, candidate):
+        if row[self.label] == RULE_ERROR:
+            return RULE_ERROR
+        if _leader_call_prediction(row.get("Leader.call", "")) == self.prediction:
+            return RULE_TRUE
+        return RULE_FALSE
+
     def evaluate_many(self, contexts, artifacts_dir=None):
         sequence_contexts = {}
         sequence_candidates = {}
@@ -564,6 +630,11 @@ class LeaderRule(Rule):
     def filter_sequence_candidates(self, protein, candidates, row):
         if not _rule_passes(row[self.label]):
             return []
+        if "sequence accession" in row:
+            prediction_text = row.get("Leader.call", "")
+            if _leader_call_prediction(prediction_text) != self.prediction:
+                return []
+            return candidates
         matching_starts = {
             start
             for start, prediction in _parse_leader_calls(row.get("Leader.call", ""))
@@ -576,18 +647,21 @@ class LeaderRule(Rule):
             if candidate.start_label in matching_starts
         ]
 
+    def scope_sequence_candidates(self, protein, candidates, row):
+        return self._scoped_candidates(protein)
+
     def _scoped_candidates(self, protein):
         anchor = 1
         if self.pfam_accession is not None:
             anchor = _earliest_pfam_anchor(protein, self.pfam_accession)
             if anchor is None:
                 return _original_sequence_candidate(protein)
-            return protein.leader_sequence_candidates_at_anchor(
+            return _dedupe_sequence_candidates(protein.leader_sequence_candidates_at_anchor(
                 anchor,
                 _target_prefix(self.pfam_accession),
                 self.window_start,
                 self.window_end,
-            )
+            ))
 
         candidates = [
             candidate for candidate in protein.sequences_with_leader()
@@ -606,7 +680,7 @@ class LeaderRule(Rule):
             )
         ]
         if filtered:
-            return original_candidates + filtered
+            return _dedupe_sequence_candidates(original_candidates + filtered)
         if original_candidates:
             return original_candidates
         return _original_sequence_candidate(protein)
@@ -626,15 +700,18 @@ def _format_leader_calls(calls):
 
 
 def _format_targetp_call(call):
-    probability = call.probability(call.prediction)
-    if probability is None or probability >= TARGETP_PROBABILITY_THRESHOLD:
+    if not call.probabilities:
         return call.prediction
-    parts = [
-        f"{prediction}/{_probability_percent(call.probability(prediction))}"
+    ordered_predictions = [call.prediction] + [
+        prediction
         for prediction in TARGETP_PROBABILITY_ORDER
-        if call.probability(prediction) is not None
+        if prediction != call.prediction
     ]
-    return ",".join(parts)
+    return ",".join([
+        f"{prediction}/{_probability_percent(call.probability(prediction))}"
+        for prediction in ordered_predictions
+        if call.probability(prediction) is not None
+    ])
 
 
 def _probability_percent(probability):
@@ -643,6 +720,18 @@ def _probability_percent(probability):
 
 def _leader_call_prediction(prediction_text):
     return prediction_text.split("/", 1)[0].split(",", 1)[0]
+
+
+def _apply_sequence_annotations(row, candidate):
+    if "Leader.call" in row:
+        row["Leader.call"] = _leader_call_for_start(row["Leader.call"], candidate.start_label)
+
+
+def _leader_call_for_start(value, start_label):
+    for start, call in _parse_leader_call_texts(value):
+        if start == start_label:
+            return call
+    return ""
 
 
 def _targetp_call(prediction, no_tp=None, sp=None, mtp=None):
@@ -693,6 +782,18 @@ def _original_sequence_candidate(protein):
     ]
 
 
+def _dedupe_sequence_candidates(candidates):
+    by_sequence = {}
+    for candidate in candidates:
+        current = by_sequence.get(candidate.sequence)
+        if current is None or len(candidate.accession) < len(current.accession):
+            by_sequence[candidate.sequence] = candidate
+    return [
+        candidate for candidate in candidates
+        if by_sequence[candidate.sequence].accession == candidate.accession
+    ]
+
+
 def _earliest_pfam_anchor(protein, accession):
     anchors = []
     for row in protein.detected_pfam():
@@ -711,6 +812,13 @@ def _earliest_pfam_anchor(protein, accession):
 
 def _parse_leader_calls(value):
     calls = []
+    for start, prediction in _parse_leader_call_texts(value):
+        calls.append((start, _leader_call_prediction(prediction)))
+    return calls
+
+
+def _parse_leader_call_texts(value):
+    calls = []
     for raw_call in value.split(";"):
         raw_call = raw_call.strip()
         if not raw_call:
@@ -718,7 +826,7 @@ def _parse_leader_calls(value):
         if not raw_call.startswith("start=") or ":" not in raw_call:
             continue
         start, prediction = raw_call[len("start="):].split(":", 1)
-        calls.append((start, _leader_call_prediction(prediction)))
+        calls.append((start, prediction))
     return calls
 
 
