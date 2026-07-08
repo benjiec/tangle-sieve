@@ -11,7 +11,6 @@ from collections import defaultdict
 from tangle import open_file_to_write
 from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_HMM_DETECTED
 from sieve.rule_loader import load_rules
-from sieve.rules import RULE_MAYBE, RULE_TRUE
 
 
 def read_protein_keys(lines):
@@ -200,22 +199,6 @@ def write_locus_artifact(protein_keys, output_tsv):
                 CuratedProtein.clear_cache()
 
 
-def write_rule_fasta(rows, fasta_output, rules, include_maybe=True):
-    accepted = {RULE_TRUE}
-    if include_maybe:
-        accepted.add(RULE_MAYBE)
-
-    with open_file_to_write(fasta_output, "wt") as f:
-        for row in rows:
-            if row["pass all"] not in accepted:
-                continue
-            try:
-                for candidate in rules.sequence_candidates_for_row(row):
-                    f.write(f">{candidate.accession}\n{candidate.sequence}\n")
-            finally:
-                CuratedProtein.clear_cache()
-
-
 def write_unfiltered_rule_fasta(rows, fasta_output, rules):
     with open_file_to_write(fasta_output, "wt") as f:
         for row in rows:
@@ -229,48 +212,29 @@ def write_unfiltered_rule_fasta(rows, fasta_output, rules):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("-r", "--rule", required=True)
-    parser.add_argument("--artifacts-dir")
-    parser.add_argument("--fasta-output")
-    parser.add_argument("--unfiltered-fasta-output")
-    parser.add_argument("--fasta-excludes-maybe", action="store_true", default=False)
+    parser.add_argument("--artifacts-dir", required=True)
     args = parser.parse_args(argv)
 
     rules = load_rules(args.rule)
     protein_keys = filter_manifest_protein_keys(read_protein_keys(sys.stdin))
 
-    with tempfile.TemporaryDirectory() as tmpd:
-        if args.artifacts_dir is not None:
-            os.makedirs(args.artifacts_dir, exist_ok=True)
-            output_tsv = os.path.join(args.artifacts_dir, "rule-results.tsv")
-        else:
-            output_tsv = os.path.join(tmpd, "rule-results.tsv")
-
-        rows = check_rules_by_genome(
-            rules,
-            protein_keys,
-            output_tsv,
-            artifacts_dir=args.artifacts_dir,
-        )
-
-        if args.artifacts_dir is not None:
-            write_locus_artifact(
-                protein_keys,
-                os.path.join(args.artifacts_dir, "genomic_locus_with_leader.tsv"),
-            )
-
-        if args.fasta_output is not None:
-            write_rule_fasta(
-                rows,
-                args.fasta_output,
-                rules,
-                include_maybe=not args.fasta_excludes_maybe,
-            )
-        if args.unfiltered_fasta_output is not None:
-            write_unfiltered_rule_fasta(
-                rows,
-                args.unfiltered_fasta_output,
-                rules,
-            )
+    os.makedirs(args.artifacts_dir, exist_ok=True)
+    output_tsv = os.path.join(args.artifacts_dir, "rule-results.tsv")
+    rows = check_rules_by_genome(
+        rules,
+        protein_keys,
+        output_tsv,
+        artifacts_dir=args.artifacts_dir,
+    )
+    write_locus_artifact(
+        protein_keys,
+        os.path.join(args.artifacts_dir, "genomic_locus_with_leader.tsv"),
+    )
+    write_unfiltered_rule_fasta(
+        rows,
+        os.path.join(args.artifacts_dir, "sequences.faa"),
+        rules,
+    )
     return 0
 
 

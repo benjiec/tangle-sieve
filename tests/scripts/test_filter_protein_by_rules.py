@@ -120,14 +120,13 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 "",
             ]))
 
-    def test_writes_rule_tsv_and_fasta(self):
+    def test_writes_rule_tsv_and_sequences_fasta(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
         self.write_manifest_and_sequences()
 
         with tempfile.TemporaryDirectory() as tmpd:
             self.write_rule_module(tmpd)
             artifacts = os.path.join(tmpd, "artifacts")
-            fasta_output = os.path.join(tmpd, "res.faa")
             stdin = io.StringIO("p_true\tg1\np_maybe\tg1\np_false\tg1\np_true\tg1\n")
             sys.path.insert(0, tmpd)
             try:
@@ -135,7 +134,6 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                     script.main([
                         "-r", "constant_rules.mnsod_rule",
                         "--artifacts-dir", artifacts,
-                        "--fasta-output", fasta_output,
                     ])
             finally:
                 sys.path.remove(tmpd)
@@ -150,132 +148,10 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 [(row["protein accession"], row["sequence accession"]) for row in rows],
                 [("p_true", "p_true"), ("p_maybe", "p_maybe"), ("p_false", "p_false")],
             )
-            self.assertEqual(read_fasta_as_dict(fasta_output), {
+            self.assertEqual(read_fasta_as_dict(os.path.join(artifacts, "sequences.faa")), {
                 "p_true": "MT",
                 "p_maybe": "MM",
-            })
-
-    def test_can_exclude_maybe_from_fasta(self):
-        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
-        self.write_manifest_and_sequences()
-
-        with tempfile.TemporaryDirectory() as tmpd:
-            self.write_rule_module(tmpd)
-            fasta_output = os.path.join(tmpd, "res.faa")
-            stdin = io.StringIO("p_true\tg1\np_maybe\tg1\n")
-            sys.path.insert(0, tmpd)
-            try:
-                with patch("sys.stdin", stdin):
-                    script.main([
-                        "-r", "constant_rules.mnsod_rule",
-                        "--fasta-output", fasta_output,
-                        "--fasta-excludes-maybe",
-                    ])
-            finally:
-                sys.path.remove(tmpd)
-                sys.modules.pop("constant_rules", None)
-
-            self.assertEqual(read_fasta_as_dict(fasta_output), {
-                "p_true": "MT",
-            })
-
-    def test_screened_fasta_uses_rule_filtered_sequence_candidates(self):
-        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
-        self.write_manifest_and_sequences()
-
-        def fake_run(cmd, check, capture_output, text):
-            return_value = "\n".join([
-                "# TargetP-2.0",
-                "p_maybe\tnoTP\t0.8\t0.1\t0.1\t",
-                "p_maybe_with_leader_1_M\tnoTP\t0.8\t0.1\t0.1\t",
-                "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
-                "",
-            ])
-            return type("Completed", (), {"returncode": 0, "stdout": return_value, "stderr": ""})()
-
-        with tempfile.TemporaryDirectory() as tmpd:
-            self.write_leader_rule_module(tmpd)
-            fasta_output = os.path.join(tmpd, "res.faa")
-            stdin = io.StringIO("p_maybe\tg1\n")
-            sys.path.insert(0, tmpd)
-            try:
-                with patch("sys.stdin", stdin), patch("sieve.rules.subprocess.run", side_effect=fake_run):
-                    script.main([
-                        "-r", "leader_rules.mnsod_rule",
-                        "--fasta-output", fasta_output,
-                    ])
-            finally:
-                sys.path.remove(tmpd)
-                sys.modules.pop("leader_rules", None)
-
-            self.assertEqual(read_fasta_as_dict(fasta_output), {
-                "p_maybe_with_leader_2_M": "M",
-            })
-
-    def test_screened_fasta_applies_and_sequence_candidate_filters(self):
-        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
-        self.write_manifest_and_sequences()
-
-        def fake_run(cmd, check, capture_output, text):
-            return_value = "\n".join([
-                "# TargetP-2.0",
-                "p_maybe\tnoTP\t0.8\t0.1\t0.1\t",
-                "p_maybe_with_leader_1_M\tnoTP\t0.8\t0.1\t0.1\t",
-                "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
-                "",
-            ])
-            return type("Completed", (), {"returncode": 0, "stdout": return_value, "stderr": ""})()
-
-        with tempfile.TemporaryDirectory() as tmpd:
-            self.write_leader_and_rule_module(tmpd)
-            fasta_output = os.path.join(tmpd, "res.faa")
-            stdin = io.StringIO("p_maybe\tg1\n")
-            sys.path.insert(0, tmpd)
-            try:
-                with patch("sys.stdin", stdin), patch("sieve.rules.subprocess.run", side_effect=fake_run):
-                    script.main([
-                        "-r", "leader_and_rules.mnsod_rule",
-                        "--fasta-output", fasta_output,
-                    ])
-            finally:
-                sys.path.remove(tmpd)
-                sys.modules.pop("leader_and_rules", None)
-
-            self.assertEqual(read_fasta_as_dict(fasta_output), {
-                "p_maybe_with_leader_2_M": "M",
-            })
-
-    def test_screened_fasta_unions_or_sequence_candidate_filters(self):
-        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
-        self.write_manifest_and_sequences()
-
-        def fake_run(cmd, check, capture_output, text):
-            return_value = "\n".join([
-                "# TargetP-2.0",
-                "p_maybe\tSP\t0.1\t0.8\t0.1\t",
-                "p_maybe_with_leader_2_M\tmTP\t0.1\t0.1\t0.8\t",
-                "",
-            ])
-            return type("Completed", (), {"returncode": 0, "stdout": return_value, "stderr": ""})()
-
-        with tempfile.TemporaryDirectory() as tmpd:
-            self.write_leader_or_rule_module(tmpd)
-            fasta_output = os.path.join(tmpd, "res.faa")
-            stdin = io.StringIO("p_maybe\tg1\n")
-            sys.path.insert(0, tmpd)
-            try:
-                with patch("sys.stdin", stdin), patch("sieve.rules.subprocess.run", side_effect=fake_run):
-                    script.main([
-                        "-r", "leader_or_rules.mnsod_rule",
-                        "--fasta-output", fasta_output,
-                    ])
-            finally:
-                sys.path.remove(tmpd)
-                sys.modules.pop("leader_or_rules", None)
-
-            self.assertEqual(read_fasta_as_dict(fasta_output), {
-                "p_maybe": "MM",
-                "p_maybe_with_leader_2_M": "M",
+                "p_false": "MF",
             })
 
     def test_ignores_input_proteins_missing_from_manifest(self):
@@ -339,32 +215,26 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 [("p_true", "p_true", "", "p_true_call"), ("p_false", "p_false", "", "p_false_call")],
             )
 
-    def test_writes_unfiltered_fasta_with_leader_for_all_filtered_inputs(self):
+    def test_sequences_fasta_contains_all_filtered_inputs(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
         self.write_manifest_and_sequences()
 
         with tempfile.TemporaryDirectory() as tmpd:
             self.write_rule_module(tmpd)
-            fasta_output = os.path.join(tmpd, "res.faa")
-            unfiltered_fasta_output = os.path.join(tmpd, "unfiltered.faa")
+            artifacts = os.path.join(tmpd, "artifacts")
             stdin = io.StringIO("p_true\tg1\np_maybe\tg1\np_false\tg1\n")
             sys.path.insert(0, tmpd)
             try:
                 with patch("sys.stdin", stdin):
                     script.main([
                         "-r", "constant_rules.mnsod_rule",
-                        "--fasta-output", fasta_output,
-                        "--unfiltered-fasta-output", unfiltered_fasta_output,
-                        "--fasta-excludes-maybe",
+                        "--artifacts-dir", artifacts,
                     ])
             finally:
                 sys.path.remove(tmpd)
                 sys.modules.pop("constant_rules", None)
 
-            self.assertEqual(read_fasta_as_dict(fasta_output), {
-                "p_true": "MT",
-            })
-            self.assertEqual(read_fasta_as_dict(unfiltered_fasta_output), {
+            self.assertEqual(read_fasta_as_dict(os.path.join(artifacts, "sequences.faa")), {
                 "p_true": "MT",
                 "p_maybe": "MM",
                 "p_false": "MF",
@@ -415,27 +285,21 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpd:
             self.write_pfam_anchor_leader_rule_module(tmpd)
-            fasta_output = os.path.join(tmpd, "res.faa")
-            unfiltered_fasta_output = os.path.join(tmpd, "unfiltered.faa")
+            artifacts = os.path.join(tmpd, "artifacts")
             stdin = io.StringIO("p1\tg1\n")
             sys.path.insert(0, tmpd)
             try:
                 with patch("sys.stdin", stdin), patch("sieve.rules.subprocess.run", side_effect=fake_run):
                     script.main([
                         "-r", "pfam_anchor_leader_rules.mnsod_rule",
-                        "--fasta-output", fasta_output,
-                        "--unfiltered-fasta-output", unfiltered_fasta_output,
+                        "--artifacts-dir", artifacts,
                     ])
             finally:
                 sys.path.remove(tmpd)
                 sys.modules.pop("pfam_anchor_leader_rules", None)
 
             self.assertEqual(
-                set(read_fasta_as_dict(fasta_output).keys()),
-                {"p1_with_leader_u3_PF00081_anchor_M"},
-            )
-            self.assertEqual(
-                set(read_fasta_as_dict(unfiltered_fasta_output).keys()),
+                set(read_fasta_as_dict(os.path.join(artifacts, "sequences.faa")).keys()),
                 {"p1_with_leader_u3_PF00081_anchor_M"},
             )
 

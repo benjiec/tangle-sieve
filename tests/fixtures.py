@@ -18,8 +18,10 @@ class DefaultsFixture(object):
         os.environ["TANGLE_AREA"] = "area1"
 
         self.area_genomics = self.root / "areas" / "area1" / "genomics"
+        self.area_metadata = self.root / "areas" / "area1" / "metadata"
         self.ncbi_data = self.root / "ncbi" / "ncbi_dataset" / "data"
         self.area_genomics.mkdir(parents=True)
+        self.area_metadata.mkdir(parents=True)
         self.ncbi_data.mkdir(parents=True)
 
     def cleanup(self):
@@ -59,6 +61,28 @@ class DefaultsFixture(object):
 
     def write_detected_rows(self, genome_accession, rows):
         DetectedTable.write_tsv(str(self.area_genome_dir(genome_accession) / "proteins.tsv"), rows)
+
+    def write_taxonomy_rows(self, rows):
+        import csv
+
+        fieldnames = [
+            "Genome Accession",
+            "Genome Name",
+            "TaxID",
+            "Organism",
+            "Domain",
+            "Kingdom",
+            "Phylum",
+            "Class",
+            "Order",
+            "Family",
+            "Genus",
+            "Species",
+        ]
+        with open(self.area_metadata / "genomes.tsv", "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
+            writer.writeheader()
+            writer.writerows(rows)
 
     def write_gff(self, genome_accession, text):
         with open(self.genome_dir(genome_accession) / "genomic.gff", "w") as f:
