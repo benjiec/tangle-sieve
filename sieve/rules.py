@@ -19,6 +19,8 @@ RULE_TOO_FAR = "too_far"
 
 RULE_PASSING = {RULE_TRUE, RULE_YES, RULE_TOO_FAR}
 RULE_STANDARD_ORDER = [RULE_TRUE, RULE_FALSE, RULE_MAYBE, RULE_ERROR, RULE_YES, RULE_TOO_FAR]
+TARGETP_PROBABILITY_THRESHOLD = 0.7
+TARGETP_PROBABILITY_ORDER = ["noTP", "mTP", "SP"]
 
 
 def _rule_bool(value):
@@ -535,20 +537,20 @@ class LeaderRule(Rule):
 
         calls_by_key = {context.key: [] for context in contexts}
         for sequence_id, context in sequence_contexts.items():
-            prediction = predictions.get(sequence_id)
-            if prediction is None:
+            call = predictions.get(sequence_id)
+            if call is None:
                 print(f"{self.label} missing TargetP row for {context.key}", file=sys.stderr)
                 results[context.key] = RULE_ERROR
             else:
                 candidate = sequence_candidates[sequence_id]
-                calls_by_key[context.key].append((candidate.start_label, prediction))
+                calls_by_key[context.key].append((candidate.start_label, call))
 
         for context in contexts:
             if len(calls_by_key[context.key]) != candidate_counts_by_key[context.key]:
                 continue
             self._predictions_by_key[context.key] = calls_by_key[context.key]
             results[context.key] = _rule_bool(
-                any(prediction == self.prediction for _start, prediction in calls_by_key[context.key])
+                any(call.prediction == self.prediction for _start, call in calls_by_key[context.key])
             )
         return results
 
@@ -610,8 +612,59 @@ class LeaderRule(Rule):
         return _original_sequence_candidate(protein)
 
 
+@dataclass
+class TargetPCall:
+    prediction: str
+    probabilities: dict
+
+    def probability(self, prediction):
+        return self.probabilities.get(prediction)
+
+
 def _format_leader_calls(calls):
-    return ";".join([f"start={start}:{prediction}" for start, prediction in calls])
+    return ";".join([f"start={start}:{_format_targetp_call(call)}" for start, call in calls])
+
+
+def _format_targetp_call(call):
+    probability = call.probability(call.prediction)
+    if probability is None or probability >= TARGETP_PROBABILITY_THRESHOLD:
+        return call.prediction
+    parts = [
+        f"{prediction}/{_probability_percent(call.probability(prediction))}"
+        for prediction in TARGETP_PROBABILITY_ORDER
+        if call.probability(prediction) is not None
+    ]
+    return ",".join(parts)
+
+
+def _probability_percent(probability):
+    return int(round(probability * 100))
+
+
+def _leader_call_prediction(prediction_text):
+    return prediction_text.split("/", 1)[0].split(",", 1)[0]
+
+
+def _targetp_call(prediction, no_tp=None, sp=None, mtp=None):
+    return TargetPCall(
+        prediction=prediction,
+        probabilities={
+            key: value
+            for key, value in [
+                ("noTP", no_tp),
+                ("SP", sp),
+                ("mTP", mtp),
+            ]
+            if value is not None
+        },
+    )
+
+
+def _parse_probability(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _candidate_coord_relative_to_anchor(candidate_start_aa_1b, anchor_aa_1b):
@@ -665,7 +718,7 @@ def _parse_leader_calls(value):
         if not raw_call.startswith("start=") or ":" not in raw_call:
             continue
         start, prediction = raw_call[len("start="):].split(":", 1)
-        calls.append((start, prediction))
+        calls.append((start, _leader_call_prediction(prediction)))
     return calls
 
 
@@ -677,7 +730,12 @@ def _parse_targetp_output(text):
             continue
         parts = line.split()
         if len(parts) >= 2:
-            predictions[parts[0]] = parts[1]
+            predictions[parts[0]] = _targetp_call(
+                parts[1],
+                _parse_probability(parts[2]) if len(parts) > 2 else None,
+                _parse_probability(parts[3]) if len(parts) > 3 else None,
+                _parse_probability(parts[4]) if len(parts) > 4 else None,
+            )
     return predictions
 
 

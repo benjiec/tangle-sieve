@@ -33,6 +33,7 @@ from sieve.rules import (
     _edge_distance,
     _parse_gimme_scan_output,
     _parse_targetp_output,
+    _targetp_call,
 )
 from tests.fixtures import DefaultsFixture
 
@@ -149,7 +150,14 @@ class TestRules(unittest.TestCase):
             output = ["# TargetP-2.0"]
             for sequence_id in ids:
                 prediction = predictions.get(sequence_id, "mTP")
-                output.append(f"{sequence_id}\t{prediction}\t0.1\t0.1\t0.8\t")
+                probabilities = {
+                    "noTP": {"noTP": 0.8, "SP": 0.1, "mTP": 0.1},
+                    "SP": {"noTP": 0.1, "SP": 0.8, "mTP": 0.1},
+                    "mTP": {"noTP": 0.1, "SP": 0.1, "mTP": 0.8},
+                }[prediction]
+                output.append(
+                    f"{sequence_id}\t{prediction}\t{probabilities['noTP']}\t{probabilities['SP']}\t{probabilities['mTP']}\t"
+                )
             output.append("")
             return CompletedProcess(cmd, 0, stdout="\n".join(output), stderr="")
 
@@ -444,6 +452,35 @@ class TestRules(unittest.TestCase):
             rows[0]["Leader.call"],
             "start=u2:noTP;start=u1:SP;start=2:mTP;start=3:noTP",
         )
+
+    def test_leader_rule_writes_low_confidence_targetp_probabilities_to_call_annotation(self):
+        self.fx.write_manifest([
+            self.fx.manifest_row("p1", "g1", source=SEQUENCE_SOURCE_HMM_DETECTED),
+        ])
+        self.fx.write_detected_proteins("g1", {"p1": "MP"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "ATGCCC"})
+        self.fx.write_detected_rows("g1", [
+            self.fx.detected_protein_row("p1", "g1", "ctg1", 1, 6, 1, 2),
+        ])
+
+        targetp_output = "\n".join([
+            "# TargetP-2.0",
+            "# ID\tPrediction\tnoTP\tSP\tmTP\tCS Position",
+            "p1_with_leader_1_M\tnoTP\t0.6\t0.3\t0.1\t",
+            "",
+        ])
+
+        def fake_run(cmd, check, capture_output, text):
+            return CompletedProcess(cmd, 0, stdout=targetp_output, stderr="")
+
+        with patch("sieve.rules.subprocess.run", side_effect=fake_run):
+            with tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(Leader().is_noTP()).check(
+                    [("p1", "g1")],
+                    os.path.join(tmpd, "rules.tsv"),
+                )
+
+        self.assertEqual(rows[0]["Leader.call"], "start=1:noTP/60,mTP/10,SP/30")
 
     def test_leader_rule_calls_targetp_on_original_sequence_without_any_m_start_candidates(self):
         self.fx.write_manifest([
@@ -1112,7 +1149,10 @@ class TestRuleParsingHelpers(unittest.TestCase):
             "seq1 noTP 0.9 0.1 0.0",
         ]))
 
-        self.assertEqual(parsed, {"seq0": "mTP", "seq1": "noTP"})
+        self.assertEqual(parsed, {
+            "seq0": _targetp_call("mTP", 0.1, 0.2, 0.7),
+            "seq1": _targetp_call("noTP", 0.9, 0.1, 0.0),
+        })
 
     def test_parse_gimme_scan_output(self):
         parsed = _parse_gimme_scan_output("\n".join([
