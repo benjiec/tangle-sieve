@@ -305,11 +305,17 @@ class Rules(object):
 
     def sequence_candidates_for_row(self, row):
         protein = CuratedProtein(row["protein accession"], row["genome accession"])
+        return self.sequence_candidates_for_protein_row(protein, row)
+
+    def sequence_candidates_for_protein_row(self, protein, row):
         candidates = self._row_sequence_candidates(protein, row)
         return self.rule.filter_sequence_candidates(protein, candidates, row)
 
     def scoped_sequence_candidates_for_row(self, row):
         protein = CuratedProtein(row["protein accession"], row["genome accession"])
+        return self.scoped_sequence_candidates_for_protein_row(protein, row)
+
+    def scoped_sequence_candidates_for_protein_row(self, protein, row):
         return self._row_sequence_candidates(protein, row)
 
     def uses_leader_candidates(self):
@@ -335,6 +341,13 @@ class Rules(object):
         contexts = [
             RuleContext(CuratedProtein(protein_accession, genome_accession))
             for protein_accession, genome_accession in protein_keys
+        ]
+        return self.check_proteins(contexts, output_tsv, artifacts_dir=artifacts_dir, trace=trace)
+
+    def check_proteins(self, proteins, output_tsv, artifacts_dir=None, trace=True):
+        contexts = [
+            protein if isinstance(protein, RuleContext) else RuleContext(protein)
+            for protein in proteins
         ]
         atomic_rules = self.atomic_rules()
         if artifacts_dir is not None:

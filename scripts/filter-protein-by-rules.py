@@ -8,9 +8,9 @@ import sys
 import tempfile
 from collections import defaultdict
 
-from tangle import open_file_to_write
 from sieve.artifacts import rule_results_tsv, sequences_fasta
 from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_HMM_DETECTED
+from sieve.rule_artifacts import write_rule_fasta, write_rule_rows
 from sieve.rule_loader import load_rules
 
 
@@ -63,10 +63,6 @@ def group_protein_keys_by_genome(protein_keys):
         (genome_accession, grouped[genome_accession])
         for genome_accession in sorted(grouped)
     ]
-
-
-def write_rule_rows(rows, output_tsv, rules):
-    rules.write_rows(output_tsv, rows)
 
 
 def check_rules_by_genome(rules, protein_keys, output_tsv, artifacts_dir=None):
@@ -201,13 +197,12 @@ def write_locus_artifact(protein_keys, output_tsv):
 
 
 def write_unfiltered_rule_fasta(rows, fasta_output, rules):
-    with open_file_to_write(fasta_output, "wt") as f:
-        for row in rows:
-            try:
-                for candidate in rules.scoped_sequence_candidates_for_row(row):
-                    f.write(f">{candidate.accession}\n{candidate.sequence}\n")
-            finally:
-                CuratedProtein.clear_cache()
+    def candidates_for_row(row):
+        try:
+            return rules.scoped_sequence_candidates_for_row(row)
+        finally:
+            CuratedProtein.clear_cache()
+    write_rule_fasta(rows, fasta_output, candidates_for_row)
 
 
 def main(argv=None):
