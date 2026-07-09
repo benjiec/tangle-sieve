@@ -88,6 +88,18 @@ PYTHONPATH=coral sieve-py sieve/scripts/hmmsearch-threshold.py \
   --output threshold-stats.tsv
 ```
 
+Use the following script to screen protein FASTA against the rules
+
+```
+PYTHONPATH=../coral sieve-py ../sieve/scripts/filter-fasta-by-rules.py \
+  --fasta transcript_proteins.faa \
+  -r coral.rules.mt_MnSOD.rule_fasta \
+  --artifacts-dir tmp \
+  --pfam-hmm pfam.hmm \
+  --ko-hmm k04564.hmm \
+  --ko-thresholds k04564_threshold.tsv
+```
+
 
 ## Calling External Tools
 
