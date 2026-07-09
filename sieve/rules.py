@@ -21,6 +21,10 @@ RULE_PASSING = {RULE_TRUE, RULE_YES, RULE_TOO_FAR}
 RULE_STANDARD_ORDER = [RULE_TRUE, RULE_FALSE, RULE_MAYBE, RULE_ERROR, RULE_YES, RULE_TOO_FAR]
 TARGETP_PROBABILITY_THRESHOLD = 0.7
 TARGETP_PROBABILITY_ORDER = ["noTP", "mTP", "SP"]
+TARGETP_PROBABILITY_COLUMNS = {
+    prediction: f"Leader.call('{prediction}')"
+    for prediction in TARGETP_PROBABILITY_ORDER
+}
 
 
 def _rule_bool(value):
@@ -539,7 +543,7 @@ class LeaderRule(Rule):
         return f"{base}.is_{self.prediction}()"
 
     def annotation_columns(self):
-        return ["Leader.call"]
+        return [TARGETP_PROBABILITY_COLUMNS[prediction] for prediction in TARGETP_PROBABILITY_ORDER]
 
     def uses_leader_candidates(self):
         return True
@@ -547,7 +551,7 @@ class LeaderRule(Rule):
     def sequence_result(self, row, candidate):
         if row[self.label] == RULE_ERROR:
             return RULE_ERROR
-        if _leader_call_prediction(row.get("Leader.call", "")) == self.prediction:
+        if _leader_call_prediction_from_columns(row) == self.prediction:
             return RULE_TRUE
         return RULE_FALSE
 
@@ -622,7 +626,7 @@ class LeaderRule(Rule):
 
     def annotations_many(self, contexts, rule_results):
         return {
-            context.key: {"Leader.call": _format_leader_calls(self._predictions_by_key[context.key])}
+            context.key: {"_Leader.calls_by_start": _format_leader_calls(self._predictions_by_key[context.key])}
             for context in contexts
             if context.key in self._predictions_by_key
         }
@@ -631,13 +635,12 @@ class LeaderRule(Rule):
         if not _rule_passes(row[self.label]):
             return []
         if "sequence accession" in row:
-            prediction_text = row.get("Leader.call", "")
-            if _leader_call_prediction(prediction_text) != self.prediction:
+            if _leader_call_prediction_from_columns(row) != self.prediction:
                 return []
             return candidates
         matching_starts = {
             start
-            for start, prediction in _parse_leader_calls(row.get("Leader.call", ""))
+            for start, prediction in _parse_leader_calls(row)
             if prediction == self.prediction
         }
         if self.pfam_accession is not None:
@@ -696,42 +699,52 @@ class TargetPCall:
 
 
 def _format_leader_calls(calls):
-    return ";".join([f"start={start}:{_format_targetp_call(call)}" for start, call in calls])
-
-
-def _format_targetp_call(call):
-    if not call.probabilities:
-        return call.prediction
-    ordered_predictions = [call.prediction] + [
-        prediction
-        for prediction in TARGETP_PROBABILITY_ORDER
-        if prediction != call.prediction
-    ]
-    return ",".join([
-        f"{prediction}/{_probability_percent(call.probability(prediction))}"
-        for prediction in ordered_predictions
-        if call.probability(prediction) is not None
-    ])
+    return {
+        start: _format_targetp_columns(call)
+        for start, call in calls
+    }
 
 
 def _probability_percent(probability):
     return int(round(probability * 100))
 
 
-def _leader_call_prediction(prediction_text):
-    return prediction_text.split("/", 1)[0].split(",", 1)[0]
+def _format_targetp_columns(call):
+    return {
+        TARGETP_PROBABILITY_COLUMNS[prediction]: _format_probability_percent(call.probability(prediction))
+        for prediction in TARGETP_PROBABILITY_ORDER
+    }
+
+
+def _format_probability_percent(probability):
+    if probability is None:
+        return ""
+    return str(_probability_percent(probability))
+
+
+def _leader_call_prediction_from_columns(row):
+    scored = []
+    for prediction in TARGETP_PROBABILITY_ORDER:
+        probability = _parse_probability(row.get(TARGETP_PROBABILITY_COLUMNS[prediction], ""))
+        if probability is not None:
+            scored.append((probability, prediction))
+    if not scored:
+        return ""
+    return max(scored)[1]
 
 
 def _apply_sequence_annotations(row, candidate):
-    if "Leader.call" in row:
-        row["Leader.call"] = _leader_call_for_start(row["Leader.call"], candidate.start_label)
+    calls = row.pop("_Leader.calls_by_start", None)
+    if calls is None:
+        return
+    row.update(calls.get(candidate.start_label, _empty_leader_call_columns()))
 
 
-def _leader_call_for_start(value, start_label):
-    for start, call in _parse_leader_call_texts(value):
-        if start == start_label:
-            return call
-    return ""
+def _empty_leader_call_columns():
+    return {
+        column: ""
+        for column in TARGETP_PROBABILITY_COLUMNS.values()
+    }
 
 
 def _targetp_call(prediction, no_tp=None, sp=None, mtp=None):
@@ -810,23 +823,10 @@ def _earliest_pfam_anchor(protein, accession):
     return min(anchors)
 
 
-def _parse_leader_calls(value):
+def _parse_leader_calls(calls_by_start):
     calls = []
-    for start, prediction in _parse_leader_call_texts(value):
-        calls.append((start, _leader_call_prediction(prediction)))
-    return calls
-
-
-def _parse_leader_call_texts(value):
-    calls = []
-    for raw_call in value.split(";"):
-        raw_call = raw_call.strip()
-        if not raw_call:
-            continue
-        if not raw_call.startswith("start=") or ":" not in raw_call:
-            continue
-        start, prediction = raw_call[len("start="):].split(":", 1)
-        calls.append((start, prediction))
+    for start, columns in calls_by_start.items():
+        calls.append((start, _leader_call_prediction_from_columns(columns)))
     return calls
 
 

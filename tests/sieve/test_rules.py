@@ -39,9 +39,10 @@ from tests.fixtures import DefaultsFixture
 
 
 LEADER_MTP_LABEL = "Leader().betweenAA(-30, 3).is_mTP()"
-TARGETP_NO_TP = "noTP/80,mTP/10,SP/10"
-TARGETP_MTP = "mTP/80,noTP/10,SP/10"
-TARGETP_SP = "SP/80,noTP/10,mTP/10"
+LEADER_CALL_COLUMNS = ("Leader.call('noTP')", "Leader.call('mTP')", "Leader.call('SP')")
+TARGETP_NO_TP_COLUMNS = ("80", "10", "10")
+TARGETP_MTP_COLUMNS = ("10", "80", "10")
+TARGETP_SP_COLUMNS = ("10", "10", "80")
 
 
 class RulesFixture(DefaultsFixture):
@@ -139,6 +140,9 @@ class TestRules(unittest.TestCase):
     def read_tsv(self, path):
         with open(path, "r", encoding="utf-8", newline="") as f:
             return list(csv.DictReader(f, delimiter="\t"))
+
+    def leader_call_columns(self, row):
+        return tuple(row[column] for column in LEADER_CALL_COLUMNS)
 
     def fake_targetp_with_expected_ids(self, expected_ids, predictions=None):
         if predictions is None:
@@ -409,10 +413,10 @@ class TestRules(unittest.TestCase):
                 )
 
         self.assertEqual(
-            [(row["sequence accession"], row[LEADER_MTP_LABEL], row["Leader.call"]) for row in rows],
+            [(row["sequence accession"], row[LEADER_MTP_LABEL], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1", RULE_TRUE, "mTP/70,noTP/10,SP/20"),
-                ("p2", RULE_FALSE, TARGETP_SP),
+                ("p1", RULE_TRUE, ("10", "70", "20")),
+                ("p2", RULE_FALSE, TARGETP_SP_COLUMNS),
             ],
         )
 
@@ -451,12 +455,12 @@ class TestRules(unittest.TestCase):
                 )
 
         self.assertEqual(
-            [(row["sequence accession"], row[LEADER_MTP_LABEL], row["Leader.call"]) for row in rows],
+            [(row["sequence accession"], row[LEADER_MTP_LABEL], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1_with_leader_u2_M", RULE_FALSE, TARGETP_NO_TP),
-                ("p1_with_leader_u1_M", RULE_FALSE, TARGETP_SP),
-                ("p1_with_leader_2_M", RULE_TRUE, TARGETP_MTP),
-                ("p1_with_leader_3_M", RULE_FALSE, TARGETP_NO_TP),
+                ("p1_with_leader_u2_M", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
+                ("p1_with_leader_u1_M", RULE_FALSE, TARGETP_SP_COLUMNS),
+                ("p1_with_leader_2_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
+                ("p1_with_leader_3_M", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
             ],
         )
 
@@ -487,7 +491,7 @@ class TestRules(unittest.TestCase):
                     os.path.join(tmpd, "rules.tsv"),
                 )
 
-        self.assertEqual(rows[0]["Leader.call"], "noTP/60,mTP/10,SP/30")
+        self.assertEqual(self.leader_call_columns(rows[0]), ("60", "10", "30"))
 
     def test_leader_rule_calls_targetp_on_original_sequence_without_any_m_start_candidates(self):
         self.fx.write_manifest([
@@ -511,7 +515,7 @@ class TestRules(unittest.TestCase):
 
         self.assertEqual(rows[0][LEADER_MTP_LABEL], RULE_FALSE)
         self.assertEqual(rows[0]["sequence accession"], "p1")
-        self.assertEqual(rows[0]["Leader.call"], TARGETP_NO_TP)
+        self.assertEqual(self.leader_call_columns(rows[0]), TARGETP_NO_TP_COLUMNS)
 
     def test_leader_rule_writes_call_annotation_to_tsv(self):
         self.fx.write_manifest([
@@ -534,9 +538,9 @@ class TestRules(unittest.TestCase):
                 rows = self.read_tsv(out)
 
         self.assertEqual(
-            [(row["sequence accession"], row[LEADER_MTP_LABEL], row["Leader.call"]) for row in rows],
+            [(row["sequence accession"], row[LEADER_MTP_LABEL], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1", RULE_FALSE, TARGETP_NO_TP),
+                ("p1", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
             ],
         )
 
@@ -557,10 +561,10 @@ class TestRules(unittest.TestCase):
                 rows = Rules(Leader().is_mTP()).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
 
         self.assertEqual(
-            [(row["sequence accession"], row[LEADER_MTP_LABEL], row["Leader.call"]) for row in rows],
+            [(row["sequence accession"], row[LEADER_MTP_LABEL], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1", RULE_FALSE, TARGETP_NO_TP),
-                ("p1_with_leader_3_M", RULE_TRUE, TARGETP_MTP),
+                ("p1", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
+                ("p1_with_leader_3_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
             ],
         )
 
@@ -622,11 +626,11 @@ class TestRules(unittest.TestCase):
 
         label = "Leader().upstreamOfPfam('PF00081.28').betweenAA(-3, 0).is_mTP()"
         self.assertEqual(
-            [(row["sequence accession"], row[label], row["Leader.call"]) for row in rows],
+            [(row["sequence accession"], row[label], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1", RULE_FALSE, TARGETP_NO_TP),
-                ("p1_with_leader_u3_PF00081_M", RULE_TRUE, TARGETP_MTP),
-                ("p1_with_leader_u2_PF00081_M", RULE_TRUE, TARGETP_MTP),
+                ("p1", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
+                ("p1_with_leader_u3_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
+                ("p1_with_leader_u2_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
             ],
         )
         self.assertEqual(
@@ -666,9 +670,9 @@ class TestRules(unittest.TestCase):
 
         label = "Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"
         self.assertEqual(
-            [(row["sequence accession"], row[label], row["Leader.call"]) for row in rows],
+            [(row["sequence accession"], row[label], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1_with_leader_u3_PF00081_M", RULE_TRUE, TARGETP_MTP),
+                ("p1_with_leader_u3_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
             ],
         )
 
@@ -697,7 +701,7 @@ class TestRules(unittest.TestCase):
 
         self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"], RULE_TRUE)
         self.assertEqual(rows[0]["sequence accession"], "p1_with_leader_u1_PF00081_M")
-        self.assertEqual(rows[0]["Leader.call"], TARGETP_MTP)
+        self.assertEqual(self.leader_call_columns(rows[0]), TARGETP_MTP_COLUMNS)
 
     def test_leader_upstream_of_pfam_uses_earliest_inferred_domain_start(self):
         self.fx.write_manifest([
@@ -730,11 +734,11 @@ class TestRules(unittest.TestCase):
 
         label = "Leader().upstreamOfPfam('PF00081').betweenAA(-1, 1).is_mTP()"
         self.assertEqual(
-            [(row["sequence accession"], row[label], row["Leader.call"]) for row in rows],
+            [(row["sequence accession"], row[label], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1", RULE_FALSE, TARGETP_NO_TP),
-                ("p1_with_leader_u1_PF00081_M", RULE_TRUE, TARGETP_MTP),
-                ("p1_with_leader_1_PF00081_M", RULE_TRUE, TARGETP_MTP),
+                ("p1", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
+                ("p1_with_leader_u1_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
+                ("p1_with_leader_1_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
             ],
         )
 
@@ -756,7 +760,7 @@ class TestRules(unittest.TestCase):
 
         self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-30, 0).is_mTP()"], RULE_FALSE)
         self.assertEqual(rows[0]["sequence accession"], "p1")
-        self.assertEqual(rows[0]["Leader.call"], TARGETP_NO_TP)
+        self.assertEqual(self.leader_call_columns(rows[0]), TARGETP_NO_TP_COLUMNS)
 
     def test_leader_upstream_of_pfam_uses_ncbi_spliced_prefix_before_anchor(self):
         cases = [
@@ -796,9 +800,9 @@ class TestRules(unittest.TestCase):
 
                 label = "Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"
                 self.assertEqual(
-                    [(row["sequence accession"], row[label], row["Leader.call"]) for row in rows],
+                    [(row["sequence accession"], row[label], self.leader_call_columns(row)) for row in rows],
                     [
-                        ("p1", RULE_FALSE, TARGETP_NO_TP),
+                        ("p1", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
                     ],
                 )
 
@@ -835,7 +839,7 @@ class TestRules(unittest.TestCase):
 
                 self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"], RULE_TRUE)
                 self.assertEqual(rows[0]["sequence accession"], "p1_with_leader_u4_PF00081_M")
-                self.assertEqual(rows[0]["Leader.call"], TARGETP_MTP)
+                self.assertEqual(self.leader_call_columns(rows[0]), TARGETP_MTP_COLUMNS)
 
     def test_leader_upstream_of_pfam_for_hmm_detected_also_uses_raw_upstream_anchor_context(self):
         coding_with_missing_middle = "GCTGCTATGAAAGCTGCT"
@@ -871,7 +875,7 @@ class TestRules(unittest.TestCase):
 
                 self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-5, 0).is_mTP()"], RULE_TRUE)
                 self.assertEqual(rows[0]["sequence accession"], "p1_with_leader_u3_PF00081_anchor_M")
-                self.assertEqual(rows[0]["Leader.call"], TARGETP_MTP)
+                self.assertEqual(self.leader_call_columns(rows[0]), TARGETP_MTP_COLUMNS)
 
     def test_leader_upstream_of_pfam_scoping_handles_ncbi_forward_and_reverse_gff_loci(self):
         coding = "GCTGCTATGATGGCTATG"
