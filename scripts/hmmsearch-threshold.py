@@ -4,11 +4,13 @@ import argparse
 import csv
 import math
 import os
-import re
 import sys
 
 from tangle.defaults import Defaults
 from tangle.sequence import read_fasta_as_dict
+
+from sieve.artifacts import rule_results_tsv, sequences_fasta
+from sieve.result_filters import load_result_filter
 
 
 TAXONOMY_FIELDS = {
@@ -22,7 +24,6 @@ TAXONOMY_FIELDS = {
     "genus",
     "species",
 }
-SPEC_OPERATORS = {"eq", "ne", "regex", "not_regex", "num_eq", "num_ne", "gt", "gte", "lt", "lte"}
 OUTPUT_HEADERS = [
     "threshold bitscore",
     "tp",
@@ -45,79 +46,11 @@ def read_tsv(path):
         return list(csv.DictReader(f, delimiter="\t"))
 
 
-def read_positive_specs(path):
-    with open(path, "r", encoding="utf-8", newline="") as f:
-        rows = list(csv.reader(f, delimiter="\t"))
-    rows = [
-        (line_number, row)
-        for line_number, row in enumerate(rows, start=1)
-        if row and any(cell.strip() for cell in row)
-    ]
-    if rows and rows[0][1] == ["column_regex", "operator", "value"]:
-        rows = rows[1:]
-    specs = []
-    for line_number, row in rows:
-        if len(row) != 3:
-            raise ValueError(f"Expected 3 columns in positive spec at line {line_number}, got {len(row)}")
-        column_regex, operator, value = [cell.strip() for cell in row]
-        if operator not in SPEC_OPERATORS:
-            raise ValueError(f"Unknown positive spec operator at line {line_number}: {operator}")
-        try:
-            compiled = re.compile(column_regex)
-        except re.error as e:
-            raise ValueError(f"Invalid column regex at line {line_number}: {e}") from e
-        specs.append((compiled, operator, value))
-    if not specs:
-        raise ValueError("Positive spec is empty")
-    return specs
-
-
 def _numeric(value, context):
     try:
         return float(value)
     except (TypeError, ValueError) as e:
         raise ValueError(f"Expected numeric value for {context}, got: {value!r}") from e
-
-
-def value_matches(actual, operator, expected):
-    actual = "" if actual is None else str(actual)
-    if operator == "eq":
-        return actual == expected
-    if operator == "ne":
-        return actual != expected
-    if operator == "regex":
-        return re.search(expected, actual) is not None
-    if operator == "not_regex":
-        return re.search(expected, actual) is None
-    actual_number = _numeric(actual, "rule row")
-    expected_number = _numeric(expected, "positive spec")
-    if operator == "num_eq":
-        return actual_number == expected_number
-    if operator == "num_ne":
-        return actual_number != expected_number
-    if operator == "gt":
-        return actual_number > expected_number
-    if operator == "gte":
-        return actual_number >= expected_number
-    if operator == "lt":
-        return actual_number < expected_number
-    if operator == "lte":
-        return actual_number <= expected_number
-    raise ValueError(f"Unknown operator: {operator}")
-
-
-def row_is_positive(row, specs):
-    for column_regex, operator, expected in specs:
-        matched_column = False
-        for column, actual in row.items():
-            if column_regex.fullmatch(column) is None:
-                continue
-            matched_column = True
-            if value_matches(actual, operator, expected):
-                return True
-        if not matched_column:
-            raise ValueError(f"Positive spec did not match any rule-results column: {column_regex.pattern}")
-    return False
 
 
 def best_hmm_hits(hmm_rows):
@@ -141,9 +74,7 @@ def joined_entries(hmm_rows, rule_rows, fasta_path):
         accession = row.get("sequence accession", "")
         if not accession:
             raise ValueError("Rule results row is missing sequence accession")
-        if accession in rules_by_sequence:
-            raise ValueError(f"Duplicate rule-results sequence accession: {accession}")
-        rules_by_sequence[accession] = row
+        rules_by_sequence.setdefault(accession, row)
 
     entries = []
     for accession in sequences:
@@ -220,10 +151,12 @@ def filter_by_taxon(entries, taxon):
     ]
 
 
-def label_entries(entries, specs):
+def label_entries(entries, positive_filter):
+    if entries:
+        positive_filter.validate_columns(entries[0]["rule_row"].keys())
     labeled = []
     for entry in entries:
-        labeled.append(entry | {"positive": row_is_positive(entry["rule_row"], specs)})
+        labeled.append(entry | {"positive": positive_filter.matches(entry["rule_row"])})
     return labeled
 
 
@@ -260,6 +193,14 @@ def threshold_stats(entries):
         sensitivity = _ratio(tp, tp + fn)
         specificity = _ratio(tn, tn + fp)
         balanced_accuracy = _ratio(sensitivity + specificity, 2)
+        false_positives = [
+            entry for entry in entries
+            if not entry["positive"] and entry["bitscore"] >= threshold
+        ]
+        false_negatives = [
+            entry for entry in entries
+            if entry["positive"] and entry["bitscore"] < threshold
+        ]
         rows.append({
             "threshold bitscore": threshold,
             "tp": tp,
@@ -270,6 +211,8 @@ def threshold_stats(entries):
             "specificity": specificity,
             "balanced accuracy": balanced_accuracy,
             "selected": "",
+            "false positives": false_positives,
+            "false negatives": false_negatives,
         })
     best = best_threshold_row(rows)
     if best is not None:
@@ -313,34 +256,56 @@ def write_threshold_stats(rows, output):
                 "balanced accuracy": _format_metric(row["balanced accuracy"]),
                 "selected": row["selected"],
             })
+        selected = selected_threshold_row(rows)
+        if selected is not None:
+            write_selected_error_details(stream, selected)
     finally:
         if close:
             stream.close()
 
 
-def discover_threshold(hmmsearch_tsv, rule_results_tsv, fasta, spec_tsv, taxon=None):
-    entries = joined_entries(read_tsv(hmmsearch_tsv), read_tsv(rule_results_tsv), fasta)
+def selected_threshold_row(rows):
+    for row in rows:
+        if row["selected"]:
+            return row
+    return None
+
+
+def write_selected_error_details(stream, row):
+    stream.write(f"# selected threshold bitscore {_format_metric(row['threshold bitscore'])}\n")
+    stream.write("# false positives\n")
+    for entry in row["false positives"]:
+        stream.write(f"# {entry['sequence accession']} {_format_metric(entry['bitscore'])}\n")
+    stream.write("# false negatives\n")
+    for entry in row["false negatives"]:
+        stream.write(f"# {entry['sequence accession']} {_format_metric(entry['bitscore'])}\n")
+
+
+def discover_threshold(hmmsearch_tsv, artifacts_dir, positive_filter_spec, taxon=None):
+    entries = joined_entries(
+        read_tsv(hmmsearch_tsv),
+        read_tsv(rule_results_tsv(artifacts_dir)),
+        sequences_fasta(artifacts_dir),
+    )
     entries = best_entry_per_protein(entries)
     entries = filter_by_taxon(entries, taxon)
-    entries = label_entries(entries, read_positive_specs(spec_tsv))
+    entries = label_entries(entries, load_result_filter(positive_filter_spec))
     return threshold_stats(entries)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--hmmsearch-tsv", required=True)
-    parser.add_argument("--rule-results-tsv", required=True)
-    parser.add_argument("--fasta", required=True)
-    parser.add_argument("--positive-spec", required=True)
+    parser.add_argument("--artifacts-dir", required=True)
+    parser.add_argument("--positive-filter", required=True)
     parser.add_argument("--taxon")
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
 
     rows = discover_threshold(
         args.hmmsearch_tsv,
-        args.rule_results_tsv,
-        args.fasta,
-        args.positive_spec,
+        args.artifacts_dir,
+        args.positive_filter,
         taxon=args.taxon,
     )
     write_threshold_stats(rows, args.output)

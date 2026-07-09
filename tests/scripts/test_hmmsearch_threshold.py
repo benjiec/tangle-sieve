@@ -1,8 +1,10 @@
 import csv
 import os
+import sys
 import tempfile
 import unittest
 
+from sieve.artifacts import rule_results_tsv, sequences_fasta
 from tangle.sequence import write_fasta_from_dict
 
 from tests.fixtures import DefaultsFixture
@@ -29,30 +31,10 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
-    def test_positive_spec_uses_literal_and_numeric_operators(self):
-        with tempfile.TemporaryDirectory() as tmpd:
-            spec = os.path.join(tmpd, "positive.tsv")
-            self.write_lines(spec, [
-                "column_regex\toperator\tvalue",
-                "Literal\teq\t1",
-                "Numeric\tnum_eq\t1",
-                "Leader.call\\('mTP'\\)\tgt\t1",
-            ])
-
-            specs = self.script.read_positive_specs(spec)
-
-        self.assertFalse(self.script.value_matches("001", "eq", "1"))
-        self.assertTrue(self.script.value_matches("001", "num_eq", "1"))
-        self.assertTrue(self.script.row_is_positive({
-            "Literal": "001",
-            "Numeric": "001",
-            "Leader.call('mTP')": "0",
-        }, specs))
-        self.assertTrue(self.script.row_is_positive({
-            "Literal": "0",
-            "Numeric": "0",
-            "Leader.call('mTP')": "2",
-        }, specs))
+    def write_filter_module(self, tmpd, lines):
+        module_path = os.path.join(tmpd, "positive_filters.py")
+        self.write_lines(module_path, lines)
+        return "positive_filters.is_positive"
 
     def test_keeps_best_scoring_sequence_per_protein_accession(self):
         entries = [
@@ -80,12 +62,47 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
             ["p1_with_leader_b", "p2"],
         )
 
+    def test_duplicate_rule_result_sequence_accessions_use_first_representative(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            hmm = os.path.join(tmpd, "hmm.tsv")
+            artifacts = os.path.join(tmpd, "artifacts")
+            os.makedirs(artifacts)
+            self.write_tsv(hmm, [
+                "sequence accession",
+                "domain bitscore",
+            ], [
+                {"sequence accession": "same_accession", "domain bitscore": "50"},
+            ])
+            self.write_tsv(rule_results_tsv(artifacts), [
+                "protein accession",
+                "sequence accession",
+                "genome accession",
+                "Rule",
+            ], [
+                {"protein accession": "same_accession", "sequence accession": "same_accession", "genome accession": "g1", "Rule": "true"},
+                {"protein accession": "same_accession", "sequence accession": "same_accession", "genome accession": "g2", "Rule": "false"},
+            ])
+            write_fasta_from_dict({"same_accession": "MA"}, sequences_fasta(artifacts))
+            filter_spec = self.write_filter_module(tmpd, [
+                "from sieve.result_filters import Field",
+                "is_positive = Field('Rule').eq('true')",
+            ])
+
+            sys.path.insert(0, tmpd)
+            try:
+                rows = self.script.discover_threshold(hmm, artifacts, filter_spec)
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("positive_filters", None)
+
+        self.assertEqual(rows[0]["tp"], 1)
+        self.assertEqual(rows[0]["fp"], 0)
+
     def test_discovers_threshold_stats_and_marks_best_row(self):
         with tempfile.TemporaryDirectory() as tmpd:
             hmm = os.path.join(tmpd, "hmm.tsv")
-            rules = os.path.join(tmpd, "rules.tsv")
-            fasta = os.path.join(tmpd, "sequences.faa")
-            spec = os.path.join(tmpd, "positive.tsv")
+            artifacts = os.path.join(tmpd, "artifacts")
+            os.makedirs(artifacts)
             output = os.path.join(tmpd, "thresholds.tsv")
 
             self.write_tsv(hmm, [
@@ -99,7 +116,7 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
                 {"sequence accession": "p2", "HMM model": "m", "domain e-value": "1e-4", "domain bitscore": "30"},
                 {"sequence accession": "p3", "HMM model": "m", "domain e-value": "1e-3", "domain bitscore": "20"},
             ])
-            self.write_tsv(rules, [
+            self.write_tsv(rule_results_tsv(artifacts), [
                 "protein accession",
                 "sequence accession",
                 "genome accession",
@@ -117,14 +134,27 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
                 "p2": "MG",
                 "p3": "MP",
                 "p4": "MT",
-            }, fasta)
-            self.write_lines(spec, ["Pfam\\.matches.+\teq\ttrue"])
+            }, sequences_fasta(artifacts))
+            filter_spec = self.write_filter_module(tmpd, [
+                "from sieve.result_filters import FieldRegex",
+                "is_positive = FieldRegex(r\"Pfam\\.matches.+\").any().eq(\"true\")",
+            ])
 
-            rows = self.script.discover_threshold(hmm, rules, fasta, spec)
-            self.script.write_threshold_stats(rows, output)
+            sys.path.insert(0, tmpd)
+            try:
+                rows = self.script.discover_threshold(hmm, artifacts, filter_spec)
+                self.script.write_threshold_stats(rows, output)
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("positive_filters", None)
 
             with open(output, "r", encoding="utf-8", newline="") as f:
-                output_rows = list(csv.DictReader(f, delimiter="\t"))
+                lines = f.readlines()
+            output_rows = list(csv.DictReader([
+                line for line in lines
+                if not line.startswith("# ")
+            ], delimiter="\t"))
+            comments = [line.rstrip("\n") for line in lines if line.startswith("# ")]
 
         self.assertEqual(
             [(row["threshold bitscore"], row["tp"], row["fp"], row["tn"], row["fn"], row["selected"]) for row in output_rows],
@@ -138,6 +168,12 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
         self.assertEqual(output_rows[0]["sensitivity"], "0.5")
         self.assertEqual(output_rows[0]["specificity"], "1")
         self.assertEqual(output_rows[0]["balanced accuracy"], "0.75")
+        self.assertEqual(comments, [
+            "# selected threshold bitscore 80",
+            "# false positives",
+            "# false negatives",
+            "# p3 20",
+        ])
 
     def test_taxon_filters_entries_before_computing_stats(self):
         self.fx.write_taxonomy_rows([
@@ -154,9 +190,8 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
         ])
         with tempfile.TemporaryDirectory() as tmpd:
             hmm = os.path.join(tmpd, "hmm.tsv")
-            rules = os.path.join(tmpd, "rules.tsv")
-            fasta = os.path.join(tmpd, "sequences.faa")
-            spec = os.path.join(tmpd, "positive.tsv")
+            artifacts = os.path.join(tmpd, "artifacts")
+            os.makedirs(artifacts)
 
             self.write_tsv(hmm, [
                 "sequence accession",
@@ -165,7 +200,7 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
                 {"sequence accession": "p1", "domain bitscore": "50"},
                 {"sequence accession": "p2", "domain bitscore": "10"},
             ])
-            self.write_tsv(rules, [
+            self.write_tsv(rule_results_tsv(artifacts), [
                 "protein accession",
                 "sequence accession",
                 "genome accession",
@@ -174,10 +209,18 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
                 {"protein accession": "p1", "sequence accession": "p1", "genome accession": "g1", "Rule": "true"},
                 {"protein accession": "p2", "sequence accession": "p2", "genome accession": "g2", "Rule": "false"},
             ])
-            write_fasta_from_dict({"p1": "MA", "p2": "MG"}, fasta)
-            self.write_lines(spec, ["Rule\teq\ttrue"])
+            write_fasta_from_dict({"p1": "MA", "p2": "MG"}, sequences_fasta(artifacts))
+            filter_spec = self.write_filter_module(tmpd, [
+                "from sieve.result_filters import Field",
+                "is_positive = Field('Rule').eq('true')",
+            ])
 
-            rows = self.script.discover_threshold(hmm, rules, fasta, spec, taxon="cnidaria")
+            sys.path.insert(0, tmpd)
+            try:
+                rows = self.script.discover_threshold(hmm, artifacts, filter_spec, taxon="cnidaria")
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("positive_filters", None)
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["tp"], 1)
@@ -185,16 +228,78 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
         self.assertEqual(rows[0]["tn"], 0)
         self.assertEqual(rows[0]["fn"], 0)
 
-    def test_reports_missing_columns_and_invalid_numeric_values(self):
+    def test_selected_threshold_error_details_include_false_positives(self):
         with tempfile.TemporaryDirectory() as tmpd:
-            spec = os.path.join(tmpd, "positive.tsv")
-            self.write_lines(spec, ["Missing\teq\ttrue"])
-            specs = self.script.read_positive_specs(spec)
+            output = os.path.join(tmpd, "thresholds.tsv")
+            rows = [{
+                "threshold bitscore": 10.0,
+                "tp": 1,
+                "fp": 1,
+                "tn": 0,
+                "fn": 0,
+                "sensitivity": 1.0,
+                "specificity": 0.0,
+                "balanced accuracy": 0.5,
+                "selected": "true",
+                "false positives": [{"sequence accession": "fp1", "bitscore": 12.5}],
+                "false negatives": [],
+            }]
 
-        with self.assertRaisesRegex(ValueError, "did not match any"):
-            self.script.row_is_positive({"Rule": "true"}, specs)
-        with self.assertRaisesRegex(ValueError, "Expected numeric value"):
-            self.script.value_matches("not-a-number", "gt", "1")
+            self.script.write_threshold_stats(rows, output)
+
+            with open(output, "r", encoding="utf-8") as f:
+                comments = [line.rstrip("\n") for line in f if line.startswith("# ")]
+
+        self.assertEqual(comments, [
+            "# selected threshold bitscore 10",
+            "# false positives",
+            "# fp1 12.5",
+            "# false negatives",
+        ])
+
+    def test_main_uses_standard_artifact_paths(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            hmm = os.path.join(tmpd, "hmm.tsv")
+            artifacts = os.path.join(tmpd, "artifacts")
+            os.makedirs(artifacts)
+            output = os.path.join(tmpd, "thresholds.tsv")
+            self.write_tsv(hmm, [
+                "sequence accession",
+                "domain bitscore",
+            ], [
+                {"sequence accession": "p1", "domain bitscore": "50"},
+            ])
+            self.write_tsv(rule_results_tsv(artifacts), [
+                "protein accession",
+                "sequence accession",
+                "genome accession",
+                "Rule",
+            ], [
+                {"protein accession": "p1", "sequence accession": "p1", "genome accession": "g1", "Rule": "true"},
+            ])
+            write_fasta_from_dict({"p1": "MA"}, sequences_fasta(artifacts))
+            filter_spec = self.write_filter_module(tmpd, [
+                "from sieve.result_filters import Field",
+                "is_positive = Field('Rule').eq('true')",
+            ])
+
+            sys.path.insert(0, tmpd)
+            try:
+                self.script.main([
+                    "--hmmsearch-tsv", hmm,
+                    "--artifacts-dir", artifacts,
+                    "--positive-filter", filter_spec,
+                    "--output", output,
+                ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("positive_filters", None)
+
+            with open(output, "r", encoding="utf-8", newline="") as f:
+                output_rows = list(csv.DictReader(f, delimiter="\t"))
+
+        self.assertEqual(output_rows[0]["threshold bitscore"], "50")
+        self.assertEqual(output_rows[0]["tp"], "1")
 
 
 if __name__ == "__main__":

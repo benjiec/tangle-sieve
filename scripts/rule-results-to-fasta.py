@@ -8,6 +8,8 @@ import sys
 from tangle.defaults import Defaults
 from tangle.sequence import read_fasta_as_dict, write_fasta_from_dict
 
+from sieve.artifacts import rule_results_tsv, sequences_fasta
+
 
 TAXONOMY_FIELDS = {
     "domain",
@@ -45,7 +47,7 @@ def rule_filters(values):
 
 
 def read_rule_rows(artifacts_dir):
-    with open(os.path.join(artifacts_dir, "rule-results.tsv"), "r", encoding="utf-8", newline="") as f:
+    with open(rule_results_tsv(artifacts_dir), "r", encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f, delimiter="\t"))
 
 
@@ -94,7 +96,7 @@ def row_matches(row, filters, taxonomy_by_genome, taxon):
 
 def select_sequences(artifacts_dir, filters, taxon=None):
     rows = read_rule_rows(artifacts_dir)
-    sequences = read_fasta_as_dict(os.path.join(artifacts_dir, "sequences.faa"))
+    sequences = read_fasta_as_dict(sequences_fasta(artifacts_dir))
     taxonomy_by_genome = read_taxonomy_rows() if taxon is not None else {}
     selected = {}
     for row in rows:

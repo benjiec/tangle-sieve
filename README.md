@@ -36,7 +36,7 @@ proteins matching a specific KO, through the rules (K04564 is a KO example)
 
 ```
 sieve-py sieve/scripts/ko-find-matches.py K04564 | \
-  PYTHONPATH=../coral sieve-py sieve/scripts/filter-protein-by-rules.py \
+  PYTHONPATH=coral sieve-py sieve/scripts/filter-protein-by-rules.py \
     -r coral.rules.mt_MnSOD.rule \
     --artifacts-dir mtMnSOD_K04564
 ```
@@ -76,6 +76,16 @@ evaluation step, throught the new HMM profile
 sieve-py sieve/scripts/hmmsearch-sequences.py \
   --artifacts-dir mtMnSOD_K04564 \
   --hmm mtMnSOD_cnidaria.hmm --output hmmsearch.tsv
+```
+
+Use the following to compute a good threshold score for the new HMM profile
+
+```
+PYTHONPATH=coral sieve-py sieve/scripts/hmmsearch-threshold.py \
+  --hmmsearch-tsv hmmsearch.tsv \
+  --artifacts-dir mtMnSOD_K04564 \
+  --positive-filter coral.rules.mt_MnSOD.is_positive \
+  --output threshold-stats.tsv
 ```
 
 

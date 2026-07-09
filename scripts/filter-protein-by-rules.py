@@ -9,6 +9,7 @@ import tempfile
 from collections import defaultdict
 
 from tangle import open_file_to_write
+from sieve.artifacts import rule_results_tsv, sequences_fasta
 from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_HMM_DETECTED
 from sieve.rule_loader import load_rules
 
@@ -219,7 +220,7 @@ def main(argv=None):
     protein_keys = filter_manifest_protein_keys(read_protein_keys(sys.stdin))
 
     os.makedirs(args.artifacts_dir, exist_ok=True)
-    output_tsv = os.path.join(args.artifacts_dir, "rule-results.tsv")
+    output_tsv = rule_results_tsv(args.artifacts_dir)
     rows = check_rules_by_genome(
         rules,
         protein_keys,
@@ -232,7 +233,7 @@ def main(argv=None):
     )
     write_unfiltered_rule_fasta(
         rows,
-        os.path.join(args.artifacts_dir, "sequences.faa"),
+        sequences_fasta(args.artifacts_dir),
         rules,
     )
     return 0

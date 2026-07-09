@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 
+from sieve.artifacts import sequences_fasta
+
 
 HEADERS = [
     "sequence accession",
@@ -51,7 +53,7 @@ def write_tsv(rows, output_tsv):
 
 
 def run_hmmsearch(artifacts_dir, hmm_file, output_tsv):
-    sequences_faa = os.path.join(artifacts_dir, "sequences.faa")
+    sequences_faa = sequences_fasta(artifacts_dir)
     with tempfile.TemporaryDirectory() as tmpd:
         domtblout = os.path.join(tmpd, "hmmsearch.domtblout")
         cmd = ["hmmsearch", "--domtblout", domtblout, hmm_file, sequences_faa]
