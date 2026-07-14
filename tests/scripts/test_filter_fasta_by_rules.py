@@ -100,6 +100,7 @@ class TestFilterFastaByRulesScript(unittest.TestCase):
                 "mnsod_rule = Rules(Pfam.matches('PF00081') & KO.matches('K04564'))",
                 "",
             ])
+            stderr = io.StringIO()
 
             def fake_run(cmd, check, capture_output, text):
                 domtblout = cmd[cmd.index("--domtblout") + 1]
@@ -117,7 +118,10 @@ class TestFilterFastaByRulesScript(unittest.TestCase):
 
             sys.path.insert(0, tmpd)
             try:
-                with patch("subprocess.run", side_effect=fake_run) as run:
+                with (
+                    patch("subprocess.run", side_effect=fake_run) as run,
+                    patch("sys.stderr", stderr),
+                ):
                     self.script.main([
                         "--fasta", fasta,
                         "-r", rule_spec,
@@ -145,6 +149,10 @@ class TestFilterFastaByRulesScript(unittest.TestCase):
                 "p2": "MBBBBB",
                 "p3": "MCCCCC",
             })
+            self.assertLess(
+                stderr.getvalue().index("[sequences 1/3]"),
+                stderr.getvalue().index("[rules 1/2]"),
+            )
 
     def test_ko_hmm_requires_threshold_file(self):
         with tempfile.TemporaryDirectory() as tmpd:

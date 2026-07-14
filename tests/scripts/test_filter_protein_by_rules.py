@@ -250,9 +250,10 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
             self.write_rule_module(tmpd)
             artifacts = os.path.join(tmpd, "artifacts")
             stdin = io.StringIO("p_true\tg1\np_maybe\tg1\np_false\tg1\n")
+            stderr = io.StringIO()
             sys.path.insert(0, tmpd)
             try:
-                with patch("sys.stdin", stdin):
+                with patch("sys.stdin", stdin), patch("sys.stderr", stderr):
                     script.main([
                         "-r", "constant_rules.mnsod_rule",
                         "--artifacts-dir", artifacts,
@@ -266,6 +267,10 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 "p_maybe": "MM",
                 "p_false": "MF",
             })
+            self.assertLess(
+                stderr.getvalue().index("[sequences 1/3]"),
+                stderr.getvalue().index("[rules 1/1]"),
+            )
 
     def test_deeploc_csv_drives_leader_rule_without_targetp(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))

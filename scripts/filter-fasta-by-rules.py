@@ -138,32 +138,23 @@ def main(argv=None):
         for protein in proteins
     }
 
-    if args.sequences_only:
-        candidate_entries = scoped_candidate_entries(
-            protein_rows(proteins),
-            proteins_by_accession,
-            rules,
-        )
-        write_candidate_entries_fasta(
-            candidate_entries,
-            sequences_fasta(args.artifacts_dir),
-        )
-        return 0
-
-    rows = rules.check_proteins(
-        proteins,
-        rule_results_tsv(args.artifacts_dir),
-        artifacts_dir=args.artifacts_dir,
-        deeploc_csv=args.deeploc_csv,
-    )
     candidate_entries = scoped_candidate_entries(
-        rows,
+        protein_rows(proteins),
         proteins_by_accession,
         rules,
     )
     write_candidate_entries_fasta(
         candidate_entries,
         sequences_fasta(args.artifacts_dir),
+    )
+    if args.sequences_only:
+        return 0
+
+    rules.check_proteins(
+        proteins,
+        rule_results_tsv(args.artifacts_dir),
+        artifacts_dir=args.artifacts_dir,
+        deeploc_csv=args.deeploc_csv,
     )
     return 0
 

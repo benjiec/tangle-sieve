@@ -238,6 +238,7 @@ class CuratedProtein(object):
         self._leader_prefix_cache = None
         self._leader_tail_cache = None
         self._leader_sequence_candidates_cache = None
+        self._leader_sequence_candidates_at_anchor_cache = {}
         self._start_trim_len_cache = None
 
     @property
@@ -628,11 +629,16 @@ class CuratedProtein(object):
         )
 
     def leader_sequence_candidates_at_anchor(self, anchor_aa_1b, anchor_label, window_start, window_end):
+        cache_key = (anchor_aa_1b, anchor_label, window_start, window_end)
+        if cache_key in self._leader_sequence_candidates_at_anchor_cache:
+            return self._leader_sequence_candidates_at_anchor_cache[cache_key]
+
         original_candidates = self._original_sequence_candidate() if self.sequence_source == SEQUENCE_SOURCE_NCBI else []
         try:
             contexts = self._leader_contexts_at_anchor(anchor_aa_1b)
         except Exception:
-            return original_candidates or self._original_sequence_candidate()
+            self._leader_sequence_candidates_at_anchor_cache[cache_key] = original_candidates or self._original_sequence_candidate()
+            return self._leader_sequence_candidates_at_anchor_cache[cache_key]
 
         low = min(window_start, window_end)
         high = max(window_start, window_end)
@@ -661,8 +667,10 @@ class CuratedProtein(object):
                     sequence=context[index:],
                 ))
         if candidates:
-            return original_candidates + candidates
-        return original_candidates or self._original_sequence_candidate()
+            self._leader_sequence_candidates_at_anchor_cache[cache_key] = original_candidates + candidates
+        else:
+            self._leader_sequence_candidates_at_anchor_cache[cache_key] = original_candidates or self._original_sequence_candidate()
+        return self._leader_sequence_candidates_at_anchor_cache[cache_key]
 
     def _leader_contexts_at_anchor(self, anchor_aa_1b):
         locus = self.genomic_locus()

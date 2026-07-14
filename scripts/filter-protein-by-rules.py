@@ -68,7 +68,7 @@ def group_protein_keys_by_genome(protein_keys):
     ]
 
 
-def check_rules_by_genome(rules, protein_keys, output_tsv, artifacts_dir=None, deeploc_csv=None):
+def check_rules_by_genome(rules, protein_keys, output_tsv, artifacts_dir=None, deeploc_csv=None, proteins_by_key=None):
     rows = []
     with tempfile.TemporaryDirectory() as tmpd:
         for genome_accession, genome_keys in group_protein_keys_by_genome(protein_keys):
@@ -81,8 +81,12 @@ def check_rules_by_genome(rules, protein_keys, output_tsv, artifacts_dir=None, d
                     _safe_filename(genome_accession),
                 )
             try:
-                rows.extend(rules.check(
-                    genome_keys,
+                proteins = [
+                    proteins_by_key[key] if proteins_by_key is not None else CuratedProtein(*key)
+                    for key in genome_keys
+                ]
+                rows.extend(rules.check_proteins(
+                    proteins,
                     group_tsv,
                     artifacts_dir=group_artifacts_dir,
                     deeploc_csv=deeploc_csv,
@@ -264,14 +268,18 @@ def _log_sequence_progress(index, total, row, message):
     )
 
 
-def scoped_candidate_entries(rows, rules, trace=True):
+def scoped_candidate_entries(rows, rules, trace=True, proteins_by_key=None):
     entries = []
     total = len(rows)
     for i, row in enumerate(rows, start=1):
         if trace:
             _log_sequence_progress(i, total, row, "discovering")
         try:
-            candidates = rules.scoped_sequence_candidates_for_row(row)
+            key = (row["protein accession"], row["genome accession"])
+            if proteins_by_key is None:
+                candidates = rules.scoped_sequence_candidates_for_row(row)
+            else:
+                candidates = rules.scoped_sequence_candidates_for_protein_row(proteins_by_key[key], row)
         finally:
             CuratedProtein.clear_cache()
         if trace:
@@ -315,29 +323,17 @@ def main(argv=None):
 
     rules = load_rules(args.rule)
     protein_keys = filter_manifest_protein_keys(read_protein_keys(sys.stdin))
+    proteins_by_key = {
+        key: CuratedProtein(*key)
+        for key in protein_keys
+    }
 
     os.makedirs(args.artifacts_dir, exist_ok=True)
-    if args.sequences_only:
-        candidate_entries = scoped_candidate_entries(sequence_only_rows(protein_keys), rules)
-        write_locus_artifact(
-            candidate_entries,
-            os.path.join(args.artifacts_dir, GENOMIC_LOCI_TSV),
-        )
-        write_candidate_entries_fasta(
-            candidate_entries,
-            sequences_fasta(args.artifacts_dir),
-        )
-        return 0
-
-    output_tsv = rule_results_tsv(args.artifacts_dir)
-    rows = check_rules_by_genome(
+    candidate_entries = scoped_candidate_entries(
+        sequence_only_rows(protein_keys),
         rules,
-        protein_keys,
-        output_tsv,
-        artifacts_dir=args.artifacts_dir,
-        deeploc_csv=args.deeploc_csv,
+        proteins_by_key=proteins_by_key,
     )
-    candidate_entries = scoped_candidate_entries(rows, rules)
     write_locus_artifact(
         candidate_entries,
         os.path.join(args.artifacts_dir, GENOMIC_LOCI_TSV),
@@ -345,6 +341,18 @@ def main(argv=None):
     write_candidate_entries_fasta(
         candidate_entries,
         sequences_fasta(args.artifacts_dir),
+    )
+    if args.sequences_only:
+        return 0
+
+    output_tsv = rule_results_tsv(args.artifacts_dir)
+    check_rules_by_genome(
+        rules,
+        protein_keys,
+        output_tsv,
+        artifacts_dir=args.artifacts_dir,
+        deeploc_csv=args.deeploc_csv,
+        proteins_by_key=proteins_by_key,
     )
     return 0
 

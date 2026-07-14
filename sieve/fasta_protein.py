@@ -23,6 +23,7 @@ class FastaProtein(object):
         self._pfam_rows = list(pfam_rows or [])
         self._ko_rows = list(ko_rows or [])
         self._leader_sequence_candidates_cache = None
+        self._leader_sequence_candidates_at_anchor_cache = {}
 
     def sequence(self):
         return self._sequence
@@ -68,6 +69,10 @@ class FastaProtein(object):
         return self.leader_sequence_candidates()
 
     def leader_sequence_candidates_at_anchor(self, anchor_aa_1b, anchor_label, window_start, window_end):
+        cache_key = (anchor_aa_1b, anchor_label, window_start, window_end)
+        if cache_key in self._leader_sequence_candidates_at_anchor_cache:
+            return self._leader_sequence_candidates_at_anchor_cache[cache_key]
+
         low = min(window_start, window_end)
         high = max(window_start, window_end)
         candidates = self._original_sequence_candidate()
@@ -75,7 +80,8 @@ class FastaProtein(object):
         sequence = self.sequence()
         anchor_index = anchor_aa_1b - 1
         if anchor_index < 0 or anchor_index >= len(sequence):
-            return candidates
+            self._leader_sequence_candidates_at_anchor_cache[cache_key] = candidates
+            return self._leader_sequence_candidates_at_anchor_cache[cache_key]
 
         for index, aa in enumerate(sequence):
             if aa != "M":
@@ -96,7 +102,8 @@ class FastaProtein(object):
                 start_aa_1b=relative_start,
                 sequence=sequence[index:],
             ))
-        return candidates
+        self._leader_sequence_candidates_at_anchor_cache[cache_key] = candidates
+        return self._leader_sequence_candidates_at_anchor_cache[cache_key]
 
     def genomic_locus(self):
         raise ValueError(f"Genomic locus is not available for FASTA-only protein {self.protein_accession}")
