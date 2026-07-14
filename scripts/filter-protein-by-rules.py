@@ -8,6 +8,8 @@ import sys
 import tempfile
 from collections import defaultdict
 
+from tangle import open_file_to_write
+
 from sieve.artifacts import rule_results_tsv, sequences_fasta
 from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_HMM_DETECTED
 from sieve.rule_artifacts import write_rule_fasta, write_rule_rows
@@ -154,109 +156,117 @@ def _candidate_start_feature_position(protein, locus, candidate, earliest_start_
     return None
 
 
-def write_locus_artifact(candidate_entries, output_tsv):
-    headers = [
-        "protein accession",
-        "genome accession",
-        "contig accession",
-        "sequence accession",
-        "locus start 1b",
-        "locus end 1b",
-        "strand",
-        "sequence length",
-        "feature type",
-        "feature index",
-        "feature position 1b",
-        "error",
-    ]
-    with open(output_tsv, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=headers, delimiter="\t")
-        writer.writeheader()
-        grouped_entries = _group_candidate_entries_by_protein(candidate_entries)
-        entries_by_genome = defaultdict(list)
-        for entry in grouped_entries:
-            entries_by_genome[entry["row"]["genome accession"]].append(entry)
-        for genome_accession in sorted(entries_by_genome):
+LOCUS_ARTIFACT_HEADERS = [
+    "protein accession",
+    "genome accession",
+    "contig accession",
+    "sequence accession",
+    "locus start 1b",
+    "locus end 1b",
+    "strand",
+    "sequence length",
+    "feature type",
+    "feature index",
+    "feature position 1b",
+    "error",
+]
+
+
+def write_locus_artifact_header(writer):
+    writer.writeheader()
+
+
+def write_locus_artifact_entries(writer, candidate_entries, proteins_by_key=None):
+    grouped_entries = _group_candidate_entries_by_protein(candidate_entries)
+    entries_by_genome = defaultdict(list)
+    for entry in grouped_entries:
+        entries_by_genome[entry["row"]["genome accession"]].append(entry)
+    for genome_accession in sorted(entries_by_genome):
+        for entry in entries_by_genome[genome_accession]:
+            protein_accession = entry["row"]["protein accession"]
+            candidates = entry["candidates"]
+            if not candidates:
+                continue
+            row = {
+                "protein accession": protein_accession,
+                "genome accession": genome_accession,
+            }
             try:
-                for entry in entries_by_genome[genome_accession]:
-                    protein_accession = entry["row"]["protein accession"]
-                    candidates = entry["candidates"]
-                    if not candidates:
-                        continue
-                    row = {
-                        "protein accession": protein_accession,
-                        "genome accession": genome_accession,
-                    }
-                    try:
-                        protein = CuratedProtein(protein_accession, genome_accession)
-                        locus = _protein_locus_for_candidates(protein, candidates)
-                        start_candidates = [
-                            candidate for candidate in candidates
-                            if candidate.start_label
-                        ]
-                        earliest_start_aa_1b = min(
-                            [candidate.start_aa_1b for candidate in start_candidates],
-                            default=1,
-                        )
-                        base_row = row | {
-                            "contig accession": locus.contig_accession,
-                            "locus start 1b": locus.start_1b,
-                            "locus end 1b": locus.end_1b,
-                            "strand": "+" if locus.strand == 1 else "-",
-                            "sequence length": len(locus.sequence()),
-                            "error": "",
-                        }
-                        feature_rows = []
-                        for candidate in candidates:
-                            position = _candidate_start_feature_position(
-                                protein,
-                                locus,
-                                candidate,
-                                earliest_start_aa_1b,
-                            )
-                            if position is not None:
-                                feature_rows.append(base_row | {
-                                    "feature type": "start",
-                                    "feature index": "",
-                                    "sequence accession": candidate.accession,
-                                    "feature position 1b": position,
-                                })
-                        stop_position = locus.stop_codon_position_1b()
-                        if stop_position is not None:
-                            feature_rows.append(base_row | {
-                                "feature type": "stop",
-                                "feature index": 1,
-                                "sequence accession": "",
-                                "feature position 1b": stop_position,
-                            })
-                        for i, position in enumerate(locus.dss_positions_1b(), start=1):
-                            feature_rows.append(base_row | {
-                                "feature type": "dss",
-                                "feature index": i,
-                                "sequence accession": "",
-                                "feature position 1b": position,
-                            })
-                        for i, position in enumerate(locus.ass_positions_1b(), start=1):
-                            feature_rows.append(base_row | {
-                                "feature type": "ass",
-                                "feature index": i,
-                                "sequence accession": "",
-                                "feature position 1b": position,
-                            })
-                        if feature_rows:
-                            writer.writerows(feature_rows)
-                        else:
-                            writer.writerow(base_row | {
-                                "feature type": "",
-                                "feature index": "",
-                                "sequence accession": candidates[0].accession,
-                                "feature position 1b": "",
-                            })
-                    except Exception as e:
-                        row["error"] = str(e)
-                        writer.writerow(row)
-            finally:
-                CuratedProtein.clear_cache()
+                key = (protein_accession, genome_accession)
+                protein = proteins_by_key[key] if proteins_by_key is not None else CuratedProtein(*key)
+                locus = _protein_locus_for_candidates(protein, candidates)
+                start_candidates = [
+                    candidate for candidate in candidates
+                    if candidate.start_label
+                ]
+                earliest_start_aa_1b = min(
+                    [candidate.start_aa_1b for candidate in start_candidates],
+                    default=1,
+                )
+                base_row = row | {
+                    "contig accession": locus.contig_accession,
+                    "locus start 1b": locus.start_1b,
+                    "locus end 1b": locus.end_1b,
+                    "strand": "+" if locus.strand == 1 else "-",
+                    "sequence length": len(locus.sequence()),
+                    "error": "",
+                }
+                feature_rows = []
+                for candidate in candidates:
+                    position = _candidate_start_feature_position(
+                        protein,
+                        locus,
+                        candidate,
+                        earliest_start_aa_1b,
+                    )
+                    if position is not None:
+                        feature_rows.append(base_row | {
+                            "feature type": "start",
+                            "feature index": "",
+                            "sequence accession": candidate.accession,
+                            "feature position 1b": position,
+                        })
+                stop_position = locus.stop_codon_position_1b()
+                if stop_position is not None:
+                    feature_rows.append(base_row | {
+                        "feature type": "stop",
+                        "feature index": 1,
+                        "sequence accession": "",
+                        "feature position 1b": stop_position,
+                    })
+                for i, position in enumerate(locus.dss_positions_1b(), start=1):
+                    feature_rows.append(base_row | {
+                        "feature type": "dss",
+                        "feature index": i,
+                        "sequence accession": "",
+                        "feature position 1b": position,
+                    })
+                for i, position in enumerate(locus.ass_positions_1b(), start=1):
+                    feature_rows.append(base_row | {
+                        "feature type": "ass",
+                        "feature index": i,
+                        "sequence accession": "",
+                        "feature position 1b": position,
+                    })
+                if feature_rows:
+                    writer.writerows(feature_rows)
+                else:
+                    writer.writerow(base_row | {
+                        "feature type": "",
+                        "feature index": "",
+                        "sequence accession": candidates[0].accession,
+                        "feature position 1b": "",
+                    })
+            except Exception as e:
+                row["error"] = str(e)
+                writer.writerow(row)
+
+
+def write_locus_artifact(candidate_entries, output_tsv):
+    with open(output_tsv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=LOCUS_ARTIFACT_HEADERS, delimiter="\t")
+        write_locus_artifact_header(writer)
+        write_locus_artifact_entries(writer, candidate_entries)
 
 
 def _log_sequence_progress(index, total, row, message):
@@ -268,10 +278,11 @@ def _log_sequence_progress(index, total, row, message):
     )
 
 
-def scoped_candidate_entries(rows, rules, trace=True, proteins_by_key=None):
+def scoped_candidate_entries(rows, rules, trace=True, proteins_by_key=None, start_index=1, total=None):
     entries = []
-    total = len(rows)
-    for i, row in enumerate(rows, start=1):
+    if total is None:
+        total = len(rows)
+    for i, row in enumerate(rows, start=start_index):
         if trace:
             _log_sequence_progress(i, total, row, "discovering")
         try:
@@ -281,7 +292,8 @@ def scoped_candidate_entries(rows, rules, trace=True, proteins_by_key=None):
             else:
                 candidates = rules.scoped_sequence_candidates_for_protein_row(proteins_by_key[key], row)
         finally:
-            CuratedProtein.clear_cache()
+            if proteins_by_key is None:
+                CuratedProtein.clear_cache()
         if trace:
             _log_sequence_progress(i, total, row, f"done: candidates={len(candidates)}")
         entries.append({
@@ -297,6 +309,12 @@ def write_candidate_entries_fasta(candidate_entries, fasta_output):
         fasta_output,
         lambda entry: entry["candidates"],
     )
+
+
+def write_candidate_entries_fasta_records(f, candidate_entries):
+    for entry in candidate_entries:
+        for candidate in entry["candidates"]:
+            f.write(f">{candidate.accession}\n{candidate.sequence}\n")
 
 
 def sequence_only_rows(protein_keys):
@@ -323,37 +341,63 @@ def main(argv=None):
 
     rules = load_rules(args.rule)
     protein_keys = filter_manifest_protein_keys(read_protein_keys(sys.stdin))
-    proteins_by_key = {
-        key: CuratedProtein(*key)
-        for key in protein_keys
-    }
-
     os.makedirs(args.artifacts_dir, exist_ok=True)
-    candidate_entries = scoped_candidate_entries(
-        sequence_only_rows(protein_keys),
-        rules,
-        proteins_by_key=proteins_by_key,
-    )
-    write_locus_artifact(
-        candidate_entries,
-        os.path.join(args.artifacts_dir, GENOMIC_LOCI_TSV),
-    )
-    write_candidate_entries_fasta(
-        candidate_entries,
-        sequences_fasta(args.artifacts_dir),
-    )
-    if args.sequences_only:
-        return 0
 
-    output_tsv = rule_results_tsv(args.artifacts_dir)
-    check_rules_by_genome(
-        rules,
-        protein_keys,
-        output_tsv,
-        artifacts_dir=args.artifacts_dir,
-        deeploc_csv=args.deeploc_csv,
-        proteins_by_key=proteins_by_key,
-    )
+    result_rows = []
+    progress_index = 1
+    total_proteins = len(protein_keys)
+    locus_output = os.path.join(args.artifacts_dir, GENOMIC_LOCI_TSV)
+    with (
+        open_file_to_write(sequences_fasta(args.artifacts_dir), "wt") as fasta_f,
+        open(locus_output, "w", encoding="utf-8", newline="") as locus_f,
+        tempfile.TemporaryDirectory() as tmpd,
+    ):
+        locus_writer = csv.DictWriter(locus_f, fieldnames=LOCUS_ARTIFACT_HEADERS, delimiter="\t")
+        write_locus_artifact_header(locus_writer)
+        for genome_accession, genome_keys in group_protein_keys_by_genome(protein_keys):
+            proteins_by_key = {
+                key: CuratedProtein(*key)
+                for key in genome_keys
+            }
+            candidate_entries = None
+            try:
+                candidate_entries = scoped_candidate_entries(
+                    sequence_only_rows(genome_keys),
+                    rules,
+                    proteins_by_key=proteins_by_key,
+                    start_index=progress_index,
+                    total=total_proteins,
+                )
+                progress_index += len(genome_keys)
+                write_locus_artifact_entries(
+                    locus_writer,
+                    candidate_entries,
+                    proteins_by_key=proteins_by_key,
+                )
+                locus_f.flush()
+                write_candidate_entries_fasta_records(fasta_f, candidate_entries)
+                fasta_f.flush()
+                if not args.sequences_only:
+                    group_tsv = os.path.join(tmpd, f"{_safe_filename(genome_accession)}.tsv")
+                    group_artifacts_dir = os.path.join(
+                        args.artifacts_dir,
+                        "genomes",
+                        _safe_filename(genome_accession),
+                    )
+                    result_rows.extend(rules.check_proteins(
+                        [proteins_by_key[key] for key in genome_keys],
+                        group_tsv,
+                        artifacts_dir=group_artifacts_dir,
+                        deeploc_csv=args.deeploc_csv,
+                    ))
+            finally:
+                if candidate_entries is not None:
+                    candidate_entries.clear()
+                proteins_by_key.clear()
+                CuratedProtein.clear_cache()
+
+    if not args.sequences_only:
+        write_rule_rows(result_rows, rule_results_tsv(args.artifacts_dir), rules)
     return 0
 
 

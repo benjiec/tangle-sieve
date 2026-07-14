@@ -272,6 +272,59 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 stderr.getvalue().index("[rules 1/1]"),
             )
 
+    def test_normal_run_processes_sequence_artifacts_by_genome(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
+            dict(
+                sequence_accession="p_g1",
+                sequence_database="g1",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_NCBI,
+            ),
+            dict(
+                sequence_accession="p_g2",
+                sequence_database="g2",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_NCBI,
+            ),
+        ])
+        self.fx.write_ncbi_proteins("g1", {"p_g1": "MT"})
+        self.fx.write_ncbi_proteins("g2", {"p_g2": "MG"})
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_rule_module(tmpd)
+            artifacts = os.path.join(tmpd, "artifacts")
+            stdin = io.StringIO("p_g2\tg2\np_g1\tg1\n")
+            stderr = io.StringIO()
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", stdin), patch("sys.stderr", stderr):
+                    script.main([
+                        "-r", "constant_rules.mnsod_rule",
+                        "--artifacts-dir", artifacts,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("constant_rules", None)
+
+            lines = stderr.getvalue().splitlines()
+            fasta = read_fasta_as_dict(os.path.join(artifacts, "sequences.faa"))
+
+        self.assertEqual(lines, [
+            "[sequences 1/2] p_g1 g1: discovering",
+            "[sequences 1/2] p_g1 g1: done: candidates=1",
+            "[rules 1/1] ConstantByProteinRule: 1 proteins",
+            "[rules 1/1] done: false=1",
+            "[sequences 2/2] p_g2 g2: discovering",
+            "[sequences 2/2] p_g2 g2: done: candidates=1",
+            "[rules 1/1] ConstantByProteinRule: 1 proteins",
+            "[rules 1/1] done: false=1",
+        ])
+        self.assertEqual(fasta, {
+            "p_g1": "MT",
+            "p_g2": "MG",
+        })
+
     def test_deeploc_csv_drives_leader_rule_without_targetp(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
         ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
