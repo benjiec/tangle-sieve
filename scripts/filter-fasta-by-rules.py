@@ -67,11 +67,48 @@ def build_fasta_proteins(fasta_path, pfam_rows, ko_rows):
     ]
 
 
-def write_fasta_artifact(rows, proteins_by_accession, rules, output_fasta):
-    def candidates_for_row(row):
+def protein_rows(proteins):
+    return [
+        {
+            "protein accession": protein.protein_accession,
+            "genome accession": protein.genome_accession,
+        }
+        for protein in proteins
+    ]
+
+
+def _log_sequence_progress(index, total, row, message):
+    protein_accession = row["protein accession"]
+    genome_accession = row["genome accession"]
+    print(
+        f"[sequences {index}/{total}] {protein_accession} {genome_accession}: {message}",
+        file=sys.stderr,
+    )
+
+
+def scoped_candidate_entries(rows, proteins_by_accession, rules, trace=True):
+    entries = []
+    total = len(rows)
+    for i, row in enumerate(rows, start=1):
+        if trace:
+            _log_sequence_progress(i, total, row, "discovering")
         protein = proteins_by_accession[row["protein accession"]]
-        return rules.scoped_sequence_candidates_for_protein_row(protein, row)
-    write_rule_fasta(rows, output_fasta, candidates_for_row)
+        candidates = rules.scoped_sequence_candidates_for_protein_row(protein, row)
+        if trace:
+            _log_sequence_progress(i, total, row, f"done: candidates={len(candidates)}")
+        entries.append({
+            "row": row,
+            "candidates": candidates,
+        })
+    return entries
+
+
+def write_candidate_entries_fasta(candidate_entries, output_fasta):
+    write_rule_fasta(
+        candidate_entries,
+        output_fasta,
+        lambda entry: entry["candidates"],
+    )
 
 
 def main(argv=None):
@@ -82,6 +119,11 @@ def main(argv=None):
     parser.add_argument("--pfam-hmm")
     parser.add_argument("--ko-hmm")
     parser.add_argument("--ko-thresholds")
+    parser.add_argument(
+        "--sequences-only",
+        action="store_true",
+        help="write sequences.faa without evaluating rules",
+    )
     args = parser.parse_args(argv)
 
     os.makedirs(args.artifacts_dir, exist_ok=True)
@@ -95,15 +137,30 @@ def main(argv=None):
         for protein in proteins
     }
 
+    if args.sequences_only:
+        candidate_entries = scoped_candidate_entries(
+            protein_rows(proteins),
+            proteins_by_accession,
+            rules,
+        )
+        write_candidate_entries_fasta(
+            candidate_entries,
+            sequences_fasta(args.artifacts_dir),
+        )
+        return 0
+
     rows = rules.check_proteins(
         proteins,
         rule_results_tsv(args.artifacts_dir),
         artifacts_dir=args.artifacts_dir,
     )
-    write_fasta_artifact(
+    candidate_entries = scoped_candidate_entries(
         rows,
         proteins_by_accession,
         rules,
+    )
+    write_candidate_entries_fasta(
+        candidate_entries,
         sequences_fasta(args.artifacts_dir),
     )
     return 0

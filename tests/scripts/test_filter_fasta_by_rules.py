@@ -1,4 +1,5 @@
 import csv
+import io
 import os
 import sys
 import tempfile
@@ -152,6 +153,40 @@ class TestFilterFastaByRulesScript(unittest.TestCase):
             finally:
                 sys.path.remove(tmpd)
                 sys.modules.pop("fasta_rules", None)
+
+    def test_sequences_only_writes_fasta_without_evaluating_rules(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "proteins.faa")
+            artifacts = os.path.join(tmpd, "artifacts")
+            write_fasta_from_dict({"p1": "MMT"}, fasta)
+            rule_spec = self.write_rule_module(tmpd, [
+                "from sieve.rules import Leader, Rules",
+                "mnsod_rule = Rules(Leader().is_mTP())",
+                "",
+            ])
+            stderr = io.StringIO()
+
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stderr", stderr), patch("sieve.rules.subprocess.run") as run:
+                    self.script.main([
+                        "--fasta", fasta,
+                        "-r", rule_spec,
+                        "--artifacts-dir", artifacts,
+                        "--sequences-only",
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("fasta_rules", None)
+
+            run.assert_not_called()
+            self.assertFalse(os.path.exists(rule_results_tsv(artifacts)))
+            self.assertIn("[sequences 1/1] p1 : discovering", stderr.getvalue())
+            self.assertIn("[sequences 1/1] p1 : done: candidates=2", stderr.getvalue())
+            self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {
+                "p1": "MMT",
+                "p1_with_leader_2_M": "MT",
+            })
 
     def test_genomic_only_rules_become_rule_errors_for_fasta_proteins(self):
         with tempfile.TemporaryDirectory() as tmpd:

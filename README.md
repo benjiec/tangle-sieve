@@ -32,7 +32,19 @@ Define rules for proteins using abstractions in `sieve/rules.py`.
 
 In a Tangle setup (see `tangle/README.md` for environment variables and
 directory structure), use the following to filter HMM detected and NCBI curated
-proteins matching a specific KO, through the rules (K04564 is a KO example)
+proteins matching a specific KO (K04564 is an example), then generate all
+candidate protein sequences with optional leader discovery
+
+```
+sieve-py sieve/scripts/ko-find-matches.py K04564 | \
+  PYTHONPATH=coral sieve-py sieve/scripts/filter-protein-by-rules.py \
+    -r coral.rules.mt_MnSOD.rule \
+    --sequences-only \
+    --artifacts-dir mtMnSOD_K04564
+```
+
+Ignoring the `--sequences-only` flag to pass the candidate sequences through
+the rules
 
 ```
 sieve-py sieve/scripts/ko-find-matches.py K04564 | \

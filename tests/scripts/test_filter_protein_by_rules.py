@@ -141,7 +141,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
 
             self.assertTrue(os.path.exists(os.path.join(artifacts, "rule-results.tsv")))
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomes", "g1")))
-            self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_locus_with_leader.tsv")))
+            self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_loci.tsv")))
             with open(os.path.join(artifacts, "rule-results.tsv"), "r", encoding="utf-8", newline="") as f:
                 rows = list(csv.DictReader(f, delimiter="\t"))
             self.assertEqual(
@@ -240,6 +240,59 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 "p_false": "MF",
             })
 
+    def test_sequences_only_writes_sequence_and_locus_artifacts_without_evaluating_rules(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
+            dict(
+                sequence_accession="p1",
+                sequence_database="g1",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_NCBI,
+            ),
+        ])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MMT"})
+        self.fx.write_genomic_fasta("g1", {"ctg1": "ATGATGACTTAA"})
+        self.fx.write_gff("g1", "\n".join([
+            "ctg1\tsrc\tmRNA\t1\t12\t.\t+\t.\tID=tx1",
+            "ctg1\tsrc\tCDS\t1\t9\t.\t+\t0\tID=cds1;Parent=tx1;protein_id=p1",
+            "ctg1\tsrc\tstart_codon\t1\t3\t.\t+\t0\tParent=tx1",
+            "ctg1\tsrc\tstop_codon\t10\t12\t.\t+\t0\tParent=tx1",
+            "",
+        ]))
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_leader_rule_module(tmpd)
+            artifacts = os.path.join(tmpd, "artifacts")
+            stdin = io.StringIO("p1\tg1\np_missing\tg1\n")
+            stderr = io.StringIO()
+            sys.path.insert(0, tmpd)
+            try:
+                with (
+                    patch("sys.stdin", stdin),
+                    patch("sys.stderr", stderr),
+                    patch("sieve.rules.subprocess.run") as run,
+                ):
+                    script.main([
+                        "-r", "leader_rules.mnsod_rule",
+                        "--artifacts-dir", artifacts,
+                        "--sequences-only",
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("leader_rules", None)
+
+            run.assert_not_called()
+            self.assertIn("Ignoring p_missing\tg1", stderr.getvalue())
+            self.assertIn("[sequences 1/1] p1 g1: discovering", stderr.getvalue())
+            self.assertIn("[sequences 1/1] p1 g1: done: candidates=2", stderr.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(artifacts, "rule-results.tsv")))
+            self.assertFalse(os.path.exists(os.path.join(artifacts, "genomes")))
+            self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_loci.tsv")))
+            self.assertEqual(read_fasta_as_dict(os.path.join(artifacts, "sequences.faa")), {
+                "p1": "MMT",
+                "p1_with_leader_2_M": "MT",
+            })
+
     def test_unfiltered_fasta_uses_rule_scoped_leader_accessions(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
         self.fx.write_manifest([
@@ -302,8 +355,18 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 set(read_fasta_as_dict(os.path.join(artifacts, "sequences.faa")).keys()),
                 {"p1_with_leader_u3_PF00081_anchor_M"},
             )
+            with open(os.path.join(artifacts, "genomic_loci.tsv"), "r", encoding="utf-8", newline="") as f:
+                locus_rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(
+                {
+                    row["sequence accession"]
+                    for row in locus_rows
+                    if row["feature type"] == "start"
+                },
+                {"p1_with_leader_u3_PF00081_anchor_M"},
+            )
 
-    def test_writes_genomic_locus_with_leader_artifact(self):
+    def test_writes_genomic_loci_artifact(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
         ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
             dict(
@@ -340,7 +403,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.modules.pop("constant_rules", None)
 
             with open(
-                os.path.join(artifacts, "genomic_locus_with_leader.tsv"),
+                os.path.join(artifacts, "genomic_loci.tsv"),
                 "r",
                 encoding="utf-8",
                 newline="",
@@ -390,22 +453,23 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
         ])
 
         with tempfile.TemporaryDirectory() as tmpd:
-            self.write_rule_module(tmpd)
+            self.write_leader_rule_module(tmpd)
             artifacts = os.path.join(tmpd, "artifacts")
             stdin = io.StringIO("p_locus\tg1\n")
             sys.path.insert(0, tmpd)
             try:
                 with patch("sys.stdin", stdin):
                     script.main([
-                        "-r", "constant_rules.mnsod_rule",
+                        "-r", "leader_rules.mnsod_rule",
                         "--artifacts-dir", artifacts,
+                        "--sequences-only",
                     ])
             finally:
                 sys.path.remove(tmpd)
-                sys.modules.pop("constant_rules", None)
+                sys.modules.pop("leader_rules", None)
 
             with open(
-                os.path.join(artifacts, "genomic_locus_with_leader.tsv"),
+                os.path.join(artifacts, "genomic_loci.tsv"),
                 "r",
                 encoding="utf-8",
                 newline="",
@@ -466,7 +530,7 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 sys.modules.pop("constant_rules", None)
 
             with open(
-                os.path.join(artifacts, "genomic_locus_with_leader.tsv"),
+                os.path.join(artifacts, "genomic_loci.tsv"),
                 "r",
                 encoding="utf-8",
                 newline="",

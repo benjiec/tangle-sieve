@@ -11,6 +11,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from tangle.detected import DetectedTable
+from sieve.fasta_protein import FastaProtein
 from sieve.protein import (
     CuratedProtein,
     ProteinHMMAlignment,
@@ -615,10 +616,9 @@ class TestRules(unittest.TestCase):
         with patch(
             "sieve.rules.subprocess.run",
             side_effect=self.fake_targetp_with_expected_ids([
-                "p1",
                 "p1_with_leader_u3_PF00081_M",
                 "p1_with_leader_u2_PF00081_M",
-            ], {"p1": "noTP"}),
+            ]),
         ):
             with tempfile.TemporaryDirectory() as tmpd:
                 rule = Leader().upstreamOfPfam("PF00081.28").betweenAA(-3, 0).is_mTP()
@@ -628,7 +628,6 @@ class TestRules(unittest.TestCase):
         self.assertEqual(
             [(row["sequence accession"], row[label], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
                 ("p1_with_leader_u3_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
                 ("p1_with_leader_u2_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
             ],
@@ -723,10 +722,9 @@ class TestRules(unittest.TestCase):
         with patch(
             "sieve.rules.subprocess.run",
             side_effect=self.fake_targetp_with_expected_ids([
-                "p1",
                 "p1_with_leader_u1_PF00081_M",
                 "p1_with_leader_1_PF00081_M",
-            ], {"p1": "noTP"}),
+            ]),
         ):
             with tempfile.TemporaryDirectory() as tmpd:
                 rule = Leader().upstreamOfPfam("PF00081").betweenAA(-1, 1).is_mTP()
@@ -736,13 +734,12 @@ class TestRules(unittest.TestCase):
         self.assertEqual(
             [(row["sequence accession"], row[label], self.leader_call_columns(row)) for row in rows],
             [
-                ("p1", RULE_FALSE, TARGETP_NO_TP_COLUMNS),
                 ("p1_with_leader_u1_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
                 ("p1_with_leader_1_PF00081_M", RULE_TRUE, TARGETP_MTP_COLUMNS),
             ],
         )
 
-    def test_leader_upstream_of_pfam_falls_back_to_original_sequence_without_matching_pfam_hit(self):
+    def test_leader_upstream_of_pfam_rejects_without_matching_pfam_hit(self):
         self.fx.write_manifest([
             self.fx.manifest_row("p1", "g1"),
         ])
@@ -750,17 +747,45 @@ class TestRules(unittest.TestCase):
         row = self.fx.detected_row("p1", "g1", "PF99999.1", "Pfam")
         DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [row])
 
-        with patch(
-            "sieve.rules.subprocess.run",
-            side_effect=self.fake_targetp_with_expected_ids(["p1"], {"p1": "noTP"}),
-        ):
+        with patch("sieve.rules.subprocess.run") as run:
             with tempfile.TemporaryDirectory() as tmpd:
                 rule = Leader().upstreamOfPfam("PF00081").betweenAA(-30, 0).is_mTP()
                 rows = Rules(rule).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
 
-        self.assertEqual(rows[0]["Leader().upstreamOfPfam('PF00081').betweenAA(-30, 0).is_mTP()"], RULE_FALSE)
-        self.assertEqual(rows[0]["sequence accession"], "p1")
-        self.assertEqual(self.leader_call_columns(rows[0]), TARGETP_NO_TP_COLUMNS)
+        run.assert_not_called()
+        self.assertEqual(rows, [])
+
+    def test_leader_upstream_of_pfam_fallback_original_must_be_in_anchor_window(self):
+        row = self.fx.detected_row("p1", "", "PF00081.28", "Pfam")
+        row.update(query_start=5, query_end=15, target_start=1, target_end=11)
+        protein = FastaProtein("p1", "AAAAAA", pfam_rows=[row])
+
+        with patch(
+            "sieve.rules.subprocess.run",
+            side_effect=self.fake_targetp_with_expected_ids(["p1"]),
+        ):
+            with tempfile.TemporaryDirectory() as tmpd:
+                rule = Leader().upstreamOfPfam("PF00081").betweenAA(-5, -3).is_mTP()
+                rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+
+        label = "Leader().upstreamOfPfam('PF00081').betweenAA(-5, -3).is_mTP()"
+        self.assertEqual(
+            [(row["sequence accession"], row[label], self.leader_call_columns(row)) for row in rows],
+            [("p1", RULE_TRUE, TARGETP_MTP_COLUMNS)],
+        )
+
+    def test_leader_upstream_of_pfam_rejects_fallback_original_outside_anchor_window(self):
+        row = self.fx.detected_row("p1", "", "PF00081.28", "Pfam")
+        row.update(query_start=5, query_end=15, target_start=1, target_end=11)
+        protein = FastaProtein("p1", "AAAAAA", pfam_rows=[row])
+
+        with patch("sieve.rules.subprocess.run") as run:
+            with tempfile.TemporaryDirectory() as tmpd:
+                rule = Leader().upstreamOfPfam("PF00081").betweenAA(-3, -1).is_mTP()
+                rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+
+        run.assert_not_called()
+        self.assertEqual(rows, [])
 
     def test_leader_upstream_of_pfam_uses_ncbi_spliced_prefix_before_anchor(self):
         cases = [
@@ -903,10 +928,9 @@ class TestRules(unittest.TestCase):
                 with patch(
                     "sieve.rules.subprocess.run",
                     side_effect=self.fake_targetp_with_expected_ids([
-                        "p1",
                         "p1_with_leader_u1_PF00081_M",
                         "p1_with_leader_1_PF00081_M",
-                    ], {"p1": "noTP"}),
+                    ]),
                 ):
                     with tempfile.TemporaryDirectory() as tmpd:
                         rule = Leader().upstreamOfPfam("PF00081").betweenAA(-1, 1).is_mTP()

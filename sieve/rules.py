@@ -671,13 +671,22 @@ class LeaderRule(Rule):
         if self.pfam_accession is not None:
             anchor = _earliest_pfam_anchor(protein, self.pfam_accession)
             if anchor is None:
-                return _original_sequence_candidate(protein)
-            return _dedupe_sequence_candidates(protein.leader_sequence_candidates_at_anchor(
+                return []
+            candidates = protein.leader_sequence_candidates_at_anchor(
                 anchor,
                 _target_prefix(self.pfam_accession),
                 self.window_start,
                 self.window_end,
-            ))
+            )
+            return _dedupe_sequence_candidates([
+                candidate for candidate in candidates
+                if candidate.start_label or _original_candidate_in_anchor_window(
+                    candidate,
+                    anchor,
+                    self.window_start,
+                    self.window_end,
+                )
+            ])
 
         candidates = [
             candidate for candidate in protein.sequences_with_leader()
@@ -792,6 +801,14 @@ def _coord_in_window(coord, start, end):
     low = min(start, end)
     high = max(start, end)
     return coord != 0 and low <= coord <= high
+
+
+def _original_candidate_in_anchor_window(candidate, anchor_aa_1b, window_start, window_end):
+    return _coord_in_window(
+        _candidate_coord_relative_to_anchor(candidate.start_aa_1b, anchor_aa_1b),
+        window_start,
+        window_end,
+    )
 
 
 def _original_sequence_candidate(protein):
