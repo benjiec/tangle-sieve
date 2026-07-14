@@ -1,20 +1,173 @@
 # Rules
 
-Sieve rules are Python objects, usually collected in a `Rules(...)` wrapper and
-referenced from scripts with `-r module.path.rule_name`.
-
-For example:
+Sieve rules are Python objects that describe which proteins should pass a
+filter. In normal script usage, you define a rule in a Python module and pass it
+with `-r module.path.rule_name`.
 
 ```python
-from sieve.rules import Leader, Rules
+from sieve.rules import Leader, Pfam, Rules
 
-rule = Rules(
-    Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).is_mTP()
+mnsod_rule = Rules(
+    Pfam.matches("PF00081")
+    & Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).is_mTP()
 )
 ```
 
-This document currently covers `Leader` rules. Other rule types can be added
-later.
+The object referenced by `-r` may be either a single rule or an already wrapped
+`Rules(...)` instance. Sieve wraps raw rule objects automatically.
+
+
+## Rule Results
+
+Rule results are written to `rule-results.tsv`. The standard columns are:
+
+```text
+protein accession
+sequence accession
+genome accession
+contig accession
+pass all
+```
+
+Each atomic rule also gets its own column. Some rules add annotation columns,
+such as `Leader.call('mTP')`.
+
+`pass all` is the final result for the whole rule expression on a candidate
+sequence row. For rules that discover alternative leader starts, a single input
+protein can produce multiple output rows, one per scoped sequence candidate.
+
+Common result values are:
+
+```text
+true
+false
+maybe
+error
+yes
+too_far
+missing_<value>
+missing_<value>_and_<value>
+```
+
+`true`, `yes`, and `too_far` are considered passing values. `false`, `maybe`,
+`error`, and `missing_*` values are not passing values.
+
+For `&`, any `false` makes the combined rule false. If there is no false value,
+`error` and then `maybe` are preserved. For `|`, any passing value makes the
+combined rule true; otherwise `maybe` and then `error` are preserved when
+present.
+
+
+## Combining Rules
+
+Rules compose with Python operators:
+
+```python
+from sieve.rules import KO, Leader, Pfam, Rules
+
+mnsod_rule = Rules(
+    (Pfam.matches("PF00081") | Pfam.matches("PF02777"))
+    & KO.matches("K04564")
+    & Leader().is_mTP()
+)
+```
+
+Use parentheses whenever mixing `&` and `|`; normal Python precedence applies.
+
+
+## Pfam Rules
+
+Use `Pfam.matches(accession)` to require a detected Pfam hit.
+
+```python
+from sieve.rules import Pfam, Rules
+
+rule = Rules(Pfam.matches("PF00081"))
+```
+
+Pfam accessions are prefix-matched before the first dot. This means
+`PF00081` matches versioned hits such as `PF00081.28`. The rule returns `true`
+when any detected Pfam row for the protein matches, otherwise `false`.
+
+For FASTA input, Pfam rows are produced by `filter-fasta-by-rules.py` when
+`--pfam-hmm` is supplied. For curated protein input, Pfam rows come from the
+available genomics tables.
+
+
+## KO Rules
+
+Use `KO.matches(accession)` to require a detected KO assignment.
+
+```python
+from sieve.rules import KO, Rules
+
+rule = Rules(KO.matches("K04564"))
+```
+
+KO accessions are matched exactly. The rule returns `true` when any detected KO
+row for the protein matches, otherwise `false`.
+
+For FASTA input, KO rows are produced by `filter-fasta-by-rules.py` when
+`--ko-hmm` and `--ko-thresholds` are supplied. For curated protein input, KO
+rows come from the available genomics tables.
+
+
+## HMM Alignment Rules
+
+`HMMAlignment(profile)` rules align each protein to an HMM profile and evaluate
+positions in profile coordinates. The profile path is passed to the rule; the
+rule label uses the basename of the profile path.
+
+```python
+from sieve.rules import HMMAlignment, Rules
+
+rule = Rules(HMMAlignment("/models/profile.hmm").covers(1, 100))
+```
+
+The alignment is cached per protein and profile while evaluating a rule set.
+
+
+## HMMAlignment().is_at(...)
+
+Use `is_at(expected, hmm_pos)` to require an exact amino acid string beginning
+at a 1-based HMM position.
+
+```python
+rule = Rules(HMMAlignment("profile.hmm").is_at("H", 27))
+rule = Rules(HMMAlignment("profile.hmm").is_at("HAD", 27))
+```
+
+The rule returns `true` only if every requested HMM position is covered by a
+non-gap residue and the observed amino acids match `expected`. If any requested
+position is absent or mismatched, the rule returns `false`.
+
+
+## HMMAlignment().matches_regex(...)
+
+Use `matches_regex(pattern, hmm_pos)` to match a regular expression against the
+aligned amino acid string beginning at a 1-based HMM position.
+
+```python
+rule = Rules(HMMAlignment("profile.hmm").matches_regex("EFN[AGST]G", 5))
+```
+
+The regex is evaluated with Python regular expression syntax. Alignment gaps
+inside the HMM-covered region are represented as `-`. Matching stops when the
+rule reaches a position outside the HMM alignment. If there is no aligned text
+to test, the rule returns `false`.
+
+
+## HMMAlignment().covers(...)
+
+Use `covers(start, end)` to require every HMM position in an inclusive 1-based
+range to be covered by a protein residue.
+
+```python
+rule = Rules(HMMAlignment("profile.hmm").covers(1, 45))
+```
+
+The rule returns `true` when every position from `start` through `end` has a
+non-gap residue, otherwise `false`.
 
 
 ## Leader Rules
@@ -23,7 +176,7 @@ later.
 candidate sequences, and pass proteins whose candidate leader classification
 matches the requested prediction.
 
-Supported predictions are:
+Supported TargetP predictions are:
 
 ```python
 Leader().is_mTP()
@@ -238,6 +391,180 @@ Upstream coordinates use a `u` prefix in accessions, so coordinate `-15`
 appears as `u15`.
 
 
+## TF Motif Rules
+
+`TFMotifs.has_within(distance, motif_a, motif_b, min_score_threshold=8)` scans
+genomic locus sequence with `gimme scan` and evaluates motif hits in genomic
+locus coordinates.
+
+```python
+from sieve.rules import TFMotifs, Rules
+
+rule = Rules(
+    TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP")
+)
+```
+
+Motif names are prefix-matched, so `GM.5.0.Rel` matches a hit named
+`GM.5.0.Rel.0001`. Hits below `min_score_threshold` are ignored. Strand is
+recorded by Gimme but does not prevent two hits from pairing.
+
+The rule searches for at least one qualifying hit for each motif. If both are
+present and the nearest edges of any motif pair are within `distance`, the rule
+returns `yes`. If both are present but no pair is close enough, the rule returns
+`too_far`, which is treated as passing. Missing motifs return non-passing
+`missing_*` values.
+
+Possible TF motif outcomes include:
+
+```text
+yes
+too_far
+missing_GM.5.0.Rel
+missing_GM.5.0.bZIP
+missing_GM.5.0.Rel_and_GM.5.0.bZIP
+false
+error
+```
+
+`false` is used when the requested scope has no intervals to scan, such as
+asking for introns in a single-exon gene.
+
+
+## TF Motif Scopes
+
+Without an explicit scope, TF motif rules consider all CDS/exon intervals and
+all introns in the locus:
+
+```python
+TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP")
+```
+
+Use `.in_intron()` to search any intron, or `.in_intron(n)` to search a
+specific 1-based intron:
+
+```python
+TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_intron()
+TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_intron(2)
+```
+
+Use `.in_exon()` to search any CDS/exon interval, or `.in_exon(n)` to search a
+specific 1-based CDS/exon:
+
+```python
+TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_exon()
+TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_exon(2)
+```
+
+Use `.between(start, end)` to search a locus-relative genomic interval:
+
+```python
+TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").between(81, 90)
+```
+
+For `.between(...)`, start and end may be supplied in either order. For intron
+and exon scopes, numbering follows the gene's CDS order. On reverse-strand
+genes, intron 1 and exon 1 are still counted from the gene direction rather than
+from the leftmost genomic coordinate.
+
+A TF motif rule can only be scoped once. For example,
+`.in_intron(2).between(1, 10)` is invalid.
+
+
+## Result Filters
+
+Result filters are used by downstream scripts that read `rule-results.tsv`,
+such as scripts that turn rule results back into FASTA. They live in
+`sieve.result_filters`, not `sieve.rules`.
+
+```python
+from sieve.result_filters import Field, LeaderCall
+
+is_positive = (
+    Field("pass all").eq("true")
+    & LeaderCall("mTP").gte(80)
+)
+```
+
+Like rules, filters compose with Python operators:
+
+```python
+is_positive = Field("pass all").eq("true") | Field("manual keep").eq("yes")
+is_negative = ~Field("pass all").eq("true")
+```
+
+The object referenced by a result-filter script must be a
+`RuleResultFilter` instance.
+
+
+## Field(...)
+
+Use `Field(name)` to select a single exact column name from `rule-results.tsv`.
+
+```python
+from sieve.result_filters import Field
+
+is_positive = Field("pass all").eq("true")
+high_score = Field("score").gte(50)
+```
+
+Available comparisons are:
+
+```python
+Field("column").eq("true")          # exact string equality
+Field("column").ne("false")         # exact string inequality
+Field("column").num_eq(1)           # numeric equality
+Field("column").num_ne(0)           # numeric inequality
+Field("column").gt(10)
+Field("column").gte(10)
+Field("column").ge(10)              # alias for gte
+Field("column").lt(10)
+Field("column").lte(10)
+Field("column").le(10)              # alias for lte
+Field("column").matches("MnSOD")    # regex search
+Field("column").not_matches("bad")  # inverse regex search
+```
+
+`eq` and `ne` compare strings. Numeric comparisons parse both the row value and
+the expected value as numbers.
+
+
+## FieldRegex(...)
+
+Use `FieldRegex(pattern)` to select columns whose names fully match a regular
+expression. Because a regex can match multiple columns, you must choose `.any()`
+or `.all()` before comparing.
+
+```python
+from sieve.result_filters import FieldRegex
+
+any_pfam = FieldRegex(r"Pfam\.matches.+").any().eq("true")
+all_hmm_checks = FieldRegex(r"HMMAlignment.+").all().eq("true")
+```
+
+`.any()` passes if any matching column passes the comparison. `.all()` passes
+only if every matching column passes the comparison.
+
+
+## LeaderCall(...)
+
+`LeaderCall(prediction)` is a convenience helper for leader annotation columns.
+
+```python
+from sieve.result_filters import LeaderCall
+
+high_mtp = LeaderCall("mTP").gte(80)
+er_score = LeaderCall("Endoplasmic reticulum").ge(10)
+```
+
+These are equivalent to:
+
+```python
+Field("Leader.call('mTP')").gte(80)
+Field("Leader.call('Endoplasmic reticulum')").ge(10)
+```
+
+
 ## Examples
 
 Classify mitochondrial targeting peptides near the protein start:
@@ -285,12 +612,64 @@ from sieve.rules import Leader, Rules
 rule = Rules(Leader().localize_at("Endoplasmic reticulum"))
 ```
 
-Combine leader rules with standard Python operators supported by Sieve rules:
+Require Pfam, KO, and a leader call:
+
+```python
+from sieve.rules import KO, Leader, Pfam, Rules
+
+rule = Rules(
+    Pfam.matches("PF00081")
+    & KO.matches("K04564")
+    & Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).is_mTP()
+)
+```
+
+Require HMM coverage and a conserved motif at profile positions:
+
+```python
+from sieve.rules import HMMAlignment, Rules
+
+profile = HMMAlignment("models/mnsod.hmm")
+
+rule = Rules(
+    profile.covers(1, 180)
+    & profile.is_at("H", 27)
+    & profile.matches_regex("D.E", 150)
+)
+```
+
+Find proteins with a TF motif pair in the second intron:
+
+```python
+from sieve.rules import Rules, TFMotifs
+
+rule = Rules(
+    TFMotifs.has_within(
+        20,
+        "GM.5.0.Rel",
+        "GM.5.0.bZIP",
+        min_score_threshold=8,
+    ).in_intron(2)
+)
+```
+
+Combine leader rules with `|`:
 
 ```python
 from sieve.rules import Leader, Rules
 
 rule = Rules(
     Leader().is_mTP() | Leader().is_SP()
+)
+```
+
+Define a positive-result filter for high-confidence leader rows:
+
+```python
+from sieve.result_filters import Field, LeaderCall
+
+is_positive = (
+    Field("pass all").eq("true")
+    & LeaderCall("mTP").gte(80)
 )
 ```
