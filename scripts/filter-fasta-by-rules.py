@@ -124,6 +124,7 @@ def main(argv=None):
         action="store_true",
         help="write sequences.faa without evaluating rules",
     )
+    parser.add_argument("--deeploc-csv")
     args = parser.parse_args(argv)
 
     os.makedirs(args.artifacts_dir, exist_ok=True)
@@ -153,6 +154,7 @@ def main(argv=None):
         proteins,
         rule_results_tsv(args.artifacts_dir),
         artifacts_dir=args.artifacts_dir,
+        deeploc_csv=args.deeploc_csv,
     )
     candidate_entries = scoped_candidate_entries(
         rows,

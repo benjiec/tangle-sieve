@@ -59,6 +59,24 @@ class TestFilterFastaByRulesScript(unittest.TestCase):
         with open(path, "r", encoding="utf-8", newline="") as f:
             return list(csv.DictReader(f, delimiter="\t"))
 
+    def write_deeploc_csv(self, path, rows):
+        fieldnames = [
+            "Protein_ID",
+            "Localizations",
+            "Signals",
+            "Endoplasmic reticulum",
+        ]
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({
+                    "Protein_ID": "",
+                    "Localizations": "",
+                    "Signals": "",
+                    "Endoplasmic reticulum": "",
+                } | row)
+
     def test_runs_hmmsearches_and_writes_standard_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpd:
             fasta = os.path.join(tmpd, "proteins.faa")
@@ -183,6 +201,69 @@ class TestFilterFastaByRulesScript(unittest.TestCase):
             self.assertFalse(os.path.exists(rule_results_tsv(artifacts)))
             self.assertIn("[sequences 1/1] p1 : discovering", stderr.getvalue())
             self.assertIn("[sequences 1/1] p1 : done: candidates=2", stderr.getvalue())
+            self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {
+                "p1": "MMT",
+                "p1_with_leader_2_M": "MT",
+            })
+
+    def test_deeploc_csv_drives_leader_rule_without_targetp(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "proteins.faa")
+            deeploc_csv = os.path.join(tmpd, "deeploc.csv")
+            artifacts = os.path.join(tmpd, "artifacts")
+            write_fasta_from_dict({"p1": "MMT"}, fasta)
+            self.write_deeploc_csv(deeploc_csv, [
+                {
+                    "Protein_ID": "p1",
+                    "Localizations": "Cytoplasm",
+                    "Signals": "",
+                    "Endoplasmic reticulum": "0.1",
+                },
+                {
+                    "Protein_ID": "p1_with_leader_2_M",
+                    "Localizations": "Endoplasmic reticulum",
+                    "Signals": "Mitochondrial transit peptide",
+                    "Endoplasmic reticulum": "0.9",
+                },
+            ])
+            rule_spec = self.write_rule_module(tmpd, [
+                "from sieve.rules import Leader, Rules",
+                "mnsod_rule = Rules(Leader().is_mTP(deeploc=True))",
+                "",
+            ])
+
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sieve.rules.subprocess.run") as run:
+                    self.script.main([
+                        "--fasta", fasta,
+                        "-r", rule_spec,
+                        "--artifacts-dir", artifacts,
+                        "--deeploc-csv", deeploc_csv,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("fasta_rules", None)
+
+            run.assert_not_called()
+            rows = self.read_rows(rule_results_tsv(artifacts))
+            label = "Leader().betweenAA(-30, 3).is_mTP(deeploc=True)"
+            self.assertEqual(
+                [
+                    (
+                        row["sequence accession"],
+                        row[label],
+                        row["Leader.call('mTP')"],
+                        row["Leader.localization"],
+                        row["Leader.call('Endoplasmic reticulum')"],
+                    )
+                    for row in rows
+                ],
+                [
+                    ("p1", "false", "0", "Cytoplasm", "10"),
+                    ("p1_with_leader_2_M", "true", "100", "Endoplasmic reticulum", "90"),
+                ],
+            )
             self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {
                 "p1": "MMT",
                 "p1_with_leader_2_M": "MT",

@@ -31,6 +31,14 @@ Leader().is_SP()
 Leader().is_noTP()
 ```
 
+`is_mTP()` and `is_SP()` can use either TargetP or DeepLoc. TargetP is the
+default. DeepLoc is selected per rule:
+
+```python
+Leader().is_mTP(deeploc=True)
+Leader().is_SP(deeploc=True)
+```
+
 By default, leader starts are considered near the beginning of the protein:
 
 ```python
@@ -129,11 +137,11 @@ protein sequence only when its start is within the requested Pfam-relative
 Rules that do not use leader discovery use the original protein sequence.
 
 
-## Classification
+## TargetP Classification
 
-Leader candidates are classified with TargetP. Sieve writes one candidate row
-for each scoped leader candidate and records the TargetP probabilities in rule
-result columns:
+By default, leader candidates are classified with TargetP. Sieve writes one
+candidate row for each scoped leader candidate and records the TargetP
+probabilities in rule result columns:
 
 ```text
 Leader.call('noTP')
@@ -150,6 +158,65 @@ When a protein has multiple leader candidates, the protein-level leader rule
 passes if any scoped candidate has the requested prediction. Candidate-level rows
 then show which specific sequence accessions matched the requested leader
 classification.
+
+
+## DeepLoc Classification
+
+DeepLoc classification is enabled by passing `deeploc=True` to `is_mTP()` or
+`is_SP()`:
+
+```python
+Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).is_mTP(deeploc=True)
+Leader().is_SP(deeploc=True)
+```
+
+When a rule uses DeepLoc, the filtering script must be given a DeepLoc result
+CSV with `--deeploc-csv`. Sieve does not run DeepLoc itself.
+
+The CSV must include these columns:
+
+```text
+Protein_ID
+Localizations
+Signals
+```
+
+`Protein_ID` must match the candidate sequence accession. That includes
+discovered leader accessions such as `p1_with_leader_2_M`, not just the
+original protein accession.
+
+For signal rules, Sieve reads the `Signals` column:
+
+* `Mitochondrial transit peptide` is treated as `Leader.call('mTP') == 100`.
+* `Signal peptide` is treated as `Leader.call('SP') == 100`.
+* A blank or unrecognized signal gives both `mTP` and `SP` a score of `0`.
+
+Other numeric DeepLoc columns are copied into rule results as percentage-valued
+leader calls. For example, a CSV column named `Endoplasmic reticulum` with a
+value of `0.2588` becomes:
+
+```text
+Leader.call('Endoplasmic reticulum') = 26
+```
+
+Non-numeric values in these additional columns are ignored.
+
+DeepLoc localization can be matched directly with `localize_at(...)`:
+
+```python
+Leader().localize_at("Endoplasmic reticulum")
+```
+
+`localize_at(...)` uses an exact string match against the `Localizations`
+column. It still evaluates scoped leader candidates in the same way as other
+`Leader()` rules.
+
+DeepLoc score columns can also be referenced with `LeaderCall(...)` in
+positive-rule expressions:
+
+```python
+LeaderCall("Endoplasmic reticulum").ge(10)
+```
 
 
 ## Candidate Accessions
@@ -197,6 +264,25 @@ from sieve.rules import Leader, Rules
 rule = Rules(
     Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).is_mTP()
 )
+```
+
+Classify mitochondrial targeting peptides with DeepLoc results supplied on the
+command line:
+
+```python
+from sieve.rules import Leader, Rules
+
+rule = Rules(
+    Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).is_mTP(deeploc=True)
+)
+```
+
+Match a DeepLoc localization:
+
+```python
+from sieve.rules import Leader, Rules
+
+rule = Rules(Leader().localize_at("Endoplasmic reticulum"))
 ```
 
 Combine leader rules with standard Python operators supported by Sieve rules:

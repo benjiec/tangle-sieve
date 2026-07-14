@@ -25,6 +25,13 @@ TARGETP_PROBABILITY_COLUMNS = {
     prediction: f"Leader.call('{prediction}')"
     for prediction in TARGETP_PROBABILITY_ORDER
 }
+DEEPLOC_PROTEIN_ID_COLUMN = "Protein_ID"
+DEEPLOC_LOCALIZATIONS_COLUMN = "Localizations"
+DEEPLOC_SIGNALS_COLUMN = "Signals"
+DEEPLOC_MTP_SIGNAL = "Mitochondrial transit peptide"
+DEEPLOC_SP_SIGNAL = "Signal peptide"
+DEEPLOC_SIGNAL_PREDICTIONS = ["mTP", "SP"]
+LEADER_LOCALIZATION_COLUMN = "Leader.localization"
 
 
 def _rule_bool(value):
@@ -138,7 +145,7 @@ class Rule(object):
     def evaluate(self, context):
         raise NotImplementedError
 
-    def evaluate_many(self, contexts, artifacts_dir=None):
+    def evaluate_many(self, contexts, artifacts_dir=None, **kwargs):
         results = {}
         for context in contexts:
             try:
@@ -161,6 +168,9 @@ class Rule(object):
         return [self]
 
     def uses_leader_candidates(self):
+        return False
+
+    def uses_deeploc(self):
         return False
 
     def resolve(self, context, atomic_results):
@@ -199,6 +209,9 @@ class CompositeRule(Rule):
 
     def uses_leader_candidates(self):
         return any(rule.uses_leader_candidates() for rule in self.rules)
+
+    def uses_deeploc(self):
+        return any(rule.uses_deeploc() for rule in self.rules)
 
 
 class AndRule(CompositeRule):
@@ -321,6 +334,9 @@ class Rules(object):
     def uses_leader_candidates(self):
         return self.rule.uses_leader_candidates()
 
+    def uses_deeploc(self):
+        return self.rule.uses_deeploc()
+
     def _scoped_sequence_candidates(self, protein, row):
         if not self.uses_leader_candidates():
             return _original_sequence_candidate(protein)
@@ -337,14 +353,22 @@ class Rules(object):
             if candidate.accession == sequence_accession
         ]
 
-    def check(self, protein_keys, output_tsv, artifacts_dir=None, trace=True):
+    def check(self, protein_keys, output_tsv, artifacts_dir=None, trace=True, deeploc_csv=None):
         contexts = [
             RuleContext(CuratedProtein(protein_accession, genome_accession))
             for protein_accession, genome_accession in protein_keys
         ]
-        return self.check_proteins(contexts, output_tsv, artifacts_dir=artifacts_dir, trace=trace)
+        return self.check_proteins(
+            contexts,
+            output_tsv,
+            artifacts_dir=artifacts_dir,
+            trace=trace,
+            deeploc_csv=deeploc_csv,
+        )
 
-    def check_proteins(self, proteins, output_tsv, artifacts_dir=None, trace=True):
+    def check_proteins(self, proteins, output_tsv, artifacts_dir=None, trace=True, deeploc_csv=None):
+        if self.uses_deeploc() and deeploc_csv is None:
+            raise ValueError("--deeploc-csv is required for DeepLoc-backed Leader rules")
         contexts = [
             protein if isinstance(protein, RuleContext) else RuleContext(protein)
             for protein in proteins
@@ -359,7 +383,11 @@ class Rules(object):
         for i, rule in enumerate(atomic_rules, start=1):
             if trace:
                 print(f"[rules {i}/{total_rules}] {rule.label}: {total_proteins} proteins", file=sys.stderr)
-            rule_results = rule.evaluate_many(contexts, _rule_artifacts_dir(artifacts_dir, rule))
+            rule_results = rule.evaluate_many(
+                contexts,
+                _rule_artifacts_dir(artifacts_dir, rule),
+                deeploc_csv=deeploc_csv,
+            )
             atomic_results[rule.label] = rule_results
             if trace:
                 counts = _result_counts(rule_results.values())
@@ -528,47 +556,79 @@ class Leader(object):
     def betweenAA(self, start, end):
         return Leader(start, end, self.pfam_accession)
 
-    def is_mTP(self):
-        return LeaderRule("mTP", self.window_start, self.window_end, self.pfam_accession)
+    def is_mTP(self, deeploc=False):
+        source = "deeploc" if deeploc else "targetp"
+        return LeaderRule("mTP", self.window_start, self.window_end, self.pfam_accession, source=source)
 
-    def is_SP(self):
-        return LeaderRule("SP", self.window_start, self.window_end, self.pfam_accession)
+    def is_SP(self, deeploc=False):
+        source = "deeploc" if deeploc else "targetp"
+        return LeaderRule("SP", self.window_start, self.window_end, self.pfam_accession, source=source)
 
     def is_noTP(self):
         return LeaderRule("noTP", self.window_start, self.window_end, self.pfam_accession)
 
+    def localize_at(self, localization):
+        return LeaderRule(
+            localization,
+            self.window_start,
+            self.window_end,
+            self.pfam_accession,
+            source="deeploc",
+            call_type="localization",
+        )
+
 
 class LeaderRule(Rule):
 
-    def __init__(self, prediction, window_start=-30, window_end=3, pfam_accession=None):
+    def __init__(
+        self,
+        prediction,
+        window_start=-30,
+        window_end=3,
+        pfam_accession=None,
+        source="targetp",
+        call_type="signal",
+    ):
         self.prediction = prediction
         self.window_start = window_start
         self.window_end = window_end
         self.pfam_accession = pfam_accession
+        self.source = source
+        self.call_type = call_type
         self.label = self._label()
         self._predictions_by_key = {}
+        self._annotation_columns = []
 
     def _label(self):
         base = "Leader()"
         if self.pfam_accession is not None:
             base += f".upstreamOfPfam('{self.pfam_accession}')"
         base += f".betweenAA({self.window_start}, {self.window_end})"
+        if self.call_type == "localization":
+            return f"{base}.localize_at('{self.prediction}')"
+        if self.source == "deeploc":
+            return f"{base}.is_{self.prediction}(deeploc=True)"
         return f"{base}.is_{self.prediction}()"
 
     def annotation_columns(self):
-        return [TARGETP_PROBABILITY_COLUMNS[prediction] for prediction in TARGETP_PROBABILITY_ORDER]
+        if self.source == "targetp":
+            return [TARGETP_PROBABILITY_COLUMNS[prediction] for prediction in TARGETP_PROBABILITY_ORDER]
+        return self._annotation_columns
 
     def uses_leader_candidates(self):
         return True
 
+    def uses_deeploc(self):
+        return self.source == "deeploc"
+
     def sequence_result(self, row, candidate):
         if row[self.label] == RULE_ERROR:
             return RULE_ERROR
-        if _leader_call_prediction_from_columns(row) == self.prediction:
+        if self._leader_call_matches(row):
             return RULE_TRUE
         return RULE_FALSE
 
-    def evaluate_many(self, contexts, artifacts_dir=None):
+    def evaluate_many(self, contexts, artifacts_dir=None, deeploc_csv=None, **kwargs):
         sequence_contexts = {}
         sequence_candidates = {}
         candidate_counts_by_key = {}
@@ -585,6 +645,15 @@ class LeaderRule(Rule):
         self._predictions_by_key = {}
         if not sequence_candidates:
             return results
+        if self.source == "deeploc":
+            return self._evaluate_many_deeploc(
+                contexts,
+                sequence_contexts,
+                sequence_candidates,
+                candidate_counts_by_key,
+                results,
+                deeploc_csv,
+            )
         try:
             with tempfile.TemporaryDirectory() as tmpd:
                 working_dir = artifacts_dir if artifacts_dir is not None else tmpd
@@ -637,6 +706,41 @@ class LeaderRule(Rule):
             )
         return results
 
+    def _evaluate_many_deeploc(
+        self,
+        contexts,
+        sequence_contexts,
+        sequence_candidates,
+        candidate_counts_by_key,
+        results,
+        deeploc_csv,
+    ):
+        try:
+            predictions = _parse_deeploc_csv(deeploc_csv)
+        except Exception as e:
+            print(f"{self.label} DeepLoc parse failed: {e}", file=sys.stderr)
+            return results
+
+        self._annotation_columns = _deeploc_annotation_columns(predictions.values())
+        calls_by_key = {context.key: [] for context in contexts}
+        for sequence_id, context in sequence_contexts.items():
+            call = predictions.get(sequence_id)
+            if call is None:
+                print(f"{self.label} missing DeepLoc row for {context.key}: {sequence_id}", file=sys.stderr)
+                results[context.key] = RULE_ERROR
+            else:
+                candidate = sequence_candidates[sequence_id]
+                calls_by_key[context.key].append((candidate.start_label, call))
+
+        for context in contexts:
+            if len(calls_by_key[context.key]) != candidate_counts_by_key[context.key]:
+                continue
+            self._predictions_by_key[context.key] = calls_by_key[context.key]
+            results[context.key] = _rule_bool(
+                any(self._call_matches_prediction(call) for _start, call in calls_by_key[context.key])
+            )
+        return results
+
     def annotations_many(self, contexts, rule_results):
         return {
             context.key: {"_Leader.calls_by_start": _format_leader_calls(self._predictions_by_key[context.key])}
@@ -648,13 +752,13 @@ class LeaderRule(Rule):
         if not _rule_passes(row[self.label]):
             return []
         if "sequence accession" in row:
-            if _leader_call_prediction_from_columns(row) != self.prediction:
+            if not self._leader_call_matches(row):
                 return []
             return candidates
         matching_starts = {
             start
-            for start, prediction in _parse_leader_calls(row)
-            if prediction == self.prediction
+            for start, call in _parse_leader_calls(row)
+            if self._columns_match_prediction(call)
         }
         if self.pfam_accession is not None:
             candidates = self._scoped_candidates(protein)
@@ -662,6 +766,21 @@ class LeaderRule(Rule):
             candidate for candidate in candidates
             if candidate.start_label in matching_starts
         ]
+
+    def _leader_call_matches(self, row):
+        if self.call_type == "localization":
+            return row.get(LEADER_LOCALIZATION_COLUMN, "") == self.prediction
+        return _leader_call_prediction_from_columns(row) == self.prediction
+
+    def _columns_match_prediction(self, columns):
+        if self.call_type == "localization":
+            return columns.get(LEADER_LOCALIZATION_COLUMN, "") == self.prediction
+        return _leader_call_prediction_from_columns(columns) == self.prediction
+
+    def _call_matches_prediction(self, call):
+        if self.call_type == "localization":
+            return call.localization == self.prediction
+        return call.prediction == self.prediction
 
     def scope_sequence_candidates(self, protein, candidates, row):
         return self._scoped_candidates(protein)
@@ -720,9 +839,19 @@ class TargetPCall:
         return self.probabilities.get(prediction)
 
 
+@dataclass
+class DeepLocCall:
+    prediction: str
+    localization: str
+    probabilities: dict
+
+    def probability(self, prediction):
+        return self.probabilities.get(prediction)
+
+
 def _format_leader_calls(calls):
     return {
-        start: _format_targetp_columns(call)
+        start: _format_leader_call_columns(call)
         for start, call in calls
     }
 
@@ -731,11 +860,30 @@ def _probability_percent(probability):
     return int(round(probability * 100))
 
 
+def _format_leader_call_columns(call):
+    if isinstance(call, DeepLocCall):
+        return _format_deeploc_columns(call)
+    return _format_targetp_columns(call)
+
+
 def _format_targetp_columns(call):
     return {
         TARGETP_PROBABILITY_COLUMNS[prediction]: _format_probability_percent(call.probability(prediction))
         for prediction in TARGETP_PROBABILITY_ORDER
     }
+
+
+def _format_deeploc_columns(call):
+    columns = {
+        LEADER_LOCALIZATION_COLUMN: call.localization,
+    }
+    for prediction in DEEPLOC_SIGNAL_PREDICTIONS:
+        columns[TARGETP_PROBABILITY_COLUMNS[prediction]] = _format_probability_percent(call.probability(prediction))
+    for prediction in sorted(call.probabilities):
+        if prediction in DEEPLOC_SIGNAL_PREDICTIONS:
+            continue
+        columns[_leader_call_column(prediction)] = _format_probability_percent(call.probability(prediction))
+    return columns
 
 
 def _format_probability_percent(probability):
@@ -751,6 +899,8 @@ def _leader_call_prediction_from_columns(row):
         if probability is not None:
             scored.append((probability, prediction))
     if not scored:
+        return ""
+    if max(probability for probability, _prediction in scored) <= 0:
         return ""
     return max(scored)[1]
 
@@ -789,6 +939,74 @@ def _parse_probability(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_deeploc_csv(path):
+    predictions = {}
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        for column in (DEEPLOC_PROTEIN_ID_COLUMN, DEEPLOC_LOCALIZATIONS_COLUMN, DEEPLOC_SIGNALS_COLUMN):
+            if column not in fieldnames:
+                raise ValueError(f"DeepLoc CSV is missing required column: {column}")
+        score_columns = [
+            column for column in fieldnames
+            if column not in {
+                DEEPLOC_PROTEIN_ID_COLUMN,
+                DEEPLOC_LOCALIZATIONS_COLUMN,
+                DEEPLOC_SIGNALS_COLUMN,
+            }
+        ]
+        for row in reader:
+            sequence_id = row.get(DEEPLOC_PROTEIN_ID_COLUMN, "")
+            if not sequence_id:
+                continue
+            if sequence_id in predictions:
+                raise ValueError(f"Duplicate DeepLoc Protein_ID: {sequence_id}")
+            signal = row.get(DEEPLOC_SIGNALS_COLUMN, "")
+            prediction = ""
+            probabilities = {
+                "mTP": 0.0,
+                "SP": 0.0,
+            }
+            if signal == DEEPLOC_MTP_SIGNAL:
+                prediction = "mTP"
+                probabilities["mTP"] = 1.0
+            elif signal == DEEPLOC_SP_SIGNAL:
+                prediction = "SP"
+                probabilities["SP"] = 1.0
+            for column in score_columns:
+                probability = _parse_probability(row.get(column, ""))
+                if probability is not None:
+                    probabilities[column] = probability
+            predictions[sequence_id] = DeepLocCall(
+                prediction=prediction,
+                localization=row.get(DEEPLOC_LOCALIZATIONS_COLUMN, ""),
+                probabilities=probabilities,
+            )
+    return predictions
+
+
+def _deeploc_annotation_columns(calls):
+    columns = [
+        TARGETP_PROBABILITY_COLUMNS[prediction]
+        for prediction in DEEPLOC_SIGNAL_PREDICTIONS
+    ]
+    columns.append(LEADER_LOCALIZATION_COLUMN)
+    seen = set(columns)
+    for call in calls:
+        for prediction in sorted(call.probabilities):
+            if prediction in DEEPLOC_SIGNAL_PREDICTIONS:
+                continue
+            column = _leader_call_column(prediction)
+            if column not in seen:
+                columns.append(column)
+                seen.add(column)
+    return columns
+
+
+def _leader_call_column(prediction):
+    return f"Leader.call('{prediction}')"
 
 
 def _candidate_coord_relative_to_anchor(candidate_start_aa_1b, anchor_aa_1b):
@@ -856,7 +1074,7 @@ def _earliest_pfam_anchor(protein, accession):
 def _parse_leader_calls(calls_by_start):
     calls = []
     for start, columns in calls_by_start.items():
-        calls.append((start, _leader_call_prediction_from_columns(columns)))
+        calls.append((start, columns))
     return calls
 
 
@@ -950,7 +1168,7 @@ class TFMotifWithinRule(Rule):
         if self.scope is not None:
             raise ValueError("TFMotifs rules can only be scoped once")
 
-    def evaluate_many(self, contexts, artifacts_dir=None):
+    def evaluate_many(self, contexts, artifacts_dir=None, **kwargs):
         sequence_ids = {_locus_sequence_id(context): context for context in contexts}
         results = {context.key: RULE_ERROR for context in contexts}
         loci = {}

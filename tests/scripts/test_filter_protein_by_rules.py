@@ -92,6 +92,33 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 "",
             ]))
 
+    def write_leader_deeploc_rule_module(self, tmpd):
+        module_path = os.path.join(tmpd, "leader_deeploc_rules.py")
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write("\n".join([
+                "from sieve.rules import Leader, Rules",
+                "mnsod_rule = Rules(Leader().is_mTP(deeploc=True))",
+                "",
+            ]))
+
+    def write_deeploc_csv(self, path, rows):
+        fieldnames = [
+            "Protein_ID",
+            "Localizations",
+            "Signals",
+            "Endoplasmic reticulum",
+        ]
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({
+                    "Protein_ID": "",
+                    "Localizations": "",
+                    "Signals": "",
+                    "Endoplasmic reticulum": "",
+                } | row)
+
     def write_leader_and_rule_module(self, tmpd):
         module_path = os.path.join(tmpd, "leader_and_rules.py")
         with open(module_path, "w", encoding="utf-8") as f:
@@ -238,6 +265,77 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 "p_true": "MT",
                 "p_maybe": "MM",
                 "p_false": "MF",
+            })
+
+    def test_deeploc_csv_drives_leader_rule_without_targetp(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
+            dict(
+                sequence_accession="p1",
+                sequence_database="g1",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_NCBI,
+            ),
+        ])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MMT"})
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            self.write_leader_deeploc_rule_module(tmpd)
+            deeploc_csv = os.path.join(tmpd, "deeploc.csv")
+            artifacts = os.path.join(tmpd, "artifacts")
+            self.write_deeploc_csv(deeploc_csv, [
+                {
+                    "Protein_ID": "p1",
+                    "Localizations": "Cytoplasm",
+                    "Signals": "",
+                    "Endoplasmic reticulum": "0.1",
+                },
+                {
+                    "Protein_ID": "p1_with_leader_2_M",
+                    "Localizations": "Endoplasmic reticulum",
+                    "Signals": "Mitochondrial transit peptide",
+                    "Endoplasmic reticulum": "0.9",
+                },
+            ])
+            stdin = io.StringIO("p1\tg1\n")
+            sys.path.insert(0, tmpd)
+            try:
+                with (
+                    patch("sys.stdin", stdin),
+                    patch("sieve.rules.subprocess.run") as run,
+                ):
+                    script.main([
+                        "-r", "leader_deeploc_rules.mnsod_rule",
+                        "--artifacts-dir", artifacts,
+                        "--deeploc-csv", deeploc_csv,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("leader_deeploc_rules", None)
+
+            run.assert_not_called()
+            with open(os.path.join(artifacts, "rule-results.tsv"), "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+            label = "Leader().betweenAA(-30, 3).is_mTP(deeploc=True)"
+            self.assertEqual(
+                [
+                    (
+                        row["sequence accession"],
+                        row[label],
+                        row["Leader.call('mTP')"],
+                        row["Leader.localization"],
+                        row["Leader.call('Endoplasmic reticulum')"],
+                    )
+                    for row in rows
+                ],
+                [
+                    ("p1", "false", "0", "Cytoplasm", "10"),
+                    ("p1_with_leader_2_M", "true", "100", "Endoplasmic reticulum", "90"),
+                ],
+            )
+            self.assertEqual(read_fasta_as_dict(os.path.join(artifacts, "sequences.faa")), {
+                "p1": "MMT",
+                "p1_with_leader_2_M": "MT",
             })
 
     def test_sequences_only_writes_sequence_and_locus_artifacts_without_evaluating_rules(self):

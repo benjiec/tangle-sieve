@@ -68,7 +68,7 @@ def group_protein_keys_by_genome(protein_keys):
     ]
 
 
-def check_rules_by_genome(rules, protein_keys, output_tsv, artifacts_dir=None):
+def check_rules_by_genome(rules, protein_keys, output_tsv, artifacts_dir=None, deeploc_csv=None):
     rows = []
     with tempfile.TemporaryDirectory() as tmpd:
         for genome_accession, genome_keys in group_protein_keys_by_genome(protein_keys):
@@ -85,6 +85,7 @@ def check_rules_by_genome(rules, protein_keys, output_tsv, artifacts_dir=None):
                     genome_keys,
                     group_tsv,
                     artifacts_dir=group_artifacts_dir,
+                    deeploc_csv=deeploc_csv,
                 ))
             finally:
                 CuratedProtein.clear_cache()
@@ -309,6 +310,7 @@ def main(argv=None):
         action="store_true",
         help=f"write sequences.faa and {GENOMIC_LOCI_TSV} without evaluating rules",
     )
+    parser.add_argument("--deeploc-csv")
     args = parser.parse_args(argv)
 
     rules = load_rules(args.rule)
@@ -333,6 +335,7 @@ def main(argv=None):
         protein_keys,
         output_tsv,
         artifacts_dir=args.artifacts_dir,
+        deeploc_csv=args.deeploc_csv,
     )
     candidate_entries = scoped_candidate_entries(rows, rules)
     write_locus_artifact(

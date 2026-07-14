@@ -33,6 +33,7 @@ from sieve.rules import (
     TFMotifs,
     _edge_distance,
     _parse_gimme_scan_output,
+    _parse_deeploc_csv,
     _parse_targetp_output,
     _targetp_call,
 )
@@ -170,6 +171,30 @@ class TestRules(unittest.TestCase):
             return CompletedProcess(cmd, 0, stdout="\n".join(output), stderr="")
 
         return fake_run
+
+    def write_deeploc_csv(self, path, rows):
+        fieldnames = [
+            "Protein_ID",
+            "Localizations",
+            "Signals",
+            "Membrane types",
+            "Cytoplasm",
+            "Endoplasmic reticulum",
+            "Soluble",
+        ]
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({
+                    "Protein_ID": "",
+                    "Localizations": "",
+                    "Signals": "",
+                    "Membrane types": "",
+                    "Cytoplasm": "",
+                    "Endoplasmic reticulum": "",
+                    "Soluble": "",
+                } | row)
 
     def test_pfam_matches_prefix_before_version_and_ko_matches_exactly(self):
         self.fx.write_protein_fixture("p1", "g1")
@@ -787,6 +812,135 @@ class TestRules(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(rows, [])
 
+    def test_leader_deeploc_mtp_uses_signal_and_score_annotations(self):
+        protein = FastaProtein("p1", "MMT")
+        with tempfile.TemporaryDirectory() as tmpd:
+            deeploc_csv = os.path.join(tmpd, "deeploc.csv")
+            self.write_deeploc_csv(deeploc_csv, [
+                {
+                    "Protein_ID": "p1",
+                    "Localizations": "Cytoplasm",
+                    "Signals": "",
+                    "Cytoplasm": "0.7658",
+                    "Endoplasmic reticulum": "0.2588",
+                    "Soluble": "0.7442",
+                },
+                {
+                    "Protein_ID": "p1_with_leader_2_M",
+                    "Localizations": "Endoplasmic reticulum",
+                    "Signals": "Mitochondrial transit peptide",
+                    "Cytoplasm": "0.1",
+                    "Endoplasmic reticulum": "0.88",
+                    "Soluble": "0.2",
+                },
+            ])
+            rows = Rules(Leader().is_mTP(deeploc=True)).check_proteins(
+                [protein],
+                os.path.join(tmpd, "rules.tsv"),
+                deeploc_csv=deeploc_csv,
+            )
+
+            output_rows = self.read_tsv(os.path.join(tmpd, "rules.tsv"))
+
+        label = "Leader().betweenAA(-30, 3).is_mTP(deeploc=True)"
+        self.assertEqual(
+            [
+                (
+                    row["sequence accession"],
+                    row[label],
+                    row["Leader.call('mTP')"],
+                    row["Leader.call('SP')"],
+                    row["Leader.localization"],
+                    row["Leader.call('Endoplasmic reticulum')"],
+                )
+                for row in rows
+            ],
+            [
+                ("p1", RULE_FALSE, "0", "0", "Cytoplasm", "26"),
+                ("p1_with_leader_2_M", RULE_TRUE, "100", "0", "Endoplasmic reticulum", "88"),
+            ],
+        )
+        self.assertEqual(output_rows[1]["Leader.call('Soluble')"], "20")
+
+    def test_leader_deeploc_sp_uses_signal_peptide(self):
+        protein = FastaProtein("p1", "MMT")
+        with tempfile.TemporaryDirectory() as tmpd:
+            deeploc_csv = os.path.join(tmpd, "deeploc.csv")
+            self.write_deeploc_csv(deeploc_csv, [
+                {"Protein_ID": "p1", "Signals": "", "Localizations": "Cytoplasm"},
+                {
+                    "Protein_ID": "p1_with_leader_2_M",
+                    "Signals": "Signal peptide",
+                    "Localizations": "Extracellular",
+                },
+            ])
+            rows = Rules(Leader().is_SP(deeploc=True)).check_proteins(
+                [protein],
+                os.path.join(tmpd, "rules.tsv"),
+                deeploc_csv=deeploc_csv,
+            )
+
+        label = "Leader().betweenAA(-30, 3).is_SP(deeploc=True)"
+        self.assertEqual(
+            [(row["sequence accession"], row[label], row["Leader.call('SP')"]) for row in rows],
+            [("p1", RULE_FALSE, "0"), ("p1_with_leader_2_M", RULE_TRUE, "100")],
+        )
+
+    def test_leader_deeploc_localize_at_uses_exact_localization(self):
+        protein = FastaProtein("p1", "MMT")
+        with tempfile.TemporaryDirectory() as tmpd:
+            deeploc_csv = os.path.join(tmpd, "deeploc.csv")
+            self.write_deeploc_csv(deeploc_csv, [
+                {"Protein_ID": "p1", "Localizations": "Endoplasmic reticulum", "Endoplasmic reticulum": "0.05"},
+                {"Protein_ID": "p1_with_leader_2_M", "Localizations": "Cytoplasm", "Endoplasmic reticulum": "0.95"},
+            ])
+            rows = Rules(Leader().localize_at("Endoplasmic reticulum")).check_proteins(
+                [protein],
+                os.path.join(tmpd, "rules.tsv"),
+                deeploc_csv=deeploc_csv,
+            )
+
+        label = "Leader().betweenAA(-30, 3).localize_at('Endoplasmic reticulum')"
+        self.assertEqual(
+            [
+                (
+                    row["sequence accession"],
+                    row[label],
+                    row["Leader.localization"],
+                    row["Leader.call('Endoplasmic reticulum')"],
+                )
+                for row in rows
+            ],
+            [
+                ("p1", RULE_TRUE, "Endoplasmic reticulum", "5"),
+                ("p1_with_leader_2_M", RULE_FALSE, "Cytoplasm", "95"),
+            ],
+        )
+
+    def test_leader_deeploc_rules_require_csv_when_evaluating(self):
+        protein = FastaProtein("p1", "MMT")
+        with tempfile.TemporaryDirectory() as tmpd:
+            with self.assertRaisesRegex(ValueError, "--deeploc-csv is required"):
+                Rules(Leader().is_mTP(deeploc=True)).check_proteins(
+                    [protein],
+                    os.path.join(tmpd, "rules.tsv"),
+                )
+
+    def test_leader_deeploc_missing_candidate_row_is_error(self):
+        protein = FastaProtein("p1", "MMT")
+        with tempfile.TemporaryDirectory() as tmpd:
+            deeploc_csv = os.path.join(tmpd, "deeploc.csv")
+            self.write_deeploc_csv(deeploc_csv, [
+                {"Protein_ID": "p1", "Signals": "Mitochondrial transit peptide"},
+            ])
+            rows = Rules(Leader().is_mTP(deeploc=True)).check_proteins(
+                [protein],
+                os.path.join(tmpd, "rules.tsv"),
+                deeploc_csv=deeploc_csv,
+            )
+
+        self.assertEqual(rows[0]["Leader().betweenAA(-30, 3).is_mTP(deeploc=True)"], RULE_ERROR)
+
     def test_leader_upstream_of_pfam_uses_ncbi_spliced_prefix_before_anchor(self):
         cases = [
             ("+", "ATGAAACCCCCCCCCCCGCTGCTGCT", [(1, 6), (16, 27)]),
@@ -1214,6 +1368,55 @@ class TestRules(unittest.TestCase):
 
 
 class TestRuleParsingHelpers(unittest.TestCase):
+
+    def write_deeploc_csv(self, path, rows):
+        fieldnames = [
+            "Protein_ID",
+            "Localizations",
+            "Signals",
+            "Membrane types",
+            "Cytoplasm",
+            "Endoplasmic reticulum",
+        ]
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def test_parse_deeploc_csv_maps_signals_and_scores(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            path = os.path.join(tmpd, "deeploc.csv")
+            self.write_deeploc_csv(path, [
+                {
+                    "Protein_ID": "seq0",
+                    "Localizations": "Endoplasmic reticulum",
+                    "Signals": "Mitochondrial transit peptide",
+                    "Membrane types": "Soluble",
+                    "Cytoplasm": "0.7658",
+                    "Endoplasmic reticulum": "0.2588",
+                },
+                {
+                    "Protein_ID": "seq1",
+                    "Localizations": "Cytoplasm",
+                    "Signals": "",
+                    "Membrane types": "Soluble",
+                    "Cytoplasm": "0.5",
+                    "Endoplasmic reticulum": "not-a-number",
+                },
+            ])
+
+            parsed = _parse_deeploc_csv(path)
+
+        self.assertEqual(parsed["seq0"].prediction, "mTP")
+        self.assertEqual(parsed["seq0"].localization, "Endoplasmic reticulum")
+        self.assertEqual(parsed["seq0"].probability("mTP"), 1.0)
+        self.assertEqual(parsed["seq0"].probability("SP"), 0.0)
+        self.assertEqual(parsed["seq0"].probability("Cytoplasm"), 0.7658)
+        self.assertEqual(parsed["seq0"].probability("Endoplasmic reticulum"), 0.2588)
+        self.assertEqual(parsed["seq1"].prediction, "")
+        self.assertEqual(parsed["seq1"].probability("mTP"), 0.0)
+        self.assertEqual(parsed["seq1"].probability("SP"), 0.0)
+        self.assertIsNone(parsed["seq1"].probability("Endoplasmic reticulum"))
 
     def test_parse_targetp_output(self):
         parsed = _parse_targetp_output("\n".join([
