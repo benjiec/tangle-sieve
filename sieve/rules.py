@@ -276,15 +276,36 @@ class OrRule(CompositeRule):
 
 class RuleContext(object):
 
-    def __init__(self, protein):
+    def __init__(self, protein, hmm_profiles=None):
         self.protein = protein
         self.key = (protein.protein_accession, protein.genome_accession)
         self._hmm_alignments = {}
+        self._hmm_profiles = _hmm_profiles_by_basename(hmm_profiles or [])
+
+    def _resolve_hmm_profile(self, profile):
+        if os.path.basename(profile) != profile:
+            return profile
+        return self._hmm_profiles.get(profile, profile)
 
     def hmm_alignment(self, profile):
-        if profile not in self._hmm_alignments:
-            self._hmm_alignments[profile] = self.protein.hmm_align(profile)
-        return self._hmm_alignments[profile]
+        resolved_profile = self._resolve_hmm_profile(profile)
+        if resolved_profile not in self._hmm_alignments:
+            self._hmm_alignments[resolved_profile] = self.protein.hmm_align(resolved_profile)
+        return self._hmm_alignments[resolved_profile]
+
+
+def _hmm_profiles_by_basename(profiles):
+    by_basename = {}
+    for profile in profiles:
+        profile = os.path.abspath(profile)
+        basename = os.path.basename(profile)
+        if basename in by_basename and by_basename[basename] != profile:
+            raise ValueError(
+                f"Ambiguous HMM profile basename {basename!r}: "
+                f"{by_basename[basename]!r} and {profile!r}"
+            )
+        by_basename[basename] = profile
+    return by_basename
 
 
 class Rules(object):
@@ -353,9 +374,13 @@ class Rules(object):
             if candidate.accession == sequence_accession
         ]
 
-    def check(self, protein_keys, output_tsv, artifacts_dir=None, trace=True, deeploc_csv=None):
+    def check(self, protein_keys, output_tsv, artifacts_dir=None, trace=True, deeploc_csv=None,
+              hmm_profiles=None):
         contexts = [
-            RuleContext(CuratedProtein(protein_accession, genome_accession))
+            RuleContext(
+                CuratedProtein(protein_accession, genome_accession),
+                hmm_profiles=hmm_profiles,
+            )
             for protein_accession, genome_accession in protein_keys
         ]
         return self.check_proteins(
@@ -366,11 +391,15 @@ class Rules(object):
             deeploc_csv=deeploc_csv,
         )
 
-    def check_proteins(self, proteins, output_tsv, artifacts_dir=None, trace=True, deeploc_csv=None):
+    def check_proteins(self, proteins, output_tsv, artifacts_dir=None, trace=True, deeploc_csv=None,
+                       hmm_profiles=None):
         if self.uses_deeploc() and deeploc_csv is None:
             raise ValueError("--deeploc-csv is required for DeepLoc-backed Leader rules")
         contexts = [
-            protein if isinstance(protein, RuleContext) else RuleContext(protein)
+            protein if isinstance(protein, RuleContext) else RuleContext(
+                protein,
+                hmm_profiles=hmm_profiles,
+            )
             for protein in proteins
         ]
         atomic_rules = self.atomic_rules()

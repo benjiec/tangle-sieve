@@ -106,10 +106,13 @@ PYTHONPATH=../coral sieve-py ../sieve/scripts/filter-fasta-by-rules.py \
   --fasta transcript_proteins.faa \
   -r coral.rules.mt_MnSOD_cnidaria.rule_fasta \
   --artifacts-dir tmp \
-  --pfam-hmm pfam.hmm \
-  --ko-hmm k04564.hmm \
-  --ko-thresholds k04564_threshold.tsv
+  --pfam-hmm assets/pfam.hmm \
+  --ko-hmm assets/k04564.hmm \
+  --ko-thresholds assets/k04564_threshold.tsv
 ```
+
+The model supplied by `--ko-hmm` is also used for `HMMAlignment` rules that
+refer to the same model basename (for example, `HMMAlignment("k04564.hmm")`).
 
 
 ## Calling External Tools

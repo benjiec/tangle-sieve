@@ -180,6 +180,76 @@ class TestFilterFastaByRulesScript(unittest.TestCase):
                 sys.path.remove(tmpd)
                 sys.modules.pop("fasta_rules", None)
 
+    def test_ko_hmm_path_is_used_by_matching_hmm_alignment_rules(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "proteins.faa")
+            assets = os.path.join(tmpd, "assets")
+            os.makedirs(assets)
+            ko_hmm = os.path.join(assets, "k04564.hmm")
+            thresholds = os.path.join(assets, "thresholds.tsv")
+            artifacts = os.path.join(tmpd, "artifacts")
+            write_fasta_from_dict({"p1": "MAAAAA"}, fasta)
+            self.write_lines(ko_hmm, ["KO"])
+            self.write_lines(thresholds, [
+                "model threshold score_type definition",
+                "K04564 100 full manganese superoxide dismutase",
+            ])
+            rule_spec = self.write_rule_module(tmpd, [
+                "from sieve.rules import HMMAlignment, KO, Rules",
+                "mnsod_rule = Rules(",
+                "    KO.matches('K04564')",
+                "    & HMMAlignment('k04564.hmm').is_at('M', 1)",
+                ")",
+                "",
+            ])
+            stockholm = "\n".join([
+                "# STOCKHOLM 1.0",
+                "p1 MAAAAA",
+                "#=GC RF xxxxxx",
+                "//",
+                "",
+            ])
+
+            def fake_run(cmd, check, capture_output, text):
+                if cmd[0] == "hmmsearch":
+                    domtblout = cmd[cmd.index("--domtblout") + 1]
+                    self.write_lines(domtblout, [
+                        domtblout_line("p1", "K04564", "-", 150, 80),
+                    ])
+                    return CompletedProcess(cmd, 0, stdout="", stderr="")
+                if cmd[0] == "hmmalign":
+                    return CompletedProcess(cmd, 0, stdout=stockholm, stderr="")
+                self.fail(f"Unexpected command: {cmd}")
+
+            sys.path.insert(0, tmpd)
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpd)
+                with patch("subprocess.run", side_effect=fake_run) as run:
+                    self.script.main([
+                        "--fasta", fasta,
+                        "-r", rule_spec,
+                        "--artifacts-dir", artifacts,
+                        "--ko-hmm", os.path.join("assets", "k04564.hmm"),
+                        "--ko-thresholds", thresholds,
+                    ])
+            finally:
+                os.chdir(original_cwd)
+                sys.path.remove(tmpd)
+                sys.modules.pop("fasta_rules", None)
+
+            hmmalign_calls = [
+                call.args[0] for call in run.call_args_list
+                if call.args[0][0] == "hmmalign"
+            ]
+            self.assertEqual(len(hmmalign_calls), 1)
+            self.assertEqual(
+                os.path.realpath(hmmalign_calls[0][1]),
+                os.path.realpath(ko_hmm),
+            )
+            rows = self.read_rows(rule_results_tsv(artifacts))
+            self.assertEqual(rows[0]["pass all"], "true")
+
     def test_sequences_only_writes_fasta_without_evaluating_rules(self):
         with tempfile.TemporaryDirectory() as tmpd:
             fasta = os.path.join(tmpd, "proteins.faa")

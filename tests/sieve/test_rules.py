@@ -29,6 +29,7 @@ from sieve.rules import (
     RULE_TOO_FAR,
     RULE_TRUE,
     RULE_YES,
+    RuleContext,
     Rules,
     TFMotifs,
     _edge_distance,
@@ -45,6 +46,40 @@ LEADER_CALL_COLUMNS = ("Leader.call('noTP')", "Leader.call('mTP')", "Leader.call
 TARGETP_NO_TP_COLUMNS = ("80", "10", "10")
 TARGETP_MTP_COLUMNS = ("10", "80", "10")
 TARGETP_SP_COLUMNS = ("10", "10", "80")
+
+
+class TestRuleContextHMMProfiles(unittest.TestCase):
+
+    def test_resolves_bare_profile_to_registered_absolute_path(self):
+        protein = FastaProtein("p1", "MA")
+        profile = os.path.abspath(os.path.join("assets", "model.hmm"))
+        alignment = object()
+
+        with patch.object(protein, "hmm_align", return_value=alignment) as hmm_align:
+            context = RuleContext(protein, hmm_profiles=[profile])
+            self.assertIs(context.hmm_alignment("model.hmm"), alignment)
+
+        hmm_align.assert_called_once_with(profile)
+
+    def test_does_not_replace_profile_that_includes_a_directory(self):
+        protein = FastaProtein("p1", "MA")
+        registered = os.path.abspath(os.path.join("assets", "model.hmm"))
+        explicit = os.path.join("other", "model.hmm")
+
+        with patch.object(protein, "hmm_align", return_value=object()) as hmm_align:
+            RuleContext(protein, hmm_profiles=[registered]).hmm_alignment(explicit)
+
+        hmm_align.assert_called_once_with(explicit)
+
+    def test_rejects_registered_profiles_with_ambiguous_basenames(self):
+        protein = FastaProtein("p1", "MA")
+        profiles = [
+            os.path.join(os.sep, "models-a", "model.hmm"),
+            os.path.join(os.sep, "models-b", "model.hmm"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "Ambiguous HMM profile basename 'model.hmm'"):
+            RuleContext(protein, hmm_profiles=profiles)
 
 
 class RulesFixture(DefaultsFixture):

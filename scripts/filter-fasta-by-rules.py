@@ -155,6 +155,7 @@ def main(argv=None):
         rule_results_tsv(args.artifacts_dir),
         artifacts_dir=args.artifacts_dir,
         deeploc_csv=args.deeploc_csv,
+        hmm_profiles=[args.ko_hmm] if args.ko_hmm is not None else None,
     )
     return 0
 
