@@ -704,6 +704,46 @@ class TestRules(unittest.TestCase):
             ],
         )
 
+    def test_bare_leader_discovers_all_methionines_in_inclusive_pfam_window(self):
+        pfam_row = self.fx.detected_row("p1", "", "PF00081.28", "Pfam")
+        pfam_row.update(query_start=6, query_end=15, target_start=1, target_end=10)
+        protein = FastaProtein("p1", "MAMAAA", pfam_rows=[pfam_row])
+
+        with patch("sieve.rules.subprocess.run") as run:
+            with tempfile.TemporaryDirectory() as tmpd:
+                rule = Leader().upstreamOfPfam("PF00081").betweenAA(-5, -3)
+                rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+
+        run.assert_not_called()
+        label = "Leader().upstreamOfPfam('PF00081').betweenAA(-5, -3)"
+        self.assertEqual(
+            [(row["sequence accession"], row[label], row["pass all"]) for row in rows],
+            [
+                ("p1_with_leader_u5_PF00081_M", RULE_TRUE, RULE_TRUE),
+                ("p1_with_leader_u3_PF00081_M", RULE_TRUE, RULE_TRUE),
+            ],
+        )
+
+    def test_bare_leader_rejects_when_pfam_window_contains_no_methionine(self):
+        pfam_row = self.fx.detected_row("p1", "", "PF00081.28", "Pfam")
+        pfam_row.update(query_start=6, query_end=15, target_start=1, target_end=10)
+        protein = FastaProtein("p1", "AAAAAA", pfam_rows=[pfam_row])
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rule = Leader().upstreamOfPfam("PF00081").betweenAA(-5, -1)
+            rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+
+        self.assertEqual(rows, [])
+
+    def test_bare_leader_rejects_without_matching_pfam_hit(self):
+        protein = FastaProtein("p1", "MAMAAA", pfam_rows=[])
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rule = Leader().upstreamOfPfam("PF00081").betweenAA(-5, -1)
+            rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+
+        self.assertEqual(rows, [])
+
     def test_leader_upstream_of_pfam_for_hmm_detected_ignores_hmm_profile_coordinates(self):
         self.fx.write_manifest([
             self.fx.manifest_row("p1", "g1", source=SEQUENCE_SOURCE_HMM_DETECTED),

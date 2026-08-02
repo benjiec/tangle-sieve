@@ -36,7 +36,7 @@ proteins matching a specific KO (K04564 is an example), then generate all
 candidate protein sequences with optional leader discovery
 
 ```
-sieve-py sieve/scripts/ko-find-matches.py K04564 | \
+sieve-py sieve/scripts/ko-find-matches.py K04564 --taxon cnidaria | \
   PYTHONPATH=coral sieve-py sieve/scripts/filter-protein-by-rules.py \
     -r coral.rules.mt_MnSOD_cnidaria.rule \
     --sequences-only \
@@ -47,11 +47,16 @@ If using DeepLoc to classify leaders, then submit the FASTA in
 `res-mt_MnSOD_cnidaria/sequences.faa` to DeepLoc and download results to
 `deeploc.csv`.
 
+`ko-find-matches.py --taxon` filters KO matches by an exact,
+case-insensitive taxonomy value at any supported rank before candidate
+discovery and rule evaluation. Genomes without a matching taxonomy row are
+excluded.
+
 Then, run `filter-protein-by-rules.py` again, but omit the `--sequences-only`
 flag to pass the candidate sequences through the rules
 
 ```
-sieve-py sieve/scripts/ko-find-matches.py K04564 | \
+sieve-py sieve/scripts/ko-find-matches.py K04564 --taxon cnidaria | \
   PYTHONPATH=coral sieve-py sieve/scripts/filter-protein-by-rules.py \
     -r coral.rules.mt_MnSOD.rule \
     --artifacts-dir res-mt_MnSOD_cnidaria \

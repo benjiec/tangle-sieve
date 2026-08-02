@@ -572,7 +572,7 @@ class HMMRegexRule(Rule):
         return _rule_bool(re.match(self.pattern, "".join(aligned)) is not None)
 
 
-class Leader(object):
+class Leader(Rule):
 
     def __init__(self, window_start=-30, window_end=3, pfam_accession=None):
         self.window_start = window_start
@@ -584,6 +584,34 @@ class Leader(object):
 
     def betweenAA(self, start, end):
         return Leader(start, end, self.pfam_accession)
+
+    @property
+    def label(self):
+        base = "Leader()"
+        if self.pfam_accession is not None:
+            base += f".upstreamOfPfam('{self.pfam_accession}')"
+        return f"{base}.betweenAA({self.window_start}, {self.window_end})"
+
+    def uses_leader_candidates(self):
+        return True
+
+    def evaluate_many(self, contexts, artifacts_dir=None, **kwargs):
+        return {
+            context.key: _rule_bool(bool(self._discovery_candidates(context.protein)))
+            for context in contexts
+        }
+
+    def scope_sequence_candidates(self, protein, candidates, row):
+        return self._discovery_candidates(protein)
+
+    def _discovery_candidates(self, protein):
+        return _scoped_leader_candidates(
+            protein,
+            self.window_start,
+            self.window_end,
+            self.pfam_accession,
+            include_original=False,
+        )
 
     def is_mTP(self, deeploc=False):
         source = "deeploc" if deeploc else "targetp"
@@ -815,48 +843,70 @@ class LeaderRule(Rule):
         return self._scoped_candidates(protein)
 
     def _scoped_candidates(self, protein):
-        anchor = 1
-        if self.pfam_accession is not None:
-            anchor = _earliest_pfam_anchor(protein, self.pfam_accession)
-            if anchor is None:
-                return []
-            candidates = protein.leader_sequence_candidates_at_anchor(
-                anchor,
-                _target_prefix(self.pfam_accession),
-                self.window_start,
-                self.window_end,
-            )
-            return _dedupe_sequence_candidates([
-                candidate for candidate in candidates
-                if candidate.start_label or _original_candidate_in_anchor_window(
+        return _scoped_leader_candidates(
+            protein,
+            self.window_start,
+            self.window_end,
+            self.pfam_accession,
+        )
+
+
+def _scoped_leader_candidates(
+    protein,
+    window_start,
+    window_end,
+    pfam_accession,
+    include_original=True,
+):
+    anchor = 1
+    if pfam_accession is not None:
+        anchor = _earliest_pfam_anchor(protein, pfam_accession)
+        if anchor is None:
+            return []
+        candidates = protein.leader_sequence_candidates_at_anchor(
+            anchor,
+            _target_prefix(pfam_accession),
+            window_start,
+            window_end,
+        )
+        return _dedupe_sequence_candidates([
+            candidate for candidate in candidates
+            if candidate.start_label or (
+                include_original
+                and _original_candidate_in_anchor_window(
                     candidate,
                     anchor,
-                    self.window_start,
-                    self.window_end,
+                    window_start,
+                    window_end,
                 )
-            ])
-
-        candidates = [
-            candidate for candidate in protein.sequences_with_leader()
-            if candidate.start_label
-        ]
-        original_candidates = [
-            candidate for candidate in protein.sequences_with_leader()
-            if not candidate.start_label
-        ]
-        filtered = [
-            candidate for candidate in candidates
-            if _coord_in_window(
-                _candidate_coord_relative_to_anchor(candidate.start_aa_1b, anchor),
-                self.window_start,
-                self.window_end,
             )
-        ]
-        if filtered:
-            return _dedupe_sequence_candidates(original_candidates + filtered)
-        if original_candidates:
-            return original_candidates
-        return _original_sequence_candidate(protein)
+        ])
+
+    candidates = [
+        candidate for candidate in protein.sequences_with_leader()
+        if candidate.start_label
+    ]
+    original_candidates = [
+        candidate for candidate in protein.sequences_with_leader()
+        if not candidate.start_label
+    ]
+    filtered = [
+        candidate for candidate in candidates
+        if _coord_in_window(
+            _candidate_coord_relative_to_anchor(candidate.start_aa_1b, anchor),
+            window_start,
+            window_end,
+        )
+    ]
+    if filtered and include_original:
+        return _dedupe_sequence_candidates(original_candidates + filtered)
+    if filtered:
+        return _dedupe_sequence_candidates(filtered)
+    if not include_original:
+        return []
+    if original_candidates:
+        return original_candidates
+    return _original_sequence_candidate(protein)
 
 
 @dataclass

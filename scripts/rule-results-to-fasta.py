@@ -2,26 +2,12 @@
 
 import argparse
 import csv
-import os
 import sys
 
-from tangle.defaults import Defaults
 from tangle.sequence import read_fasta_as_dict, write_fasta_from_dict
 
 from sieve.artifacts import rule_results_tsv, sequences_fasta
-
-
-TAXONOMY_FIELDS = {
-    "domain",
-    "superkingdom",
-    "kingdom",
-    "phylum",
-    "class",
-    "order",
-    "family",
-    "genus",
-    "species",
-}
+from sieve.taxonomy import normalized, read_taxonomy_rows, taxonomy_matches
 
 
 def parse_rule_filter(value):
@@ -35,10 +21,6 @@ def parse_rule_filter(value):
     return column, expected
 
 
-def normalized(value):
-    return str(value).strip().lower()
-
-
 def rule_filters(values):
     filters = [parse_rule_filter(value) for value in values]
     if not any(normalized(column) == "pass all" for column, _expected in filters):
@@ -49,36 +31,6 @@ def rule_filters(values):
 def read_rule_rows(artifacts_dir):
     with open(rule_results_tsv(artifacts_dir), "r", encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f, delimiter="\t"))
-
-
-def read_taxonomy_rows():
-    taxonomy_tsv = Defaults.area_genome_taxon_tsv()
-    if not os.path.exists(taxonomy_tsv):
-        return {}
-    with open(taxonomy_tsv, "r", encoding="utf-8", newline="") as f:
-        rows = list(csv.DictReader(f, delimiter="\t"))
-    return {
-        genome_accession(row): row
-        for row in rows
-        if genome_accession(row)
-    }
-
-
-def genome_accession(row):
-    for key in row:
-        if normalized(key).replace("_", " ") in {"genome accession", "accession"}:
-            return row[key]
-    return ""
-
-
-def taxonomy_matches(row, taxon):
-    if taxon is None:
-        return True
-    expected = normalized(taxon)
-    for key, value in row.items():
-        if normalized(key) in TAXONOMY_FIELDS and normalized(value) == expected:
-            return True
-    return False
 
 
 def row_matches(row, filters, taxonomy_by_genome, taxon):

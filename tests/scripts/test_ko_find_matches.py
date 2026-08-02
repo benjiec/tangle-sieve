@@ -53,3 +53,38 @@ class TestKoFindMatchesScript(unittest.TestCase):
         with patch("sys.stdout", stdout):
             script.main(["K04564", "--max-evalue", "1e-10"])
         self.assertEqual(stdout.getvalue(), "p1\tg1\n")
+
+    def test_filters_matches_by_taxon_at_any_rank(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row("p1", "g1", "K04564", 1e-20),
+            self.detected_row("p2", "g2", "K04564", 1e-20),
+            self.detected_row("p3", "g3", "K04564", 1e-20),
+        ])
+        self.fx.write_taxonomy_rows([
+            {
+                "Genome Accession": "g1",
+                "Domain": "Eukaryota",
+                "Phylum": "Cnidaria",
+            },
+            {
+                "Genome Accession": "g2",
+                "Domain": "Eukaryota",
+                "Phylum": "Arthropoda",
+            },
+        ])
+
+        self.assertEqual(script.find_matches("K04564", taxon="cNiDaRiA"), [("p1", "g1")])
+
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            script.main(["K04564", "--taxon", "cnidaria"])
+        self.assertEqual(stdout.getvalue(), "p1\tg1\n")
+
+    def test_taxon_filter_returns_no_matches_without_taxonomy_file(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row("p1", "g1", "K04564", 1e-20),
+        ])
+
+        self.assertEqual(script.find_matches("K04564", taxon="Cnidaria"), [])

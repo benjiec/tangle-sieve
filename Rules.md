@@ -176,6 +176,20 @@ non-gap residue, otherwise `false`.
 candidate sequences, and pass proteins whose candidate leader classification
 matches the requested prediction.
 
+A `Leader()` expression can also be used without a classification method to
+perform candidate discovery only:
+
+```python
+Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15)
+```
+
+This emits every methionine-started candidate in the inclusive coordinate
+window without running TargetP or requiring DeepLoc. Each discovered candidate
+passes the bare `Leader()` rule and continues through the other rules in the
+rule set. If the Pfam anchor is missing or the window contains no methionine
+start, the protein produces no candidate rows. The original input sequence is
+not used as a fallback for a bare `Leader()` rule.
+
 Supported TargetP predictions are:
 
 ```python
