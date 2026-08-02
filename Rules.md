@@ -169,6 +169,41 @@ rule = Rules(HMMAlignment("profile.hmm").covers(1, 45))
 The rule returns `true` when every position from `start` through `end` has a
 non-gap residue, otherwise `false`.
 
+Use `between(protein_start, protein_end)` after `covers(...)` to additionally
+require the protein residues mapped to that HMM range to lie within an inclusive
+1-based protein-coordinate window:
+
+```python
+rule = Rules(HMMAlignment("profile.hmm").covers(2, 50).between(1, 60))
+```
+
+
+## HMMAlignment().spans(...)
+
+Use `spans(start, end)` when the alignment must extend across an inclusive HMM
+profile region but internal deletions are allowed. The rule returns `true` when
+the first covered HMM position is at or before `start` and the last covered HMM
+position is at or after `end`.
+
+```python
+rule = Rules(HMMAlignment("profile.hmm").spans(2, 50))
+```
+
+Unlike `covers(2, 50)`, `spans(2, 50)` can pass when an internal HMM position,
+such as position 37, maps to a gap.
+
+`between(...)` can also constrain the protein coordinates mapped within the
+requested HMM span:
+
+```python
+rule = Rules(HMMAlignment("profile.hmm").spans(2, 50).between(1, 60))
+```
+
+When a rule set performs leader discovery, HMM alignment rules are evaluated
+separately for every discovered candidate sequence. Candidates using the same
+profile are aligned together in one `hmmalign` batch. Without leader discovery,
+the HMM rule is evaluated against the original protein sequence.
+
 
 ## Leader Rules
 

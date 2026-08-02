@@ -6,7 +6,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from sieve.protein import CuratedProtein, LeaderSequenceCandidate
+from sieve.protein import CuratedProtein, LeaderSequenceCandidate, hmm_align_sequences
 from tangle.sequence import write_fasta_from_dict
 
 
@@ -412,15 +412,22 @@ class Rules(object):
         for i, rule in enumerate(atomic_rules, start=1):
             if trace:
                 print(f"[rules {i}/{total_rules}] {rule.label}: {total_proteins} proteins", file=sys.stderr)
-            rule_results = rule.evaluate_many(
-                contexts,
-                _rule_artifacts_dir(artifacts_dir, rule),
-                deeploc_csv=deeploc_csv,
-            )
+            deferred_to_candidates = self.uses_leader_candidates() and isinstance(rule, HMMRule)
+            if deferred_to_candidates:
+                rule_results = {context.key: RULE_FALSE for context in contexts}
+            else:
+                rule_results = rule.evaluate_many(
+                    contexts,
+                    _rule_artifacts_dir(artifacts_dir, rule),
+                    deeploc_csv=deeploc_csv,
+                )
             atomic_results[rule.label] = rule_results
             if trace:
-                counts = _result_counts(rule_results.values())
-                print(f"[rules {i}/{total_rules}] done: {_format_result_counts(counts)}", file=sys.stderr)
+                if deferred_to_candidates:
+                    print(f"[rules {i}/{total_rules}] deferred to candidate sequences", file=sys.stderr)
+                else:
+                    counts = _result_counts(rule_results.values())
+                    print(f"[rules {i}/{total_rules}] done: {_format_result_counts(counts)}", file=sys.stderr)
 
         atomic_annotations = {}
         for rule in atomic_rules:
@@ -428,7 +435,7 @@ class Rules(object):
             for context_key, context_annotations in annotations.items():
                 atomic_annotations.setdefault(context_key, {}).update(context_annotations)
 
-        rows = []
+        candidate_entries = []
         for context in contexts:
             row = {
                 "protein accession": context.protein.protein_accession,
@@ -439,16 +446,67 @@ class Rules(object):
                 row[rule.label] = atomic_results[rule.label][context.key]
             row.update(atomic_annotations.get(context.key, {}))
             for candidate in self._scoped_sequence_candidates(context.protein, row):
-                candidate_row = row.copy()
-                candidate_row["sequence accession"] = candidate.accession
-                _apply_sequence_annotations(candidate_row, candidate)
-                for rule in atomic_rules:
-                    candidate_row[rule.label] = rule.sequence_result(candidate_row, candidate)
-                candidate_row["pass all"] = _normalize_pass_all(self.rule.resolve_row(candidate_row))
-                rows.append(candidate_row)
+                candidate_entries.append((context, row, candidate))
+
+        if self.uses_leader_candidates():
+            self._evaluate_candidate_hmm_rules(atomic_rules, candidate_entries)
+
+        rows = []
+        for context, row, candidate in candidate_entries:
+            candidate_row = row.copy()
+            candidate_row["sequence accession"] = candidate.accession
+            _apply_sequence_annotations(candidate_row, candidate)
+            for rule in atomic_rules:
+                candidate_row[rule.label] = rule.sequence_result(candidate_row, candidate)
+            candidate_row["pass all"] = _normalize_pass_all(self.rule.resolve_row(candidate_row))
+            rows.append(candidate_row)
 
         self.write_rows(output_tsv, rows)
         return rows
+
+    def _evaluate_candidate_hmm_rules(self, atomic_rules, candidate_entries):
+        hmm_rules = [rule for rule in atomic_rules if isinstance(rule, HMMRule)]
+        for rule in hmm_rules:
+            rule.clear_candidate_results()
+        entries_by_profile = {}
+        for rule in hmm_rules:
+            for context, _row, candidate in candidate_entries:
+                profile = context._resolve_hmm_profile(rule.profile)
+                entries_by_profile.setdefault(profile, {})[
+                    (context.key, candidate.accession)
+                ] = (context, candidate)
+
+        for profile, entries in entries_by_profile.items():
+            sequence_ids = {
+                key: f"candidate_{index}"
+                for index, key in enumerate(entries, start=1)
+            }
+            try:
+                alignments_by_id = hmm_align_sequences(
+                    profile,
+                    {
+                        sequence_ids[key]: candidate.sequence
+                        for key, (_context, candidate) in entries.items()
+                    },
+                )
+            except Exception as e:
+                print(f"HMMAlignment('{os.path.basename(profile)}') candidate batch failed: {e}", file=sys.stderr)
+                alignments_by_id = {}
+
+            for rule in hmm_rules:
+                for key, (context, candidate) in entries.items():
+                    if context._resolve_hmm_profile(rule.profile) != profile:
+                        continue
+                    alignment = alignments_by_id.get(sequence_ids[key])
+                    if alignment is None:
+                        result = RULE_ERROR
+                    else:
+                        try:
+                            result = rule.evaluate_alignment(alignment)
+                        except Exception as e:
+                            print(f"{rule.label} failed for {key}: {e}", file=sys.stderr)
+                            result = RULE_ERROR
+                    rule.set_candidate_result(context.key, candidate.accession, result)
 
     def _contig_accession(self, context):
         try:
@@ -512,17 +570,39 @@ class HMMAlignment(object):
     def covers(self, start, end):
         return HMMCoverageRule(self.profile, start, end)
 
+    def spans(self, start, end):
+        return HMMSpanRule(self.profile, start, end)
 
-class HMMPositionRule(Rule):
+
+class HMMRule(Rule):
+
+    def __init__(self, profile):
+        self.profile = profile
+        self._candidate_results = {}
+
+    def evaluate(self, context):
+        return self.evaluate_alignment(context.hmm_alignment(self.profile))
+
+    def set_candidate_result(self, context_key, candidate_accession, result):
+        self._candidate_results[(context_key, candidate_accession)] = result
+
+    def clear_candidate_results(self):
+        self._candidate_results = {}
+
+    def sequence_result(self, row, candidate):
+        key = ((row["protein accession"], row["genome accession"]), candidate.accession)
+        return self._candidate_results.get(key, row[self.label])
+
+
+class HMMPositionRule(HMMRule):
 
     def __init__(self, profile, expected, hmm_pos):
-        self.profile = profile
+        super().__init__(profile)
         self.expected = expected
         self.hmm_pos = hmm_pos
         self.label = f"HMMAlignment('{os.path.basename(profile)}').is_at('{expected}', {hmm_pos})"
 
-    def evaluate(self, context):
-        alignment = context.hmm_alignment(self.profile)
+    def evaluate_alignment(self, alignment):
         for offset, expected_aa in enumerate(self.expected):
             aa = alignment.aa_at_hmm_pos_1b(self.hmm_pos + offset)
             if aa is None or aa[1] != expected_aa:
@@ -530,32 +610,102 @@ class HMMPositionRule(Rule):
         return RULE_TRUE
 
 
-class HMMCoverageRule(Rule):
+class HMMCoverageRule(HMMRule):
 
-    def __init__(self, profile, start, end):
-        self.profile = profile
+    def __init__(self, profile, start, end, protein_start=None, protein_end=None):
+        super().__init__(profile)
         self.start = start
         self.end = end
-        self.label = f"HMMAlignment('{os.path.basename(profile)}').covers({start}, {end})"
+        self.protein_start = protein_start
+        self.protein_end = protein_end
+        self.label = self._label()
 
-    def evaluate(self, context):
-        alignment = context.hmm_alignment(self.profile)
+    def _label(self):
+        label = f"HMMAlignment('{os.path.basename(self.profile)}').covers({self.start}, {self.end})"
+        if self.protein_start is not None:
+            label += f".between({self.protein_start}, {self.protein_end})"
+        return label
+
+    def between(self, start, end):
+        return HMMCoverageRule(self.profile, self.start, self.end, start, end)
+
+    def evaluate_alignment(self, alignment):
         for hmm_pos in range(self.start, self.end + 1):
             if alignment.aa_at_hmm_pos_1b(hmm_pos) is None:
                 return RULE_FALSE
+        if not _hmm_range_is_between(
+            alignment,
+            self.start,
+            self.end,
+            self.protein_start,
+            self.protein_end,
+        ):
+            return RULE_FALSE
         return RULE_TRUE
 
 
-class HMMRegexRule(Rule):
+class HMMSpanRule(HMMRule):
+
+    def __init__(self, profile, start, end, protein_start=None, protein_end=None):
+        super().__init__(profile)
+        self.start = start
+        self.end = end
+        self.protein_start = protein_start
+        self.protein_end = protein_end
+        self.label = self._label()
+
+    def _label(self):
+        label = f"HMMAlignment('{os.path.basename(self.profile)}').spans({self.start}, {self.end})"
+        if self.protein_start is not None:
+            label += f".between({self.protein_start}, {self.protein_end})"
+        return label
+
+    def between(self, start, end):
+        return HMMSpanRule(self.profile, self.start, self.end, start, end)
+
+    def evaluate_alignment(self, alignment):
+        covered_positions = [
+            hmm_pos
+            for hmm_pos in alignment.hmm_positions_1b()
+            if alignment.aa_at_hmm_pos_1b(hmm_pos) is not None
+        ]
+        if not covered_positions:
+            return RULE_FALSE
+        if min(covered_positions) > self.start or max(covered_positions) < self.end:
+            return RULE_FALSE
+        return _rule_bool(_hmm_range_is_between(
+            alignment,
+            self.start,
+            self.end,
+            self.protein_start,
+            self.protein_end,
+        ))
+
+
+def _hmm_range_is_between(alignment, hmm_start, hmm_end, protein_start, protein_end):
+    if protein_start is None:
+        return True
+    protein_positions = [
+        aa[0]
+        for hmm_pos in range(hmm_start, hmm_end + 1)
+        if (aa := alignment.aa_at_hmm_pos_1b(hmm_pos)) is not None
+    ]
+    return (
+        bool(protein_positions)
+        and min(protein_positions) >= protein_start
+        and max(protein_positions) <= protein_end
+    )
+
+
+class HMMRegexRule(HMMRule):
 
     def __init__(self, profile, pattern, hmm_pos):
-        self.profile = profile
+        super().__init__(profile)
         self.pattern = pattern
         self.hmm_pos = hmm_pos
         self.label = f"HMMAlignment('{os.path.basename(profile)}').matches_regex('{pattern}', {hmm_pos})"
 
-    def evaluate(self, context):
-        alignment = context.hmm_alignment(self.profile)
+    def evaluate_alignment(self, alignment):
         aligned = []
         hmm_pos = self.hmm_pos
         while True:

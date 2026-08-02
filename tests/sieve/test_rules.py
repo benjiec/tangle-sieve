@@ -17,6 +17,7 @@ from sieve.protein import (
     ProteinHMMAlignment,
     SEQUENCE_SOURCE_HMM_DETECTED,
     SEQUENCE_SOURCE_NCBI,
+    hmm_align_sequences,
 )
 from sieve.rules import (
     HMMAlignment,
@@ -49,6 +50,29 @@ TARGETP_SP_COLUMNS = ("10", "10", "80")
 
 
 class TestRuleContextHMMProfiles(unittest.TestCase):
+
+    def test_batches_multiple_sequences_in_one_hmmalign_call(self):
+        stockholm = "\n".join([
+            "# STOCKHOLM 1.0",
+            "candidate_1 AC-",
+            "candidate_2 A-D",
+            "#=GC RF xxx",
+            "//",
+            "",
+        ])
+        completed = CompletedProcess(["hmmalign"], 0, stdout=stockholm, stderr="")
+
+        with patch("sieve.protein.subprocess.run", return_value=completed) as run:
+            alignments = hmm_align_sequences(
+                "profile.hmm",
+                {"candidate_1": "AC", "candidate_2": "AD"},
+            )
+
+        run.assert_called_once()
+        self.assertEqual(alignments["candidate_1"].aa_at_hmm_pos_1b(2), (2, "C"))
+        self.assertIsNone(alignments["candidate_1"].aa_at_hmm_pos_1b(3))
+        self.assertIsNone(alignments["candidate_2"].aa_at_hmm_pos_1b(2))
+        self.assertEqual(alignments["candidate_2"].aa_at_hmm_pos_1b(3), (2, "D"))
 
     def test_resolves_bare_profile_to_registered_absolute_path(self):
         protein = FastaProtein("p1", "MA")
@@ -430,6 +454,9 @@ class TestRules(unittest.TestCase):
                     & HMMAlignment("/models/profile.hmm").is_at("DE", 3)
                     & HMMAlignment("/models/profile.hmm").covers(1, 3)
                     & HMMAlignment("/models/profile.hmm").covers(1, 4)
+                    & HMMAlignment("/models/profile.hmm").covers(1, 5).between(1, 4)
+                    & HMMAlignment("/models/profile.hmm").spans(1, 5).between(1, 4)
+                    & HMMAlignment("/models/profile.hmm").spans(1, 5).between(2, 4)
                     & HMMAlignment("/models/profile.hmm").matches_regex("EFN[AGST]G", 5)
                     & HMMAlignment("/models/profile.hmm").matches_regex("EFN[AGST]G", 6)
                     & HMMAlignment("/models/profile.hmm").matches_regex("D.E", 3)
@@ -439,9 +466,43 @@ class TestRules(unittest.TestCase):
         self.assertEqual(rows[0]["HMMAlignment('profile.hmm').is_at('DE', 3)"], RULE_FALSE)
         self.assertEqual(rows[0]["HMMAlignment('profile.hmm').covers(1, 3)"], RULE_TRUE)
         self.assertEqual(rows[0]["HMMAlignment('profile.hmm').covers(1, 4)"], RULE_FALSE)
+        self.assertEqual(rows[0]["HMMAlignment('profile.hmm').covers(1, 5).between(1, 4)"], RULE_FALSE)
+        self.assertEqual(rows[0]["HMMAlignment('profile.hmm').spans(1, 5).between(1, 4)"], RULE_TRUE)
+        self.assertEqual(rows[0]["HMMAlignment('profile.hmm').spans(1, 5).between(2, 4)"], RULE_FALSE)
         self.assertEqual(rows[0]["HMMAlignment('profile.hmm').matches_regex('EFN[AGST]G', 5)"], RULE_TRUE)
         self.assertEqual(rows[0]["HMMAlignment('profile.hmm').matches_regex('EFN[AGST]G', 6)"], RULE_FALSE)
         self.assertEqual(rows[0]["HMMAlignment('profile.hmm').matches_regex('D.E', 3)"], RULE_TRUE)
+
+    def test_hmm_rules_align_leader_candidates_in_one_profile_batch(self):
+        protein = FastaProtein("p1", "MAM")
+        rule = (
+            Leader().betweenAA(1, 3)
+            & HMMAlignment("profile.hmm").spans(1, 2).between(1, 3)
+        )
+
+        def align_candidates(_profile, sequences_by_id):
+            alignments = {}
+            for sequence_id, sequence in sequences_by_id.items():
+                alignment = MultipleSeqAlignment([
+                    SeqRecord(Seq(sequence), id=sequence_id),
+                ])
+                alignment.column_annotations["reference_annotation"] = "x" * len(sequence)
+                alignments[sequence_id] = ProteinHMMAlignment(alignment, sequence_id)
+            return alignments
+
+        with patch("sieve.rules.hmm_align_sequences", side_effect=align_candidates) as hmmalign:
+            with tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+
+        hmmalign.assert_called_once()
+        label = "HMMAlignment('profile.hmm').spans(1, 2).between(1, 3)"
+        self.assertEqual(
+            [(row["sequence accession"], row[label], row["pass all"]) for row in rows],
+            [
+                ("p1_with_leader_1_M", RULE_TRUE, RULE_TRUE),
+                ("p1_with_leader_3_M", RULE_FALSE, RULE_FALSE),
+            ],
+        )
 
     def test_leader_rules_batch_targetp_and_use_sequence_with_leader(self):
         self.fx.write_manifest([

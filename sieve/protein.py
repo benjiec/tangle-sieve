@@ -23,6 +23,25 @@ SEQUENCE_SOURCE_NCBI = "ncbi"
 SEQUENCE_TYPE_PROTEIN = "protein"
 GFF_TYPE_CDS = "CDS"
 GFF_TYPE_GENE = "gene"
+
+
+def hmm_align_sequences(hmm_profile_fn, sequences_by_id):
+    if not sequences_by_id:
+        return {}
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".faa", mode="wt") as fasta:
+        for sequence_id, sequence in sequences_by_id.items():
+            fasta.write(f">{sequence_id}\n{sequence}\n")
+        fasta_path = fasta.name
+    try:
+        cmd = ["hmmalign", hmm_profile_fn, fasta_path]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        alignment = AlignIO.read(StringIO(result.stdout), "stockholm")
+        return {
+            sequence_id: ProteinHMMAlignment(alignment, sequence_id)
+            for sequence_id in sequences_by_id
+        }
+    finally:
+        os.remove(fasta_path)
 GFF_TYPE_MRNA = "mRNA"
 GFF_TYPE_TRANSCRIPT = "transcript"
 GFF_TYPE_START_CODON = "start_codon"
