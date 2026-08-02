@@ -114,6 +114,34 @@ PYTHONPATH=../coral sieve-py ../sieve/scripts/filter-fasta-by-rules.py \
 The model supplied by `--ko-hmm` is also used for `HMMAlignment` rules that
 refer to the same model basename (for example, `HMMAlignment("k04564.hmm")`).
 
+Again, to use deeploc, run a two step workflow. First, get a list of sequences
+in `tmp/sequences.faa`
+
+```
+PYTHONPATH=../coral sieve-py ../sieve/scripts/filter-fasta-by-rules.py \
+  --fasta transcript_proteins.faa \
+  -r coral.rules.mt_MnSOD_cnidaria.rule_fasta \
+  --artifacts-dir tmp \
+  --pfam-hmm assets/pfam.hmm \
+  --ko-hmm assets/k04564.hmm \
+  --ko-thresholds assets/k04564_threshold.tsv \
+  --sequences-only
+```
+
+Submit `tmp/sequences.faa` to DeepLoc and download results to a file, e.g.
+`deeploc.csv`, then run
+
+```
+PYTHONPATH=../coral sieve-py ../sieve/scripts/filter-fasta-by-rules.py \
+  --fasta transcript_proteins.faa \
+  -r coral.rules.mt_MnSOD_cnidaria.rule_fasta \
+  --artifacts-dir tmp \
+  --pfam-hmm assets/pfam.hmm \
+  --ko-hmm assets/k04564.hmm \
+  --ko-thresholds assets/k04564_threshold.tsv \
+  --deeploc-csv deeploc.csv
+```
+
 
 ## Calling External Tools
 
