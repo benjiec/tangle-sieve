@@ -34,7 +34,10 @@ def hmm_align_sequences(hmm_profile_fn, sequences_by_id):
         fasta_path = fasta.name
     try:
         cmd = ["hmmalign", hmm_profile_fn, fasta_path]
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+            raise RuntimeError(f"hmmalign exited with status {result.returncode}: {detail}")
         alignment = AlignIO.read(StringIO(result.stdout), "stockholm")
         return {
             sequence_id: ProteinHMMAlignment(alignment, sequence_id)

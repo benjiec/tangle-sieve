@@ -8,6 +8,7 @@ from collections import defaultdict
 from tangle.sequence import read_fasta_as_dict
 
 from sieve.artifacts import rule_results_tsv, sequences_fasta
+from sieve.hmm_profiles import hmm_profiles_in_dirs
 from sieve.fasta_protein import FastaProtein
 from sieve.hmmsearch import (
     detected_rows_from_hits,
@@ -125,11 +126,15 @@ def main(argv=None):
         help="write sequences.faa without evaluating rules",
     )
     parser.add_argument("--deeploc-csv")
+    parser.add_argument("--hmm-dir", action="append", default=[])
     args = parser.parse_args(argv)
 
     os.makedirs(args.artifacts_dir, exist_ok=True)
 
     rules = load_rules(args.rule)
+    hmm_profiles = hmm_profiles_in_dirs(args.hmm_dir)
+    if args.ko_hmm is not None:
+        hmm_profiles.append(args.ko_hmm)
     pfam_rows = run_pfam_search(args.pfam_hmm, args.fasta, args.artifacts_dir)
     ko_rows = run_ko_search(args.ko_hmm, args.fasta, args.ko_thresholds, args.artifacts_dir)
     proteins = build_fasta_proteins(args.fasta, pfam_rows, ko_rows)
@@ -155,7 +160,7 @@ def main(argv=None):
         rule_results_tsv(args.artifacts_dir),
         artifacts_dir=args.artifacts_dir,
         deeploc_csv=args.deeploc_csv,
-        hmm_profiles=[args.ko_hmm] if args.ko_hmm is not None else None,
+        hmm_profiles=hmm_profiles,
     )
     return 0
 

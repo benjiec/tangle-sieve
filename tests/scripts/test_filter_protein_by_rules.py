@@ -6,11 +6,20 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from Bio.Align import MultipleSeqAlignment
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+
 from tangle.detected import DetectedTable
 from tangle.manifest import ManifestTable
 from tangle.sequence import read_fasta_as_dict
 
-from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_HMM_DETECTED, SEQUENCE_SOURCE_NCBI
+from sieve.protein import (
+    CuratedProtein,
+    ProteinHMMAlignment,
+    SEQUENCE_SOURCE_HMM_DETECTED,
+    SEQUENCE_SOURCE_NCBI,
+)
 from tests.fixtures import DefaultsFixture
 from tests.scripts.helpers import load_script
 
@@ -180,6 +189,42 @@ class TestFilterProteinByRulesScript(unittest.TestCase):
                 "p_maybe": "MM",
                 "p_false": "MF",
             })
+
+    def test_hmm_dir_resolves_profile_basename_for_rule_evaluation(self):
+        script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))
+        self.write_manifest_and_sequences()
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            profiles = os.path.join(tmpd, "profiles")
+            os.makedirs(profiles)
+            profile = os.path.join(profiles, "profile.hmm")
+            with open(profile, "w", encoding="utf-8"):
+                pass
+            module_path = os.path.join(tmpd, "hmm_rules.py")
+            with open(module_path, "w", encoding="utf-8") as f:
+                f.write("from sieve.rules import HMMAlignment, Rules\n")
+                f.write("mnsod_rule = Rules(HMMAlignment('profile.hmm').is_at('M', 1))\n")
+
+            alignment = MultipleSeqAlignment([SeqRecord(Seq("MT"), id="p_true")])
+            alignment.column_annotations["reference_annotation"] = "xx"
+            protein_alignment = ProteinHMMAlignment(alignment, "p_true")
+            artifacts = os.path.join(tmpd, "artifacts")
+            sys.path.insert(0, tmpd)
+            try:
+                with (
+                    patch("sys.stdin", io.StringIO("p_true\tg1\n")),
+                    patch.object(CuratedProtein, "hmm_align", return_value=protein_alignment) as hmm_align,
+                ):
+                    script.main([
+                        "-r", "hmm_rules.mnsod_rule",
+                        "--artifacts-dir", artifacts,
+                        "--hmm-dir", profiles,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("hmm_rules", None)
+
+            hmm_align.assert_called_once_with(os.path.abspath(profile))
 
     def test_ignores_input_proteins_missing_from_manifest(self):
         script = load_script(os.path.join(self.repo, "scripts", "filter-protein-by-rules.py"))

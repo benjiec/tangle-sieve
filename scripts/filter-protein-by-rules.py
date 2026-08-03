@@ -11,6 +11,7 @@ from collections import defaultdict
 from tangle import open_file_to_write
 
 from sieve.artifacts import rule_results_tsv, sequences_fasta
+from sieve.hmm_profiles import hmm_profiles_in_dirs
 from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_HMM_DETECTED
 from sieve.rule_artifacts import write_rule_fasta, write_rule_rows
 from sieve.rule_loader import load_rules
@@ -337,9 +338,11 @@ def main(argv=None):
         help=f"write sequences.faa and {GENOMIC_LOCI_TSV} without evaluating rules",
     )
     parser.add_argument("--deeploc-csv")
+    parser.add_argument("--hmm-dir", action="append", default=[])
     args = parser.parse_args(argv)
 
     rules = load_rules(args.rule)
+    hmm_profiles = hmm_profiles_in_dirs(args.hmm_dir)
     protein_keys = filter_manifest_protein_keys(read_protein_keys(sys.stdin))
     os.makedirs(args.artifacts_dir, exist_ok=True)
 
@@ -389,6 +392,7 @@ def main(argv=None):
                         group_tsv,
                         artifacts_dir=group_artifacts_dir,
                         deeploc_csv=args.deeploc_csv,
+                        hmm_profiles=hmm_profiles,
                     ))
             finally:
                 if candidate_entries is not None:

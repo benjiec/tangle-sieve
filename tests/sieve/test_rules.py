@@ -74,6 +74,18 @@ class TestRuleContextHMMProfiles(unittest.TestCase):
         self.assertIsNone(alignments["candidate_2"].aa_at_hmm_pos_1b(2))
         self.assertEqual(alignments["candidate_2"].aa_at_hmm_pos_1b(3), (2, "D"))
 
+    def test_hmmalign_failure_includes_stderr(self):
+        completed = CompletedProcess(
+            ["hmmalign"],
+            1,
+            stdout="",
+            stderr="Failed to open HMM file profile.hmm",
+        )
+
+        with patch("sieve.protein.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "Failed to open HMM file profile.hmm"):
+                hmm_align_sequences("profile.hmm", {"candidate_1": "MA"})
+
     def test_resolves_bare_profile_to_registered_absolute_path(self):
         protein = FastaProtein("p1", "MA")
         profile = os.path.abspath(os.path.join("assets", "model.hmm"))

@@ -118,6 +118,11 @@ PYTHONPATH=../coral sieve-py ../sieve/scripts/filter-fasta-by-rules.py \
 
 The model supplied by `--ko-hmm` is also used for `HMMAlignment` rules that
 refer to the same model basename (for example, `HMMAlignment("k04564.hmm")`).
+Additional profiles referenced by `HMMAlignment(...)` can be supplied from a
+non-recursive directory of `.hmm` files with `--hmm-dir`. The option can be
+repeated. `filter-protein-by-rules.py` also accepts `--hmm-dir`; it reads Pfam
+and KO annotations from existing detection tables, so it does not use
+`--pfam-hmm` or `--ko-hmm`.
 
 Again, to use deeploc, run a two step workflow. First, get a list of sequences
 in `tmp/sequences.faa`
