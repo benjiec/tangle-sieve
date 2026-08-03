@@ -22,7 +22,15 @@ class TestKoFindMatchesScript(unittest.TestCase):
         CuratedProtein.clear_cache()
         self.fx.cleanup()
 
-    def detected_row(self, protein_accession, genome_accession, ko_accession, evalue):
+    def detected_row(
+        self,
+        protein_accession,
+        genome_accession,
+        ko_accession,
+        evalue,
+        query_start=1,
+        query_end=10,
+    ):
         return dict(
             detection_type="sequence",
             detection_method="hmm",
@@ -33,8 +41,8 @@ class TestKoFindMatchesScript(unittest.TestCase):
             target_accession=ko_accession,
             target_database="KO",
             target_type="protein",
-            query_start=1,
-            query_end=10,
+            query_start=query_start,
+            query_end=query_end,
             target_start=1,
             target_end=10,
             evalue=evalue,
@@ -66,6 +74,58 @@ class TestKoFindMatchesScript(unittest.TestCase):
         with patch("sys.stdout", stdout):
             script.main(["K04564", "--max-evalue", "1e-10"])
         self.assertEqual(stdout.getvalue(), "p1\tg1\n")
+
+    def test_filters_by_inclusive_match_start_and_end_positions(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row("both_boundary", "g1", "K04564", 1e-20, 20, 40),
+            self.detected_row("start_after", "g1", "K04564", 1e-20, 21, 30),
+            self.detected_row("end_after", "g1", "K04564", 1e-20, 10, 41),
+        ])
+
+        self.assertEqual(
+            script.find_matches(
+                "K04564",
+                match_starts_before=20,
+                match_ends_before=40,
+            ),
+            [("both_boundary", "g1")],
+        )
+
+    def test_position_filters_must_be_satisfied_by_the_same_hit(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row("different_hits", "g1", "K04564", 1e-20, 10, 100),
+            self.detected_row("different_hits", "g1", "K04564", 1e-20, 50, 60),
+            self.detected_row("one_matching_hit", "g1", "K04564", 1e-20, 15, 55),
+            self.detected_row("one_matching_hit", "g1", "K04564", 1e-20, 80, 100),
+        ])
+
+        self.assertEqual(
+            script.find_matches(
+                "K04564",
+                match_starts_before=20,
+                match_ends_before=60,
+            ),
+            [("one_matching_hit", "g1")],
+        )
+
+    def test_main_forwards_position_filters(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        with patch.object(script, "find_matches", return_value=[]) as find_matches:
+            script.main([
+                "K04564",
+                "--match-starts-before", "20",
+                "--match-ends-before", "40",
+            ])
+
+        find_matches.assert_called_once_with(
+            "K04564",
+            None,
+            taxon=None,
+            match_starts_before=20,
+            match_ends_before=40,
+        )
 
     def test_filters_matches_by_taxon_at_any_rank(self):
         script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))

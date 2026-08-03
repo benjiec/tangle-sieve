@@ -18,10 +18,20 @@ def _sql_string(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def find_matches(ko_accession, max_evalue=None, taxon=None):
+def find_matches(
+    ko_accession,
+    max_evalue=None,
+    taxon=None,
+    match_starts_before=None,
+    match_ends_before=None,
+):
     filters = [f"target_accession = {_sql_string(ko_accession)}"]
     if max_evalue is not None:
         filters.append(f"evalue <= {float(max_evalue)}")
+    if match_starts_before is not None:
+        filters.append(f"query_start <= {int(match_starts_before)}")
+    if match_ends_before is not None:
+        filters.append(f"query_end <= {int(match_ends_before)}")
 
     schema = Schema("__ko_find_matches__" + unique_batch())
     source = CSVSource(
@@ -80,6 +90,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("ko_accession")
     parser.add_argument("--max-evalue", type=float)
+    parser.add_argument("--match-starts-before", type=int)
+    parser.add_argument("--match-ends-before", type=int)
     parser.add_argument("--taxon")
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
@@ -88,6 +100,8 @@ def main(argv=None):
         args.ko_accession,
         args.max_evalue,
         taxon=args.taxon,
+        match_starts_before=args.match_starts_before,
+        match_ends_before=args.match_ends_before,
     )
     if args.output is not None:
         write_matches_fasta(matches, args.output)

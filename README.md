@@ -52,6 +52,23 @@ case-insensitive taxonomy value at any supported rank before candidate
 discovery and rule evaluation. Genomes without a matching taxonomy row are
 excluded.
 
+Use `--match-starts-before POSITION` to require the KO hit to start at or
+before a 1-based protein position (`query_start <= POSITION`). Use
+`--match-ends-before POSITION` to require the hit to end at or before a
+position (`query_end <= POSITION`). When both options are supplied, the same
+hit must satisfy both constraints. A protein with multiple hits is included if
+any one hit satisfies all supplied constraints. For example:
+
+```
+sieve-py sieve/scripts/ko-find-matches.py K04564 \
+  --taxon cnidaria \
+  --match-starts-before 50 \
+  --match-ends-before 200
+```
+
+Pass `-o OUTPUT.faa` to write the full matched protein sequences as FASTA
+instead of printing the protein and genome accessions as tab-separated rows.
+
 Then, run `filter-protein-by-rules.py` again, but omit the `--sequences-only`
 flag to pass the candidate sequences through the rules
 
