@@ -1,11 +1,12 @@
 import io
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
 from tangle.detected import DetectedTable
 
-from sieve.protein import CuratedProtein
+from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_NCBI
 from tests.fixtures import DefaultsFixture
 from tests.scripts.helpers import load_script
 
@@ -38,6 +39,18 @@ class TestKoFindMatchesScript(unittest.TestCase):
             target_end=10,
             evalue=evalue,
         )
+
+    def add_ncbi_proteins(self, genome_accession, sequences):
+        self.fx.write_manifest([
+            {
+                "sequence_accession": accession,
+                "sequence_database": genome_accession,
+                "sequence_type": "protein",
+                "sequence_source": SEQUENCE_SOURCE_NCBI,
+            }
+            for accession in sequences
+        ])
+        self.fx.write_ncbi_proteins(genome_accession, sequences)
 
     def test_filters_by_ko_and_max_evalue(self):
         script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
@@ -88,3 +101,55 @@ class TestKoFindMatchesScript(unittest.TestCase):
         ])
 
         self.assertEqual(script.find_matches("K04564", taxon="Cnidaria"), [])
+
+    def test_output_writes_full_sequences_as_fasta(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        self.add_ncbi_proteins("g1", {"p1": "MSEQONE", "p2": "MSEQTWO"})
+        with tempfile.TemporaryDirectory() as tmpd:
+            output = os.path.join(tmpd, "matches.faa")
+            with patch.object(script, "find_matches", return_value=[("p2", "g1"), ("p1", "g1")]):
+                stdout = io.StringIO()
+                with patch("sys.stdout", stdout):
+                    script.main(["K04564", "-o", output])
+
+            self.assertEqual(stdout.getvalue(), "")
+            with open(output, encoding="utf-8") as f:
+                self.assertEqual(f.read(), ">p2\nMSEQTWO\n>p1\nMSEQONE\n")
+
+    def test_output_writes_empty_fasta_when_there_are_no_matches(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        with tempfile.TemporaryDirectory() as tmpd:
+            output = os.path.join(tmpd, "matches.faa")
+            with patch.object(script, "find_matches", return_value=[]):
+                script.main(["K04564", "-o", output])
+
+            with open(output, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "")
+
+    def test_output_ignores_matches_missing_from_manifest(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        with tempfile.TemporaryDirectory() as tmpd:
+            output = os.path.join(tmpd, "matches.faa")
+            stderr = io.StringIO()
+            with (
+                patch.object(script, "find_matches", return_value=[("missing", "g1")]),
+                patch("sys.stderr", stderr),
+            ):
+                script.main(["K04564", "-o", output])
+
+            with open(output, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "")
+            self.assertEqual(
+                stderr.getvalue(),
+                "Ignoring missing\tg1: Cannot find protein missing from g1 in manifest\n",
+            )
+
+    def test_output_does_not_ignore_other_sequence_errors(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        self.add_ncbi_proteins("g1", {"p1": "MSEQ"})
+        os.remove(self.fx.genome_dir("g1") / "protein.faa")
+        with tempfile.TemporaryDirectory() as tmpd:
+            output = os.path.join(tmpd, "matches.faa")
+            with patch.object(script, "find_matches", return_value=[("p1", "g1")]):
+                with self.assertRaises(FileNotFoundError):
+                    script.main(["K04564", "-o", output])

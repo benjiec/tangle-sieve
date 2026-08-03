@@ -5,11 +5,12 @@ import sys
 
 import duckdb
 
+from tangle import open_file_to_write, unique_batch
 from tangle.defaults import Defaults
 from tangle.detected import DetectedTable
 from tangle.models import CSVSource, Schema
-from tangle import unique_batch
 
+from sieve.protein import CuratedProtein
 from sieve.taxonomy import read_taxonomy_rows, taxonomy_matches
 
 
@@ -51,18 +52,47 @@ def find_matches(ko_accession, max_evalue=None, taxon=None):
         schema.duckdb_drop()
 
 
+def _is_missing_manifest_error(error):
+    return str(error).startswith("Cannot find protein ") and str(error).endswith(" in manifest")
+
+
+def write_matches_fasta(matches, output):
+    with open_file_to_write(output, "wt") as f:
+        for protein_accession, genome_accession in matches:
+            protein = CuratedProtein(protein_accession, genome_accession)
+            try:
+                try:
+                    sequence = protein.sequence()
+                except ValueError as e:
+                    if not _is_missing_manifest_error(e):
+                        raise
+                    print(
+                        f"Ignoring {protein_accession}\t{genome_accession}: {e}",
+                        file=sys.stderr,
+                    )
+                    continue
+                f.write(f">{protein_accession}\n{sequence}\n")
+            finally:
+                CuratedProtein.clear_cache()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("ko_accession")
     parser.add_argument("--max-evalue", type=float)
     parser.add_argument("--taxon")
+    parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
 
-    for protein_accession, genome_accession in find_matches(
+    matches = find_matches(
         args.ko_accession,
         args.max_evalue,
         taxon=args.taxon,
-    ):
+    )
+    if args.output is not None:
+        write_matches_fasta(matches, args.output)
+        return 0
+    for protein_accession, genome_accession in matches:
         print(f"{protein_accession}\t{genome_accession}")
     return 0
 
