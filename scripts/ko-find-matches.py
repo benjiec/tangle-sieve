@@ -24,6 +24,7 @@ def find_matches(
     taxon=None,
     match_starts_before=None,
     match_ends_before=None,
+    max_evalue_rank=None,
 ):
     filters = [f"target_accession = {_sql_string(ko_accession)}"]
     if max_evalue is not None:
@@ -32,6 +33,11 @@ def find_matches(
         filters.append(f"query_start <= {int(match_starts_before)}")
     if match_ends_before is not None:
         filters.append(f"query_end <= {int(match_ends_before)}")
+    if max_evalue_rank is not None:
+        filters.extend([
+            "custom_metric_name = 'evalue-rank'",
+            f"TRY_CAST(custom_metric_value AS DOUBLE) <= {float(max_evalue_rank)}",
+        ])
 
     schema = Schema("__ko_find_matches__" + unique_batch())
     source = CSVSource(
@@ -92,6 +98,7 @@ def main(argv=None):
     parser.add_argument("--max-evalue", type=float)
     parser.add_argument("--match-starts-before", type=int)
     parser.add_argument("--match-ends-before", type=int)
+    parser.add_argument("--max-evalue-rank", type=float, default=1)
     parser.add_argument("--taxon")
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
@@ -102,6 +109,7 @@ def main(argv=None):
         taxon=args.taxon,
         match_starts_before=args.match_starts_before,
         match_ends_before=args.match_ends_before,
+        max_evalue_rank=args.max_evalue_rank,
     )
     if args.output is not None:
         write_matches_fasta(matches, args.output)

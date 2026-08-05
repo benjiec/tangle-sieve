@@ -976,7 +976,7 @@ class TestRules(unittest.TestCase):
                 {
                     "Protein_ID": "p1_with_leader_2_M",
                     "Localizations": "Endoplasmic reticulum",
-                    "Signals": "Mitochondrial transit peptide",
+                    "Signals": "Mitochondrial transit peptide|Signal peptide",
                     "Cytoplasm": "0.1",
                     "Endoplasmic reticulum": "0.88",
                     "Soluble": "0.2",
@@ -1005,7 +1005,7 @@ class TestRules(unittest.TestCase):
             ],
             [
                 ("p1", RULE_FALSE, "0", "0", "Cytoplasm", "26"),
-                ("p1_with_leader_2_M", RULE_TRUE, "100", "0", "Endoplasmic reticulum", "88"),
+                ("p1_with_leader_2_M", RULE_TRUE, "100", "100", "Endoplasmic reticulum", "88"),
             ],
         )
         self.assertEqual(output_rows[1]["Leader.call('Soluble')"], "20")
@@ -1018,7 +1018,7 @@ class TestRules(unittest.TestCase):
                 {"Protein_ID": "p1", "Signals": "", "Localizations": "Cytoplasm"},
                 {
                     "Protein_ID": "p1_with_leader_2_M",
-                    "Signals": "Signal peptide",
+                    "Signals": "Signal peptide|Peroxisomal targeting signal",
                     "Localizations": "Extracellular",
                 },
             ])
@@ -1551,6 +1551,16 @@ class TestRuleParsingHelpers(unittest.TestCase):
                     "Cytoplasm": "0.5",
                     "Endoplasmic reticulum": "not-a-number",
                 },
+                {
+                    "Protein_ID": "seq2",
+                    "Localizations": "Extracellular",
+                    "Signals": " Peroxisomal targeting signal | Signal peptide ",
+                },
+                {
+                    "Protein_ID": "seq3",
+                    "Localizations": "Extracellular",
+                    "Signals": "Signal peptide|Mitochondrial transit peptide",
+                },
             ])
 
             parsed = _parse_deeploc_csv(path)
@@ -1565,6 +1575,12 @@ class TestRuleParsingHelpers(unittest.TestCase):
         self.assertEqual(parsed["seq1"].probability("mTP"), 0.0)
         self.assertEqual(parsed["seq1"].probability("SP"), 0.0)
         self.assertIsNone(parsed["seq1"].probability("Endoplasmic reticulum"))
+        self.assertEqual(parsed["seq2"].prediction, "SP")
+        self.assertEqual(parsed["seq2"].probability("mTP"), 0.0)
+        self.assertEqual(parsed["seq2"].probability("SP"), 1.0)
+        self.assertEqual(parsed["seq3"].prediction, "mTP")
+        self.assertEqual(parsed["seq3"].probability("mTP"), 1.0)
+        self.assertEqual(parsed["seq3"].probability("SP"), 1.0)
 
     def test_parse_targetp_output(self):
         parsed = _parse_targetp_output("\n".join([

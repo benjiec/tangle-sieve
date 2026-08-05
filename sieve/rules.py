@@ -1131,7 +1131,12 @@ def _leader_call_prediction_from_columns(row):
         return ""
     if max(probability for probability, _prediction in scored) <= 0:
         return ""
-    return max(scored)[1]
+    tie_priority = {
+        "SP": 0,
+        "mTP": 1,
+        "noTP": 2,
+    }
+    return max(scored, key=lambda item: (item[0], tie_priority[item[1]]))[1]
 
 
 def _apply_sequence_annotations(row, candidate):
@@ -1192,16 +1197,22 @@ def _parse_deeploc_csv(path):
                 continue
             if sequence_id in predictions:
                 raise ValueError(f"Duplicate DeepLoc Protein_ID: {sequence_id}")
-            signal = row.get(DEEPLOC_SIGNALS_COLUMN, "")
+            signals = {
+                signal.strip()
+                for signal in row.get(DEEPLOC_SIGNALS_COLUMN, "").split("|")
+                if signal.strip()
+            }
             prediction = ""
             probabilities = {
                 "mTP": 0.0,
                 "SP": 0.0,
             }
-            if signal == DEEPLOC_MTP_SIGNAL:
+            if DEEPLOC_MTP_SIGNAL in signals:
                 prediction = "mTP"
                 probabilities["mTP"] = 1.0
-            elif signal == DEEPLOC_SP_SIGNAL:
+                if DEEPLOC_SP_SIGNAL in signals:
+                    probabilities["SP"] = 1.0
+            elif DEEPLOC_SP_SIGNAL in signals:
                 prediction = "SP"
                 probabilities["SP"] = 1.0
             for column in score_columns:

@@ -30,6 +30,8 @@ class TestKoFindMatchesScript(unittest.TestCase):
         evalue,
         query_start=1,
         query_end=10,
+        custom_metric_name=None,
+        custom_metric_value=None,
     ):
         return dict(
             detection_type="sequence",
@@ -46,6 +48,8 @@ class TestKoFindMatchesScript(unittest.TestCase):
             target_start=1,
             target_end=10,
             evalue=evalue,
+            custom_metric_name=custom_metric_name,
+            custom_metric_value=custom_metric_value,
         )
 
     def add_ncbi_proteins(self, genome_accession, sequences):
@@ -63,10 +67,14 @@ class TestKoFindMatchesScript(unittest.TestCase):
     def test_filters_by_ko_and_max_evalue(self):
         script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
         DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
-            self.detected_row("p1", "g1", "K04564", 1e-20),
-            self.detected_row("p1", "g1", "K04564", 1e-20),
-            self.detected_row("p2", "g1", "K04564", 1e-2),
-            self.detected_row("p3", "g2", "K00001", 1e-50),
+            self.detected_row("p1", "g1", "K04564", 1e-20,
+                              custom_metric_name="evalue-rank", custom_metric_value=1),
+            self.detected_row("p1", "g1", "K04564", 1e-20,
+                              custom_metric_name="evalue-rank", custom_metric_value=1),
+            self.detected_row("p2", "g1", "K04564", 1e-2,
+                              custom_metric_name="evalue-rank", custom_metric_value=1),
+            self.detected_row("p3", "g2", "K00001", 1e-50,
+                              custom_metric_name="evalue-rank", custom_metric_value=1),
         ])
 
         self.assertEqual(script.find_matches("K04564", max_evalue=1e-10), [("p1", "g1")])
@@ -117,6 +125,7 @@ class TestKoFindMatchesScript(unittest.TestCase):
                 "K04564",
                 "--match-starts-before", "20",
                 "--match-ends-before", "40",
+                "--max-evalue-rank", "3",
             ])
 
         find_matches.assert_called_once_with(
@@ -125,14 +134,85 @@ class TestKoFindMatchesScript(unittest.TestCase):
             taxon=None,
             match_starts_before=20,
             match_ends_before=40,
+            max_evalue_rank=3.0,
+        )
+
+    def test_filters_by_inclusive_evalue_rank(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row(
+                "below", "g1", "K04564", 1e-20,
+                custom_metric_name="evalue-rank", custom_metric_value=2,
+            ),
+            self.detected_row(
+                "boundary", "g1", "K04564", 1e-20,
+                custom_metric_name="evalue-rank", custom_metric_value=3,
+            ),
+            self.detected_row(
+                "above", "g1", "K04564", 1e-20,
+                custom_metric_name="evalue-rank", custom_metric_value=4,
+            ),
+            self.detected_row(
+                "wrong_metric", "g1", "K04564", 1e-20,
+                custom_metric_name="score-rank", custom_metric_value=1,
+            ),
+            self.detected_row("missing_metric", "g1", "K04564", 1e-20),
+        ])
+
+        self.assertEqual(
+            script.find_matches("K04564", max_evalue_rank=3),
+            [("below", "g1"), ("boundary", "g1")],
+        )
+
+    def test_main_defaults_max_evalue_rank_to_one(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        with patch.object(script, "find_matches", return_value=[]) as find_matches:
+            script.main(["K04564"])
+
+        find_matches.assert_called_once_with(
+            "K04564",
+            None,
+            taxon=None,
+            match_starts_before=None,
+            match_ends_before=None,
+            max_evalue_rank=1,
+        )
+
+    def test_position_filter_applies_only_to_rows_passing_evalue_rank(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row(
+                "different_hits", "g1", "K04564", 1e-20, query_start=10,
+                custom_metric_name="evalue-rank", custom_metric_value=5,
+            ),
+            self.detected_row(
+                "different_hits", "g1", "K04564", 1e-20, query_start=50,
+                custom_metric_name="evalue-rank", custom_metric_value=1,
+            ),
+            self.detected_row(
+                "same_hit", "g1", "K04564", 1e-20, query_start=20,
+                custom_metric_name="evalue-rank", custom_metric_value=2,
+            ),
+        ])
+
+        self.assertEqual(
+            script.find_matches(
+                "K04564",
+                match_starts_before=20,
+                max_evalue_rank=2,
+            ),
+            [("same_hit", "g1")],
         )
 
     def test_filters_matches_by_taxon_at_any_rank(self):
         script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
         DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
-            self.detected_row("p1", "g1", "K04564", 1e-20),
-            self.detected_row("p2", "g2", "K04564", 1e-20),
-            self.detected_row("p3", "g3", "K04564", 1e-20),
+            self.detected_row("p1", "g1", "K04564", 1e-20,
+                              custom_metric_name="evalue-rank", custom_metric_value=1),
+            self.detected_row("p2", "g2", "K04564", 1e-20,
+                              custom_metric_name="evalue-rank", custom_metric_value=1),
+            self.detected_row("p3", "g3", "K04564", 1e-20,
+                              custom_metric_name="evalue-rank", custom_metric_value=1),
         ])
         self.fx.write_taxonomy_rows([
             {
