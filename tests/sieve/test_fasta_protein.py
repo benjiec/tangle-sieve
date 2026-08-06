@@ -18,6 +18,7 @@ class TestFastaProtein(unittest.TestCase):
                 ("p1_with_leader_6_M", "6", 6, "MQQQQQM"),
             ],
         )
+        self.assertEqual([candidate.protein_start_aa_1b for candidate in candidates], [1, 3, 6])
 
     def test_leader_sequence_candidates_always_include_full_sequence_without_methionines(self):
         protein = FastaProtein("p1", "AAAA")
@@ -47,6 +48,7 @@ class TestFastaProtein(unittest.TestCase):
                 ("p1_with_leader_u1_PF1_M", "u1_PF1", -1, "MAAAAM"),
             ],
         )
+        self.assertEqual([candidate.protein_start_aa_1b for candidate in candidates], [1, 1, 4])
 
     def test_anchor_leader_candidates_include_downstream_anchor_window(self):
         protein = FastaProtein("p1", "AAAAMAA")
@@ -65,6 +67,7 @@ class TestFastaProtein(unittest.TestCase):
                 ("2_PF1", 2, "MAA"),
             ],
         )
+        self.assertEqual([candidate.protein_start_aa_1b for candidate in candidates], [1, 5])
 
     def test_genomic_locus_is_not_available(self):
         protein = FastaProtein("p1", "MAA")

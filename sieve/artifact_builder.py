@@ -36,6 +36,7 @@ def discover_candidates(proteins, rules):
             file=sys.stderr,
         )
         candidates = rules.scoped_sequence_candidates_for_protein_row(protein, row)
+        candidates = rules.bound_sequence_candidates(protein, candidates)
         print(
             f"[sequences {index}/{total}] {protein.protein_accession} "
             f"{protein.genome_accession}: done: candidates={len(candidates)}",
@@ -182,6 +183,7 @@ def merge_locus_artifact(artifacts_dir, proteins, entries):
             start_label=row["start label"],
             start_aa_1b=int(row["start aa 1b"]),
             sequence=candidate_sequences[row["sequence accession"]],
+            end_aa_1b=int(row["end aa 1b"]) if row["end aa 1b"] else None,
         ))
     replaced = {(protein.protein_accession, protein.genome_accession) for protein in proteins}
     rows = [

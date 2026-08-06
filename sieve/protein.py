@@ -238,6 +238,14 @@ class LeaderSequenceCandidate:
     start_label: str
     start_aa_1b: int
     sequence: str
+    protein_start_aa_1b: Optional[int] = None
+    end_aa_1b: Optional[int] = None
+
+
+def _protein_start_at_anchor(anchor_aa_1b, relative_start):
+    if relative_start < 0:
+        return anchor_aa_1b + relative_start
+    return anchor_aa_1b + relative_start - 1
 
 
 class CuratedProtein(object):
@@ -687,6 +695,7 @@ class CuratedProtein(object):
                     start_label=start_label,
                     start_aa_1b=relative_start,
                     sequence=context[index:],
+                    protein_start_aa_1b=_protein_start_at_anchor(anchor_aa_1b, relative_start),
                 ))
         if candidates:
             self._leader_sequence_candidates_at_anchor_cache[cache_key] = original_candidates + candidates
@@ -714,6 +723,7 @@ class CuratedProtein(object):
                 start_label="",
                 start_aa_1b=1,
                 sequence=self.sequence(),
+                protein_start_aa_1b=1,
             )
         ]
 
@@ -731,6 +741,7 @@ class CuratedProtein(object):
                 start_label=_leader_start_label(index - len(tail) + 1),
                 start_aa_1b=index - len(tail) + 1,
                 sequence=combined[index:],
+                protein_start_aa_1b=index - len(tail) + 1,
             )
             for index, aa in enumerate(combined[:last_candidate_index])
             if aa == "M"

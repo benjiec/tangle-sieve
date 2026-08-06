@@ -88,6 +88,7 @@ def load_artifact_proteins(artifacts_dir, pfam_rows, ko_rows):
             start_label=row["start label"],
             start_aa_1b=int(row["start aa 1b"]),
             sequence=candidate_sequences[sequence_accession],
+            end_aa_1b=int(row["end aa 1b"]) if row["end aa 1b"] else None,
         ))
 
     missing_metadata = set(originals) - set(metadata_by_protein)

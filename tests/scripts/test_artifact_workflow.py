@@ -11,6 +11,7 @@ from sieve.artifacts import input_fasta, sequences_fasta, sequences_tsv
 from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_NCBI
 from tangle.sequence import read_fasta_as_dict, write_fasta_from_dict
 from tangle.manifest import ManifestTable
+from tangle.detected import DetectedTable
 
 from tests.fixtures import DefaultsFixture
 from tests.scripts.helpers import load_script
@@ -239,6 +240,81 @@ class TestArtifactWorkflow(unittest.TestCase):
             rows = self.read_tsv(os.path.join(artifacts, "rule-results.tsv"))
             self.assertEqual(rows[0]["pass all"], "true")
 
+    def test_fasta_builder_uses_unthresholded_ko_search_for_cterm_bound(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "input.faa")
+            artifacts = os.path.join(tmpd, "artifacts")
+            ko_hmm = os.path.join(tmpd, "ko.hmm")
+            with open(ko_hmm, "w", encoding="utf-8"):
+                pass
+            sequence = "M" + "A" * 99
+            write_fasta_from_dict({"p1": sequence}, fasta)
+            unbounded_rule = self.write_rule(
+                tmpd, "unbounded_rules", "KO.matches('K04564')", imports="KO, Rules",
+            )
+            bounded_rule = self.write_rule(
+                tmpd,
+                "bounded_rules",
+                "KO.matches('K04564', bound_cterm=True)",
+                imports="KO, Rules",
+            )
+            commands = []
+
+            def run(cmd, check, capture_output, text):
+                commands.append(cmd)
+                domtblout = cmd[cmd.index("--domtblout") + 1]
+                with open(domtblout, "w", encoding="utf-8") as f:
+                    f.write(domtblout_line("p1", "K04564", "-", 80, 70) + "\n")
+                return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            sys.path.insert(0, tmpd)
+            try:
+                self.build_fasta.main([
+                    "--fasta", fasta,
+                    "--rule", unbounded_rule,
+                    "--artifacts-dir", artifacts,
+                ])
+                with patch("subprocess.run", side_effect=run):
+                    self.build_fasta.main([
+                        "--fasta", fasta,
+                        "--rule", bounded_rule,
+                        "--artifacts-dir", artifacts,
+                        "--ko-hmm", ko_hmm,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("unbounded_rules", None)
+                sys.modules.pop("bounded_rules", None)
+
+            self.assertNotIn("--cut_ga", commands[0])
+            candidates = read_fasta_as_dict(sequences_fasta(artifacts))
+            self.assertEqual(candidates["p1"], sequence)
+            self.assertEqual(candidates["p1_to_K04564_54"], sequence[:54])
+            rows = self.read_tsv(sequences_tsv(artifacts))
+            bounded = next(row for row in rows if row["sequence accession"] == "p1_to_K04564_54")
+            self.assertEqual(bounded["end aa 1b"], "54")
+
+    def test_fasta_builder_requires_ko_hmm_for_cterm_bound(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "input.faa")
+            artifacts = os.path.join(tmpd, "artifacts")
+            write_fasta_from_dict({"p1": "MAAA"}, fasta)
+            rule = self.write_rule(
+                tmpd,
+                "bounded_rules",
+                "KO.matches('K04564', bound_cterm=True)",
+                imports="KO, Rules",
+            )
+            sys.path.insert(0, tmpd)
+            try:
+                with self.assertRaisesRegex(ValueError, "--ko-hmm is required"):
+                    self.build_fasta.main([
+                        "--fasta", fasta, "--rule", rule, "--artifacts-dir", artifacts,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("bounded_rules", None)
+
 
 class TestCuratedArtifactBuilder(unittest.TestCase):
 
@@ -341,6 +417,37 @@ class TestCuratedArtifactBuilder(unittest.TestCase):
             finally:
                 sys.path.remove(tmpd)
                 sys.modules.pop("rules", None)
+
+    def test_curated_builder_bounds_candidates_from_curated_ko_hits(self):
+        ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
+            dict(sequence_accession="p1", sequence_database="g1", sequence_type="protein", sequence_source=SEQUENCE_SOURCE_NCBI),
+        ])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MABCDEFGHIJ"})
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            dict(
+                detection_type="sequence", detection_method="hmm", batch="b1",
+                query_accession="p1", query_database="g1", query_type="protein",
+                target_accession="K04564", target_database="KO", target_type="protein",
+                query_start=1, query_end=6, target_start=1, target_end=6,
+            ),
+        ])
+        with tempfile.TemporaryDirectory() as tmpd:
+            rule_path = os.path.join(tmpd, "rules.py")
+            with open(rule_path, "w", encoding="utf-8") as f:
+                f.write("from sieve.rules import KO, Rules\n")
+                f.write("rule = Rules(KO.matches('K04564', bound_cterm=True))\n")
+            artifacts = os.path.join(tmpd, "artifacts")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", io.StringIO("p1\tg1\n")):
+                    self.build.main(["--rule", "rules.rule", "--artifacts-dir", artifacts])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("rules", None)
+
+            self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {
+                "p1_to_K04564_6": "MABCDE",
+            })
 
 
 if __name__ == "__main__":

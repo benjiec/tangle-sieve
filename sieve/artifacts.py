@@ -16,7 +16,9 @@ SEQUENCE_HEADERS = [
     "sequence accession",
     "start label",
     "start aa 1b",
+    "end aa 1b",
 ]
+LEGACY_SEQUENCE_HEADERS = SEQUENCE_HEADERS[:-1]
 
 
 def rule_results_tsv(artifacts_dir):
@@ -48,9 +50,13 @@ def read_sequence_rows(artifacts_dir):
         return []
     with open(path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
-        if reader.fieldnames != SEQUENCE_HEADERS:
+        if reader.fieldnames not in (SEQUENCE_HEADERS, LEGACY_SEQUENCE_HEADERS):
             raise ValueError(f"Unexpected columns in {path}: {reader.fieldnames}")
-        return list(reader)
+        rows = list(reader)
+        if reader.fieldnames == LEGACY_SEQUENCE_HEADERS:
+            for row in rows:
+                row["end aa 1b"] = ""
+        return rows
 
 
 def _atomic_write(path, write):
@@ -102,6 +108,7 @@ def merge_sequence_artifacts(artifacts_dir, originals, candidate_entries):
                 "sequence accession": "",
                 "start label": "",
                 "start aa 1b": "",
+                "end aa 1b": "",
             })
         for candidate in entry["candidates"]:
             previous = candidate_sequences.get(candidate.accession)
@@ -114,6 +121,7 @@ def merge_sequence_artifacts(artifacts_dir, originals, candidate_entries):
                 "sequence accession": candidate.accession,
                 "start label": candidate.start_label,
                 "start aa 1b": str(candidate.start_aa_1b),
+                "end aa 1b": "" if candidate.end_aa_1b is None else str(candidate.end_aa_1b),
             })
 
     merged_originals = _merge_sequences(input_path, originals, "input")

@@ -54,6 +54,9 @@ An artifact directory contains:
 * `sequences.tsv`: candidate-to-original associations and start metadata.
 * `genomic_loci.tsv`: genomic locus metadata for curated inputs.
 
+`sequences.tsv` also records an inclusive `end aa 1b` when candidate sequences
+are C-terminally bounded.
+
 Builders are incremental. Re-adding identical sequences and metadata is
 idempotent, and newly discovered candidates are added. An accession that has a
 different sequence is rejected. If a curated protein accession occurs in more
@@ -160,6 +163,18 @@ PYTHONPATH=../coral sieve-py ../sieve/scripts/build-fasta-artifacts.py \
   -r coral.rules.mt_MnSOD_cnidaria.rule_fasta \
   --artifacts-dir tmp \
   --pfam-hmm assets/pfam.hmm
+```
+
+If the construction rule contains `KO.matches("K04564", bound_cterm=True)`,
+also supply `--ko-hmm`. The builder searches without `--cut_ga` or a threshold
+file and truncates candidates at the greatest matching inclusive `query_end`:
+
+```
+PYTHONPATH=../coral sieve-py ../sieve/scripts/build-fasta-artifacts.py \
+  --fasta transcript_proteins.faa \
+  -r coral.rules.mt_MnSOD_cnidaria.rule_fasta \
+  --artifacts-dir tmp \
+  --ko-hmm assets/k04564.hmm
 ```
 
 The FASTA and curated builders can add records to the same artifact directory.

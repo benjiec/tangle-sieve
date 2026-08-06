@@ -312,9 +312,55 @@ class Rules(object):
 
     def __init__(self, rule):
         self.rule = _as_rule(rule)
+        if len(self.cterm_bound_rules()) > 1:
+            raise ValueError("Rules may contain at most one KO.matches(..., bound_cterm=True) rule")
 
     def atomic_rules(self):
         return self.rule.atomic_rules()
+
+    def cterm_bound_rules(self):
+        bounded = []
+
+        def collect(rule):
+            if isinstance(rule, CompositeRule):
+                for child in rule.rules:
+                    collect(child)
+            elif isinstance(rule, DetectedTargetRule) and rule.bound_cterm:
+                bounded.append(rule)
+
+        collect(self.rule)
+        return bounded
+
+    def bound_sequence_candidates(self, protein, candidates):
+        bound_rules = self.cterm_bound_rules()
+        if not bound_rules:
+            return candidates
+        rule = bound_rules[0]
+        endpoints = [
+            int(row["query_end"])
+            for row in rule.row_getter(protein)
+            if rule.target_matches(row["target_accession"])
+        ]
+        if not endpoints:
+            return candidates
+        endpoint = max(endpoints)
+        bounded = []
+        for candidate in candidates:
+            start = candidate.protein_start_aa_1b
+            if start is None:
+                raise ValueError(f"Candidate is missing original-protein start coordinate: {candidate.accession}")
+            if start > endpoint:
+                continue
+            length = endpoint - start + 1 if start >= 1 else endpoint - start
+            bounded.append(LeaderSequenceCandidate(
+                accession=f"{candidate.accession}_to_{rule.accession}_{endpoint}",
+                start_label=candidate.start_label,
+                start_aa_1b=candidate.start_aa_1b,
+                sequence=candidate.sequence[:length],
+                protein_start_aa_1b=start,
+                end_aa_1b=endpoint,
+            ))
+        return bounded
 
     def headers(self):
         atomic_rules = self.atomic_rules()
@@ -524,18 +570,21 @@ class Rules(object):
 
 class DetectedTargetRule(Rule):
 
-    def __init__(self, label, row_getter, accession, prefix_match=False):
+    def __init__(self, label, row_getter, accession, prefix_match=False, bound_cterm=False):
         self.label = label
         self.row_getter = row_getter
         self.accession = accession
         self.prefix_match = prefix_match
+        self.bound_cterm = bound_cterm
+
+    def target_matches(self, target):
+        if self.prefix_match:
+            target = _target_prefix(target)
+        return target == self.accession
 
     def evaluate(self, context):
         for row in self.row_getter(context.protein):
-            target = row["target_accession"]
-            if self.prefix_match:
-                target = _target_prefix(target)
-            if target == self.accession:
+            if self.target_matches(row["target_accession"]):
                 return RULE_TRUE
         return RULE_FALSE
 
@@ -555,11 +604,15 @@ class Pfam(object):
 class KO(object):
 
     @staticmethod
-    def matches(accession):
+    def matches(accession, bound_cterm=False):
+        label = f"KO.matches('{accession}')"
+        if bound_cterm:
+            label = f"KO.matches('{accession}', bound_cterm=True)"
         return DetectedTargetRule(
-            label=f"KO.matches('{accession}')",
+            label=label,
             row_getter=lambda protein: protein.detected_ko(),
             accession=accession,
+            bound_cterm=bound_cterm,
         )
 
 
@@ -1301,6 +1354,7 @@ def _original_sequence_candidate(protein):
             start_label="",
             start_aa_1b=1,
             sequence=protein.sequence(),
+            protein_start_aa_1b=1,
         )
     ]
 

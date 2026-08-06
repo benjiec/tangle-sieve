@@ -105,8 +105,24 @@ from sieve.rules import KO, Rules
 rule = Rules(KO.matches("K04564"))
 ```
 
+During artifact construction, `bound_cterm=True` truncates every discovered
+candidate at the greatest inclusive `query_end` among hits for that KO:
+
+```python
+rule = Rules(KO.matches("K04564", bound_cterm=True))
+```
+
+Only one bounded KO rule is allowed in a rule tree. Without a matching hit,
+candidates remain unbounded. A candidate starting after the selected endpoint
+is omitted. Bounded accessions end in `_to_KO_ENDPOINT`, for example
+`p1_with_leader_u2_M_to_K04564_187`.
+
 KO accessions are matched exactly. The rule returns `true` when any detected KO
 row for the protein matches, otherwise `false`.
+
+For FASTA artifact construction, `--ko-hmm` is required by a bounded KO rule.
+This bounding-only search uses all HMM hits: it uses neither `--cut_ga` nor a
+threshold file. Curated construction uses existing curated KO detections.
 
 During artifact evaluation, KO rows are regenerated from `input.faa` by
 `check-artifacts-by-rules.py`. KO searches require `--ko-hmm` and

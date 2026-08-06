@@ -14,6 +14,7 @@ from tangle.detected import DetectedTable
 from sieve.fasta_protein import FastaProtein
 from sieve.protein import (
     CuratedProtein,
+    LeaderSequenceCandidate,
     ProteinHMMAlignment,
     SEQUENCE_SOURCE_HMM_DETECTED,
     SEQUENCE_SOURCE_NCBI,
@@ -282,6 +283,77 @@ class TestRules(unittest.TestCase):
 
             self.assertEqual(rows[0]["pass all"], RULE_TRUE)
             self.assertEqual(self.read_tsv(out)[0]["Pfam.matches('PF02777')"], RULE_TRUE)
+
+    def test_ko_bound_cterm_uses_greatest_inclusive_query_end(self):
+        protein = FastaProtein("p1", "MABCDEFGHIJ", ko_rows=[
+            {"target_accession": "K04564", "query_end": 5},
+            {"target_accession": "K04564", "query_end": 8},
+            {"target_accession": "K00001", "query_end": 10},
+        ])
+        rules = Rules(KO.matches("K04564", bound_cterm=True))
+        candidates = rules.scoped_sequence_candidates_for_protein_row(protein, {})
+
+        bounded = rules.bound_sequence_candidates(protein, candidates)
+
+        self.assertEqual(len(bounded), 1)
+        self.assertEqual(bounded[0].sequence, "MABCDEFG")
+        self.assertEqual(bounded[0].accession, "p1_to_K04564_8")
+        self.assertEqual(bounded[0].end_aa_1b, 8)
+
+    def test_ko_bound_cterm_leaves_candidates_unchanged_without_match(self):
+        protein = FastaProtein("p1", "MABCDE", ko_rows=[])
+        rules = Rules(KO.matches("K04564", bound_cterm=True))
+        candidates = rules.scoped_sequence_candidates_for_protein_row(protein, {})
+
+        self.assertIs(rules.bound_sequence_candidates(protein, candidates), candidates)
+
+    def test_ko_bound_cterm_handles_upstream_start_and_drops_start_after_end(self):
+        protein = FastaProtein("p1", "MABCDEFGHIJ", ko_rows=[
+            {"target_accession": "K04564", "query_end": 5},
+        ])
+        rules = Rules(KO.matches("K04564", bound_cterm=True))
+        candidates = [
+            LeaderSequenceCandidate("upstream", "u2", -2, "XXMABCDEFGHIJ", protein_start_aa_1b=-2),
+            LeaderSequenceCandidate("late", "7", 7, "GHIJ", protein_start_aa_1b=7),
+        ]
+
+        bounded = rules.bound_sequence_candidates(protein, candidates)
+
+        self.assertEqual([(candidate.accession, candidate.sequence) for candidate in bounded], [
+            ("upstream_to_K04564_5", "XXMABCD"),
+        ])
+
+    def test_rejects_multiple_ko_cterm_bounds(self):
+        with self.assertRaisesRegex(ValueError, "at most one"):
+            Rules(
+                KO.matches("K04564", bound_cterm=True)
+                & KO.matches("K00001", bound_cterm=True)
+            )
+
+    def test_ko_bound_cterm_applies_after_pfam_anchored_leader_discovery(self):
+        protein = FastaProtein(
+            "p1",
+            "MAAMAAAAAA",
+            pfam_rows=[{
+                "target_accession": "PF00081.1",
+                "query_start": 5,
+                "query_end": 9,
+                "target_start": 1,
+            }],
+            ko_rows=[{"target_accession": "K04564", "query_end": 6}],
+        )
+        rules = Rules(
+            Leader().upstreamOfPfam("PF00081").betweenAA(-5, 0)
+            & KO.matches("K04564", bound_cterm=True)
+        )
+
+        candidates = rules.scoped_sequence_candidates_for_protein_row(protein, {})
+        bounded = rules.bound_sequence_candidates(protein, candidates)
+
+        self.assertEqual(
+            [(candidate.protein_start_aa_1b, candidate.sequence) for candidate in bounded],
+            [(1, "MAAMAA"), (4, "MAA")],
+        )
 
     def test_rules_check_includes_contig_accession_when_locus_is_available(self):
         self.fx.write_three_exon_gene("p1", "g1", "+")

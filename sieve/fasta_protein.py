@@ -11,6 +11,7 @@ from sieve.protein import (
     ProteinHMMAlignment,
     _leader_relative_label,
     _leader_start_label,
+    _protein_start_at_anchor,
 )
 
 
@@ -41,6 +42,7 @@ class FastaProtein(object):
                 start_label="",
                 start_aa_1b=1,
                 sequence=self.sequence(),
+                protein_start_aa_1b=1,
             )
         ]
 
@@ -61,6 +63,7 @@ class FastaProtein(object):
                 start_label=start_label,
                 start_aa_1b=start_aa_1b,
                 sequence=sequence[index:],
+                protein_start_aa_1b=start_aa_1b,
             ))
         self._leader_sequence_candidates_cache = candidates
         return self._leader_sequence_candidates_cache
@@ -101,6 +104,7 @@ class FastaProtein(object):
                 start_label=start_label,
                 start_aa_1b=relative_start,
                 sequence=sequence[index:],
+                protein_start_aa_1b=_protein_start_at_anchor(anchor_aa_1b, relative_start),
             ))
         self._leader_sequence_candidates_at_anchor_cache[cache_key] = candidates
         return self._leader_sequence_candidates_at_anchor_cache[cache_key]
