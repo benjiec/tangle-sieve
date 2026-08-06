@@ -1292,6 +1292,26 @@ class TestRules(unittest.TestCase):
 
         self.assertEqual(rows[0]["pass all"], RULE_TRUE)
 
+    def test_tf_motifs_missing_fasta_locus_does_not_poison_curated_batch(self):
+        self.fx.write_three_exon_gene("p1", "g1", "+")
+        gimme_output = "\n".join([
+            "sequence start end feature score strand",
+            "p1_locus 45 50 GM.5.0.Rel.0001 8.0 +",
+            "p1_locus 55 60 GM.5.0.bZIP.0001 9.0 -",
+            "",
+        ])
+        proteins = [CuratedProtein("p1", "g1"), FastaProtein("fasta1", "MA")]
+
+        with patch("sieve.rules.subprocess.run", return_value=CompletedProcess([], 0, stdout=gimme_output, stderr="")):
+            with tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(
+                    TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_intron(2)
+                ).check_proteins(proteins, os.path.join(tmpd, "rules.tsv"))
+
+        results = {row["protein accession"]: row["pass all"] for row in rows}
+        self.assertEqual(results["p1"], RULE_TRUE)
+        self.assertEqual(results["fasta1"], RULE_ERROR)
+
     def test_tf_motifs_use_gene_direction_for_reverse_gene_intron_order(self):
         self.fx.write_three_exon_gene("p1", "g1", "-")
         locus = CuratedProtein("p1", "g1").genomic_locus_with_leader()

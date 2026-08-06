@@ -89,9 +89,10 @@ Pfam accessions are prefix-matched before the first dot. This means
 `PF00081` matches versioned hits such as `PF00081.28`. The rule returns `true`
 when any detected Pfam row for the protein matches, otherwise `false`.
 
-For FASTA input, Pfam rows are produced by `filter-fasta-by-rules.py` when
-`--pfam-hmm` is supplied. For curated protein input, Pfam rows come from the
-available genomics tables.
+During artifact evaluation, Pfam rows are regenerated from `input.faa` by
+`check-artifacts-by-rules.py`. The required `--pfam-hmm` search uses HMMER
+gathering thresholds (`--cut_ga`). Curated Pfam tables are used only while
+building curated artifacts when leader discovery is anchored to a Pfam hit.
 
 
 ## KO Rules
@@ -107,9 +108,10 @@ rule = Rules(KO.matches("K04564"))
 KO accessions are matched exactly. The rule returns `true` when any detected KO
 row for the protein matches, otherwise `false`.
 
-For FASTA input, KO rows are produced by `filter-fasta-by-rules.py` when
-`--ko-hmm` and `--ko-thresholds` are supplied. For curated protein input, KO
-rows come from the available genomics tables.
+During artifact evaluation, KO rows are regenerated from `input.faa` by
+`check-artifacts-by-rules.py`. KO searches require `--ko-hmm` and
+`--ko-thresholds`; they use the model-specific thresholds instead of
+`--cut_ga`.
 
 
 ## HMM Alignment Rules
@@ -413,14 +415,6 @@ Leader().localize_at("Endoplasmic reticulum")
 column. It still evaluates scoped leader candidates in the same way as other
 `Leader()` rules.
 
-DeepLoc score columns can also be referenced with `LeaderCall(...)` in
-positive-rule expressions:
-
-```python
-LeaderCall("Endoplasmic reticulum").ge(10)
-```
-
-
 ## Candidate Accessions
 
 Discovered leader candidate accessions are derived from the original protein
@@ -520,100 +514,6 @@ A TF motif rule can only be scoped once. For example,
 `.in_intron(2).between(1, 10)` is invalid.
 
 
-## Result Filters
-
-Result filters are used by downstream scripts that read `rule-results.tsv`,
-such as scripts that turn rule results back into FASTA. They live in
-`sieve.result_filters`, not `sieve.rules`.
-
-```python
-from sieve.result_filters import Field, LeaderCall
-
-is_positive = (
-    Field("pass all").eq("true")
-    & LeaderCall("mTP").gte(80)
-)
-```
-
-Like rules, filters compose with Python operators:
-
-```python
-is_positive = Field("pass all").eq("true") | Field("manual keep").eq("yes")
-is_negative = ~Field("pass all").eq("true")
-```
-
-The object referenced by a result-filter script must be a
-`RuleResultFilter` instance.
-
-
-## Field(...)
-
-Use `Field(name)` to select a single exact column name from `rule-results.tsv`.
-
-```python
-from sieve.result_filters import Field
-
-is_positive = Field("pass all").eq("true")
-high_score = Field("score").gte(50)
-```
-
-Available comparisons are:
-
-```python
-Field("column").eq("true")          # exact string equality
-Field("column").ne("false")         # exact string inequality
-Field("column").num_eq(1)           # numeric equality
-Field("column").num_ne(0)           # numeric inequality
-Field("column").gt(10)
-Field("column").gte(10)
-Field("column").ge(10)              # alias for gte
-Field("column").lt(10)
-Field("column").lte(10)
-Field("column").le(10)              # alias for lte
-Field("column").matches("MnSOD")    # regex search
-Field("column").not_matches("bad")  # inverse regex search
-```
-
-`eq` and `ne` compare strings. Numeric comparisons parse both the row value and
-the expected value as numbers.
-
-
-## FieldRegex(...)
-
-Use `FieldRegex(pattern)` to select columns whose names fully match a regular
-expression. Because a regex can match multiple columns, you must choose `.any()`
-or `.all()` before comparing.
-
-```python
-from sieve.result_filters import FieldRegex
-
-any_pfam = FieldRegex(r"Pfam\.matches.+").any().eq("true")
-all_hmm_checks = FieldRegex(r"HMMAlignment.+").all().eq("true")
-```
-
-`.any()` passes if any matching column passes the comparison. `.all()` passes
-only if every matching column passes the comparison.
-
-
-## LeaderCall(...)
-
-`LeaderCall(prediction)` is a convenience helper for leader annotation columns.
-
-```python
-from sieve.result_filters import LeaderCall
-
-high_mtp = LeaderCall("mTP").gte(80)
-er_score = LeaderCall("Endoplasmic reticulum").ge(10)
-```
-
-These are equivalent to:
-
-```python
-Field("Leader.call('mTP')").gte(80)
-Field("Leader.call('Endoplasmic reticulum')").ge(10)
-```
-
-
 ## Examples
 
 Classify mitochondrial targeting peptides near the protein start:
@@ -709,16 +609,5 @@ from sieve.rules import Leader, Rules
 
 rule = Rules(
     Leader().is_mTP() | Leader().is_SP()
-)
-```
-
-Define a positive-result filter for high-confidence leader rows:
-
-```python
-from sieve.result_filters import Field, LeaderCall
-
-is_positive = (
-    Field("pass all").eq("true")
-    & LeaderCall("mTP").gte(80)
 )
 ```

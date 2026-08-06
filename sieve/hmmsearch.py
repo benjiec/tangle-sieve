@@ -30,7 +30,7 @@ class KOThreshold:
     score_type: str
 
 
-def run_hmmsearch(hmm_file, fasta_file, domtblout_path, use_cut_ga=False):
+def run_hmmsearch(hmm_file, fasta_file, domtblout_path, use_cut_ga=True):
     cmd = ["hmmsearch"]
     if use_cut_ga:
         cmd.append("--cut_ga")

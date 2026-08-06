@@ -3,27 +3,15 @@
 import argparse
 import csv
 import math
-import os
 import sys
+import tempfile
 
-from tangle.defaults import Defaults
 from tangle.sequence import read_fasta_as_dict
 
-from sieve.artifacts import rule_results_tsv, sequences_fasta
-from sieve.result_filters import load_result_filter
+from sieve.artifacts import read_sequence_rows, rule_results_tsv, sequences_fasta
+from sieve.hmmsearch import parse_domtblout, run_hmmsearch
 
 
-TAXONOMY_FIELDS = {
-    "domain",
-    "superkingdom",
-    "kingdom",
-    "phylum",
-    "class",
-    "order",
-    "family",
-    "genus",
-    "species",
-}
 OUTPUT_HEADERS = [
     "threshold bitscore",
     "tp",
@@ -37,50 +25,60 @@ OUTPUT_HEADERS = [
 ]
 
 
-def normalized(value):
-    return str(value).strip().lower()
-
-
 def read_tsv(path):
     with open(path, "r", encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f, delimiter="\t"))
 
 
-def _numeric(value, context):
-    try:
-        return float(value)
-    except (TypeError, ValueError) as e:
-        raise ValueError(f"Expected numeric value for {context}, got: {value!r}") from e
-
-
-def best_hmm_hits(hmm_rows):
-    hits = {}
-    for row in hmm_rows:
-        accession = row.get("sequence accession", "")
-        if not accession:
-            raise ValueError("HMM search row is missing sequence accession")
-        bitscore = _numeric(row.get("domain bitscore"), f"HMM bitscore for {accession}")
-        current = hits.get(accession)
+def best_hmm_hits(hits):
+    best = {}
+    for hit in hits:
+        accession = hit.sequence_accession
+        bitscore = hit.domain_bitscore
+        current = best.get(accession)
         if current is None or bitscore > current["bitscore"]:
-            hits[accession] = {"bitscore": bitscore, "row": row}
-    return hits
+            best[accession] = {"bitscore": bitscore, "hit": hit}
+    return best
 
 
-def joined_entries(hmm_rows, rule_rows, fasta_path):
+def joined_entries(hmm_hits, rule_rows, sequence_rows, fasta_path):
     sequences = read_fasta_as_dict(fasta_path)
-    hits_by_sequence = best_hmm_hits(hmm_rows)
+    hits_by_sequence = best_hmm_hits(hmm_hits)
+    manifest_by_sequence = {}
+    for row in sequence_rows:
+        accession = row["sequence accession"]
+        if not accession:
+            continue
+        if accession in manifest_by_sequence:
+            raise ValueError(f"Duplicate sequence accession in candidate metadata: {accession}")
+        manifest_by_sequence[accession] = row
+    manifest_accessions = set(manifest_by_sequence)
+    if manifest_accessions != set(sequences):
+        missing_fasta = sorted(manifest_accessions - set(sequences))
+        missing_metadata = sorted(set(sequences) - manifest_accessions)
+        if missing_fasta:
+            raise ValueError(f"Candidate metadata refers to missing sequences: {', '.join(missing_fasta[:5])}")
+        raise ValueError(f"Candidate sequences have no metadata: {', '.join(missing_metadata[:5])}")
     rules_by_sequence = {}
     for row in rule_rows:
         accession = row.get("sequence accession", "")
         if not accession:
             raise ValueError("Rule results row is missing sequence accession")
-        rules_by_sequence.setdefault(accession, row)
+        if accession in rules_by_sequence:
+            raise ValueError(f"Duplicate sequence accession in rule results: {accession}")
+        if "pass all" not in row:
+            raise ValueError("Rule results are missing pass all column")
+        rules_by_sequence[accession] = row
 
     entries = []
     for accession in sequences:
         rule_row = rules_by_sequence.get(accession)
         if rule_row is None:
             raise ValueError(f"Cannot find FASTA accession in rule results: {accession}")
+        manifest_row = manifest_by_sequence[accession]
+        for column in ("protein accession", "genome accession"):
+            if rule_row.get(column, "") != manifest_row.get(column, ""):
+                raise ValueError(f"Candidate metadata and rule results disagree for {accession}: {column}")
         hit = hits_by_sequence.get(accession)
         entries.append({
             "sequence accession": accession,
@@ -88,76 +86,17 @@ def joined_entries(hmm_rows, rule_rows, fasta_path):
             "genome accession": rule_row.get("genome accession", ""),
             "bitscore": hit["bitscore"] if hit is not None else 0.0,
             "rule_row": rule_row,
-            "hmm_row": hit["row"] if hit is not None else {},
+            "hmm_hit": hit["hit"] if hit is not None else None,
+            "positive": rule_row.get("pass all") == "true",
         })
 
     extra_hits = sorted(set(hits_by_sequence) - set(sequences))
     if extra_hits:
         raise ValueError(f"HMM search results contain accessions absent from FASTA: {', '.join(extra_hits[:5])}")
+    extra_rules = sorted(set(rules_by_sequence) - set(sequences))
+    if extra_rules:
+        raise ValueError(f"Rule results contain accessions absent from FASTA: {', '.join(extra_rules[:5])}")
     return entries
-
-
-def best_entry_per_protein(entries):
-    best = {}
-    for entry in entries:
-        protein_accession = entry["protein accession"]
-        if not protein_accession:
-            raise ValueError(f"Rule results row is missing protein accession for {entry['sequence accession']}")
-        current = best.get(protein_accession)
-        if current is None or entry["bitscore"] > current["bitscore"]:
-            best[protein_accession] = entry
-    return [
-        best[entry["protein accession"]]
-        for entry in entries
-        if best[entry["protein accession"]]["sequence accession"] == entry["sequence accession"]
-    ]
-
-
-def genome_accession(row):
-    for key in row:
-        if normalized(key).replace("_", " ") in {"genome accession", "accession"}:
-            return row[key]
-    return ""
-
-
-def read_taxonomy_rows():
-    taxonomy_tsv = Defaults.area_genome_taxon_tsv()
-    if not os.path.exists(taxonomy_tsv):
-        return {}
-    with open(taxonomy_tsv, "r", encoding="utf-8", newline="") as f:
-        rows = list(csv.DictReader(f, delimiter="\t"))
-    return {
-        genome_accession(row): row
-        for row in rows
-        if genome_accession(row)
-    }
-
-
-def taxonomy_matches(row, taxon):
-    expected = normalized(taxon)
-    for key, value in row.items():
-        if normalized(key) in TAXONOMY_FIELDS and normalized(value) == expected:
-            return True
-    return False
-
-
-def filter_by_taxon(entries, taxon):
-    if taxon is None:
-        return entries
-    taxonomy_by_genome = read_taxonomy_rows()
-    return [
-        entry for entry in entries
-        if taxonomy_matches(taxonomy_by_genome.get(entry["genome accession"], {}), taxon)
-    ]
-
-
-def label_entries(entries, positive_filter):
-    if entries:
-        positive_filter.validate_columns(entries[0]["rule_row"].keys())
-    labeled = []
-    for entry in entries:
-        labeled.append(entry | {"positive": positive_filter.matches(entry["rule_row"])})
-    return labeled
 
 
 def _ratio(numerator, denominator):
@@ -281,32 +220,35 @@ def write_selected_error_details(stream, row):
         stream.write(f"# {entry['sequence accession']} {_format_metric(entry['bitscore'])}\n")
 
 
-def discover_threshold(hmmsearch_tsv, artifacts_dir, positive_filter_spec, taxon=None):
+def discover_threshold(hmm_profile, artifacts_dir):
+    with tempfile.TemporaryDirectory() as tmpd:
+        domtblout = f"{tmpd}/hmmsearch.domtblout"
+        run_hmmsearch(
+            hmm_profile,
+            sequences_fasta(artifacts_dir),
+            domtblout,
+            use_cut_ga=False,
+        )
+        hits = parse_domtblout(domtblout)
     entries = joined_entries(
-        read_tsv(hmmsearch_tsv),
+        hits,
         read_tsv(rule_results_tsv(artifacts_dir)),
+        read_sequence_rows(artifacts_dir),
         sequences_fasta(artifacts_dir),
     )
-    entries = best_entry_per_protein(entries)
-    entries = filter_by_taxon(entries, taxon)
-    entries = label_entries(entries, load_result_filter(positive_filter_spec))
     return threshold_stats(entries)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hmmsearch-tsv", required=True)
+    parser.add_argument("--hmm", required=True)
     parser.add_argument("--artifacts-dir", required=True)
-    parser.add_argument("--positive-filter", required=True)
-    parser.add_argument("--taxon")
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
 
     rows = discover_threshold(
-        args.hmmsearch_tsv,
+        args.hmm,
         args.artifacts_dir,
-        args.positive_filter,
-        taxon=args.taxon,
     )
     write_threshold_stats(rows, args.output)
     return 0

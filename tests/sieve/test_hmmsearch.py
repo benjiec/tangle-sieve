@@ -136,3 +136,11 @@ class TestHmmsearch(unittest.TestCase):
             run.call_args_list[1].args[0],
             ["hmmsearch", "--domtblout", "ko.domtblout", "ko.hmm", "proteins.faa"],
         )
+
+    def test_run_hmmsearch_uses_cut_ga_by_default(self):
+        with patch("subprocess.run") as run:
+            run_hmmsearch("pfam.hmm", "proteins.faa", "pfam.domtblout")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["hmmsearch", "--cut_ga", "--domtblout", "pfam.domtblout", "pfam.hmm", "proteins.faa"],
+        )

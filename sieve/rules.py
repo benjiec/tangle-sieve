@@ -392,7 +392,7 @@ class Rules(object):
         )
 
     def check_proteins(self, proteins, output_tsv, artifacts_dir=None, trace=True, deeploc_csv=None,
-                       hmm_profiles=None):
+                       hmm_profiles=None, sequence_candidates_by_key=None):
         if self.uses_deeploc() and deeploc_csv is None:
             raise ValueError("--deeploc-csv is required for DeepLoc-backed Leader rules")
         contexts = [
@@ -412,7 +412,9 @@ class Rules(object):
         for i, rule in enumerate(atomic_rules, start=1):
             if trace:
                 print(f"[rules {i}/{total_rules}] {rule.label}: {total_proteins} proteins", file=sys.stderr)
-            deferred_to_candidates = self.uses_leader_candidates() and isinstance(rule, HMMRule)
+            deferred_to_candidates = (
+                sequence_candidates_by_key is not None or self.uses_leader_candidates()
+            ) and isinstance(rule, HMMRule)
             if deferred_to_candidates:
                 rule_results = {context.key: RULE_FALSE for context in contexts}
             else:
@@ -420,6 +422,7 @@ class Rules(object):
                     contexts,
                     _rule_artifacts_dir(artifacts_dir, rule),
                     deeploc_csv=deeploc_csv,
+                    sequence_candidates_by_key=sequence_candidates_by_key,
                 )
             atomic_results[rule.label] = rule_results
             if trace:
@@ -445,10 +448,14 @@ class Rules(object):
             for rule in atomic_rules:
                 row[rule.label] = atomic_results[rule.label][context.key]
             row.update(atomic_annotations.get(context.key, {}))
-            for candidate in self._scoped_sequence_candidates(context.protein, row):
+            if sequence_candidates_by_key is None:
+                candidates = self._scoped_sequence_candidates(context.protein, row)
+            else:
+                candidates = sequence_candidates_by_key.get(context.key, [])
+            for candidate in candidates:
                 candidate_entries.append((context, row, candidate))
 
-        if self.uses_leader_candidates():
+        if self.uses_leader_candidates() or sequence_candidates_by_key is not None:
             self._evaluate_candidate_hmm_rules(atomic_rules, candidate_entries)
 
         rows = []
@@ -745,7 +752,12 @@ class Leader(Rule):
     def uses_leader_candidates(self):
         return True
 
-    def evaluate_many(self, contexts, artifacts_dir=None, **kwargs):
+    def evaluate_many(self, contexts, artifacts_dir=None, sequence_candidates_by_key=None, **kwargs):
+        if sequence_candidates_by_key is not None:
+            return {
+                context.key: _rule_bool(bool(sequence_candidates_by_key.get(context.key, [])))
+                for context in contexts
+            }
         return {
             context.key: _rule_bool(bool(self._discovery_candidates(context.protein)))
             for context in contexts
@@ -835,12 +847,22 @@ class LeaderRule(Rule):
             return RULE_TRUE
         return RULE_FALSE
 
-    def evaluate_many(self, contexts, artifacts_dir=None, deeploc_csv=None, **kwargs):
+    def evaluate_many(
+        self,
+        contexts,
+        artifacts_dir=None,
+        deeploc_csv=None,
+        sequence_candidates_by_key=None,
+        **kwargs,
+    ):
         sequence_contexts = {}
         sequence_candidates = {}
         candidate_counts_by_key = {}
         for context in contexts:
-            candidates = self._scoped_candidates(context.protein)
+            if sequence_candidates_by_key is None:
+                candidates = self._scoped_candidates(context.protein)
+            else:
+                candidates = sequence_candidates_by_key.get(context.key, [])
             candidate_counts_by_key[context.key] = len(candidates)
             for candidate in candidates:
                 sequence_contexts[candidate.accession] = context
@@ -1412,9 +1434,14 @@ class TFMotifWithinRule(Rule):
         sequence_ids = {_locus_sequence_id(context): context for context in contexts}
         results = {context.key: RULE_ERROR for context in contexts}
         loci = {}
-        try:
-            for sequence_id, context in sequence_ids.items():
+        for sequence_id, context in sequence_ids.items():
+            try:
                 loci[sequence_id] = context.protein.genomic_locus_with_leader()
+            except Exception as e:
+                print(f"{self.label} failed for {context.key}: {e}", file=sys.stderr)
+        if not loci:
+            return results
+        try:
             with tempfile.TemporaryDirectory() as tmpd:
                 working_dir = artifacts_dir if artifacts_dir is not None else tmpd
                 if artifacts_dir is not None:
@@ -1439,9 +1466,9 @@ class TFMotifWithinRule(Rule):
             print(f"{self.label} batch failed: {e}", file=sys.stderr)
             return results
 
-        for sequence_id, context in sequence_ids.items():
+        for sequence_id, locus in loci.items():
+            context = sequence_ids[sequence_id]
             try:
-                locus = loci[sequence_id]
                 hits = hits_by_sequence.get(sequence_id, [])
                 results[context.key] = self._evaluate_locus(locus, hits)
             except Exception as e:
