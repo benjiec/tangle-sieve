@@ -174,7 +174,7 @@ def best_threshold_row(rows):
     ))
 
 
-def write_threshold_stats(rows, output):
+def write_threshold_stats(rows, output, hmmsearch_domtblout=""):
     stream = sys.stdout
     close = False
     if output is not None:
@@ -198,6 +198,7 @@ def write_threshold_stats(rows, output):
         selected = selected_threshold_row(rows)
         if selected is not None:
             write_selected_error_details(stream, selected)
+        write_hmmsearch_domtblout(stream, hmmsearch_domtblout)
     finally:
         if close:
             stream.close()
@@ -220,6 +221,12 @@ def write_selected_error_details(stream, row):
         stream.write(f"# {entry['sequence accession']} {_format_metric(entry['bitscore'])}\n")
 
 
+def write_hmmsearch_domtblout(stream, domtblout):
+    stream.write("# hmmsearch domtblout\n")
+    for line in domtblout.splitlines():
+        stream.write(f"# {line}\n")
+
+
 def discover_threshold(hmm_profile, artifacts_dir):
     with tempfile.TemporaryDirectory() as tmpd:
         domtblout = f"{tmpd}/hmmsearch.domtblout"
@@ -230,13 +237,15 @@ def discover_threshold(hmm_profile, artifacts_dir):
             use_cut_ga=False,
         )
         hits = parse_domtblout(domtblout)
+        with open(domtblout, "r", encoding="utf-8") as f:
+            hmmsearch_domtblout = f.read()
     entries = joined_entries(
         hits,
         read_tsv(rule_results_tsv(artifacts_dir)),
         read_sequence_rows(artifacts_dir),
         sequences_fasta(artifacts_dir),
     )
-    return threshold_stats(entries)
+    return threshold_stats(entries), hmmsearch_domtblout
 
 
 def main(argv=None):
@@ -246,11 +255,11 @@ def main(argv=None):
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
 
-    rows = discover_threshold(
+    rows, hmmsearch_domtblout = discover_threshold(
         args.hmm,
         args.artifacts_dir,
     )
-    write_threshold_stats(rows, args.output)
+    write_threshold_stats(rows, args.output, hmmsearch_domtblout)
     return 0
 
 

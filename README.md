@@ -146,6 +146,9 @@ Use the following to search every candidate in an artifact directory and
 compute a threshold for a new HMM profile. Candidate rows whose `pass all`
 value is `true` are labeled positive; all other rows are labeled negative.
 Threshold discovery deliberately searches without `--cut_ga`.
+The output appends the HMMER `--domtblout` used for scoring as comment-prefixed
+lines under `# hmmsearch domtblout`, so individual domain scores remain
+available without making the threshold TSV invalid.
 
 ```
 PYTHONPATH=coral sieve-py sieve/scripts/hmmsearch-threshold.py \

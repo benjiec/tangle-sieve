@@ -112,8 +112,8 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
 
             with patch("subprocess.run", side_effect=run):
-                rows = self.script.discover_threshold(profile, artifacts)
-                self.script.write_threshold_stats(rows, output)
+                rows, domtblout = self.script.discover_threshold(profile, artifacts)
+                self.script.write_threshold_stats(rows, output, domtblout)
 
             self.assertNotIn("--cut_ga", commands[0])
             self.assertEqual(commands[0][-2:], [profile, sequences_fasta(artifacts)])
@@ -121,6 +121,8 @@ class TestHmmsearchThresholdScript(unittest.TestCase):
             with open(output, "r", encoding="utf-8") as f:
                 text = f.read()
             self.assertIn("50\t1\t0\t1\t0", text)
+            self.assertIn("# hmmsearch domtblout\n", text)
+            self.assertIn("# p1 - 100 model MODEL 100 1e-10 50", text)
 
     def test_requires_one_rule_result_per_candidate(self):
         with tempfile.TemporaryDirectory() as tmpd:
