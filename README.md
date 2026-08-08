@@ -157,6 +157,25 @@ PYTHONPATH=coral sieve-py sieve/scripts/hmmsearch-threshold.py \
   --output mt_MnSOD_cnidaria_thresholds.tsv
 ```
 
+Bound FASTA sequences between one N-terminal and one C-terminal profile-HMM
+domain hit. Both searches use `--cut_ga`, then `hmmalign` maps the requested HMM
+positions to exact sequence coordinates. A sequence is omitted with a report on
+stderr unless it has exactly one hit from each model and both hits span their
+requested model positions. Output accessions record the inclusive source
+coordinates as `X_bounded_A-B`:
+
+```
+PYTHONPATH=coral sieve-py sieve/scripts/bound-fasta-by-hmms.py \
+  --n-hmm n-terminal.hmm \
+  --c-hmm c-terminal.hmm \
+  --fasta proteins.faa > bounded.faa
+```
+
+Use `--n-position 2` or `--c-position 197` to require alternative HMM
+alignment endpoints. Use `--acc-desc DESC` to append `|DESC` to every output
+accession; for example, `X_bounded_A-B|DESC`. Descriptions cannot contain
+whitespace.
+
 Build the same artifact format from a protein FASTA. Supply `--pfam-hmm` when
 Pfam detections are needed for anchored leader discovery:
 
