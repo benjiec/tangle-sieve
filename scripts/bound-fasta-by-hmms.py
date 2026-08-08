@@ -188,7 +188,10 @@ def bounded_sequences(sequences, qualifying, n_alignments, c_alignments,
                 f"Ignoring {accession}: boundaries {start}-{end} are outside sequence length {len(sequence)}"
             )
             continue
-        bounded_accession = f"{accession}_bounded_{start}-{end}"
+        first_field, separator, remaining_fields = accession.partition("|")
+        bounded_accession = f"{first_field}_bounded_{start}-{end}"
+        if separator:
+            bounded_accession += f"|{remaining_fields}"
         if acc_desc is not None:
             bounded_accession += f"|{acc_desc}"
         bounded[bounded_accession] = sequence[start - 1:end]

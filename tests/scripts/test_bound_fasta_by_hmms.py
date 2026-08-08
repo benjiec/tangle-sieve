@@ -104,6 +104,19 @@ class TestBoundFastaByHmms(unittest.TestCase):
         )
         self.assertEqual(bounded, {"X_bounded_2-8|example.v1": "BCDEFGH"})
 
+    def test_inserts_boundary_before_existing_pipe_fields(self):
+        accession = "P04179_Hs|Homo_sapiens|Mn"
+        bounded = self.bound(
+            {accession: "ABCDEFGHIJ"},
+            [self.hit(accession, 5, 1, 5, 2, 5)],
+            [self.hit(accession, 6, 1, 6, 4, 8)],
+            acc_desc="reviewed",
+        )
+        self.assertEqual(
+            bounded,
+            {"P04179_Hs_bounded_2-8|Homo_sapiens|Mn|reviewed": "BCDEFGH"},
+        )
+
     def test_rejects_whitespace_in_accession_description(self):
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "cannot contain whitespace"):
             self.script.accession_description("two words")

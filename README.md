@@ -174,7 +174,9 @@ PYTHONPATH=coral sieve-py sieve/scripts/bound-fasta-by-hmms.py \
 Use `--n-position 2` or `--c-position 197` to require alternative HMM
 alignment endpoints. Use `--acc-desc DESC` to append `|DESC` to every output
 accession; for example, `X_bounded_A-B|DESC`. Descriptions cannot contain
-whitespace.
+whitespace. For an existing pipe-delimited accession such as
+`X|species|label`, the boundary is inserted before the first pipe:
+`X_bounded_A-B|species|label`.
 
 Build the same artifact format from a protein FASTA. Supply `--pfam-hmm` when
 Pfam detections are needed for anchored leader discovery:
