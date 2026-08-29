@@ -8,7 +8,7 @@ from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from sieve.artifacts import input_fasta, sequences_fasta, sequences_tsv
-from sieve.protein import CuratedProtein, SEQUENCE_SOURCE_NCBI
+from sieve.protein import CuratedProtein, LeaderSequenceCandidate, SEQUENCE_SOURCE_NCBI
 from tangle.sequence import read_fasta_as_dict, write_fasta_from_dict
 from tangle.manifest import ManifestTable
 from tangle.detected import DetectedTable
@@ -43,11 +43,74 @@ class TestArtifactWorkflow(unittest.TestCase):
         with open(path, "r", encoding="utf-8", newline="") as f:
             return list(csv.DictReader(f, delimiter="\t"))
 
+    def test_fasta_builder_requires_accession_and_genome_description(self):
+        invalid_identifiers = [
+            "p1",
+            "p1|description|extra",
+            "|description",
+            "p1|",
+            "p1|description with spaces",
+        ]
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "input.faa")
+            for identifier in invalid_identifiers:
+                with self.subTest(identifier=identifier):
+                    write_fasta_from_dict({identifier: "MAAA"}, fasta)
+                    with self.assertRaisesRegex(ValueError, "FASTA identifier"):
+                        self.build_fasta.read_fasta_sequences([fasta])
+
+    def test_fasta_builder_combines_multiple_files_and_rejects_duplicate_identifiers(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            first_fasta = os.path.join(tmpd, "first.faa")
+            second_fasta = os.path.join(tmpd, "second.faa")
+            artifacts = os.path.join(tmpd, "artifacts")
+            profile = os.path.join(tmpd, "pfam.hmm")
+            open(profile, "w").close()
+            write_fasta_from_dict({"p1|first_genome": "MAAA"}, first_fasta)
+            write_fasta_from_dict({"p2|second_genome": "MCCC"}, second_fasta)
+            rule = self.write_rule(tmpd, "rules", "Leader().betweenAA(1, 1)")
+            searched_sequences = {}
+
+            def run_hmmsearch(_hmm, fasta, domtblout):
+                searched_sequences.update(read_fasta_as_dict(fasta))
+                open(domtblout, "w").close()
+
+            sys.path.insert(0, tmpd)
+            try:
+                with patch.object(self.build_fasta, "run_hmmsearch", side_effect=run_hmmsearch):
+                    self.build_fasta.main([
+                        "--fasta", first_fasta,
+                        "--fasta", second_fasta,
+                        "--rule", rule,
+                        "--artifacts-dir", artifacts,
+                        "--pfam-hmm", profile,
+                    ])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("rules", None)
+
+            self.assertEqual(read_fasta_as_dict(input_fasta(artifacts)), {
+                "p1|first_genome": "MAAA",
+                "p2|second_genome": "MCCC",
+            })
+            self.assertEqual(searched_sequences, {
+                "p1|first_genome": "MAAA",
+                "p2|second_genome": "MCCC",
+            })
+            self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {
+                "p1_with_leader_1_M|first_genome": "MAAA",
+                "p2_with_leader_1_M|second_genome": "MCCC",
+            })
+
+            write_fasta_from_dict({"p1|first_genome": "MAAA"}, second_fasta)
+            with self.assertRaisesRegex(ValueError, "Duplicate FASTA identifier: p1\\|first_genome"):
+                self.build_fasta.read_fasta_sequences([first_fasta, second_fasta])
+
     def test_fasta_builder_is_incremental_and_unions_candidates(self):
         with tempfile.TemporaryDirectory() as tmpd:
             fasta = os.path.join(tmpd, "input.faa")
             artifacts = os.path.join(tmpd, "artifacts")
-            write_fasta_from_dict({"p1": "MMT"}, fasta)
+            write_fasta_from_dict({"p1|genome_description": "MMT"}, fasta)
             first = self.write_rule(tmpd, "first_rules", "Leader().betweenAA(1, 1)")
             second = self.write_rule(tmpd, "second_rules", "Leader().betweenAA(2, 2)")
             sys.path.insert(0, tmpd)
@@ -66,10 +129,10 @@ class TestArtifactWorkflow(unittest.TestCase):
                 sys.modules.pop("first_rules", None)
                 sys.modules.pop("second_rules", None)
 
-            self.assertEqual(read_fasta_as_dict(input_fasta(artifacts)), {"p1": "MMT"})
+            self.assertEqual(read_fasta_as_dict(input_fasta(artifacts)), {"p1|genome_description": "MMT"})
             self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {
-                "p1_with_leader_1_M": "MMT",
-                "p1_with_leader_2_M": "MT",
+                "p1_with_leader_1_M|genome_description": "MMT",
+                "p1_with_leader_2_M|genome_description": "MT",
             })
             self.assertEqual(
                 [row["start aa 1b"] for row in self.read_tsv(sequences_tsv(artifacts))],
@@ -83,9 +146,9 @@ class TestArtifactWorkflow(unittest.TestCase):
             rule = self.write_rule(tmpd, "rules", "Leader().betweenAA(1, 2)")
             sys.path.insert(0, tmpd)
             try:
-                write_fasta_from_dict({"p1": "MMT"}, fasta)
+                write_fasta_from_dict({"p1|genome_description": "MMT"}, fasta)
                 self.build_fasta.main(["--fasta", fasta, "--rule", rule, "--artifacts-dir", artifacts])
-                write_fasta_from_dict({"p1": "MGT"}, fasta)
+                write_fasta_from_dict({"p1|genome_description": "MGT"}, fasta)
                 with self.assertRaisesRegex(ValueError, "Conflicting input sequence"):
                     self.build_fasta.main(["--fasta", fasta, "--rule", rule, "--artifacts-dir", artifacts])
             finally:
@@ -96,7 +159,7 @@ class TestArtifactWorkflow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpd:
             fasta = os.path.join(tmpd, "input.faa")
             artifacts = os.path.join(tmpd, "artifacts")
-            write_fasta_from_dict({"p1": "AAAA"}, fasta)
+            write_fasta_from_dict({"p1|genome_description": "AAAA"}, fasta)
             rule = self.write_rule(tmpd, "rules", "Leader().betweenAA(1, 2)")
             sys.path.insert(0, tmpd)
             try:
@@ -108,15 +171,20 @@ class TestArtifactWorkflow(unittest.TestCase):
 
             manifest = self.read_tsv(sequences_tsv(artifacts))
             self.assertEqual(len(manifest), 1)
-            self.assertEqual(manifest[0]["protein accession"], "p1")
+            self.assertEqual(manifest[0]["protein accession"], "p1|genome_description")
             self.assertEqual(manifest[0]["sequence accession"], "")
+            self.assertEqual(
+                read_fasta_as_dict(input_fasta(artifacts)),
+                {"p1|genome_description": "AAAA"},
+            )
+            self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {})
             self.assertEqual(self.read_tsv(os.path.join(artifacts, "rule-results.tsv")), [])
 
     def test_stage_b_uses_recorded_candidates_without_leader_discovery(self):
         with tempfile.TemporaryDirectory() as tmpd:
             fasta = os.path.join(tmpd, "input.faa")
             artifacts = os.path.join(tmpd, "artifacts")
-            write_fasta_from_dict({"p1": "MMT"}, fasta)
+            write_fasta_from_dict({"p1|genome_description": "MMT"}, fasta)
             rule = self.write_rule(tmpd, "rules", "Leader().betweenAA(1, 2)")
             sys.path.insert(0, tmpd)
             try:
@@ -133,8 +201,60 @@ class TestArtifactWorkflow(unittest.TestCase):
             rows = self.read_tsv(os.path.join(artifacts, "rule-results.tsv"))
             self.assertEqual(
                 [row["sequence accession"] for row in rows],
-                ["p1_with_leader_1_M", "p1_with_leader_2_M"],
+                ["p1_with_leader_1_M|genome_description", "p1_with_leader_2_M|genome_description"],
             )
+
+    def test_check_artifacts_restores_deeploc_truncated_identifiers(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            source = os.path.join(tmpd, "deeploc.csv")
+            destination = os.path.join(tmpd, "normalized.csv")
+            with open(source, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["Protein_ID", "Localizations", "Signals"])
+                writer.writeheader()
+                writer.writerows([
+                    {"Protein_ID": "p1_with_leader_1_M", "Localizations": "Cytoplasm", "Signals": ""},
+                    {"Protein_ID": "p2_with_leader_1_M_second_genome", "Localizations": "Mitochondrion", "Signals": "Mitochondrial transit peptide"},
+                    {"Protein_ID": "unknown", "Localizations": "Nucleus", "Signals": ""},
+                ])
+            candidates = {
+                ("p1|genome", ""): [LeaderSequenceCandidate(
+                    accession="p1_with_leader_1_M|genome",
+                    start_label="1",
+                    start_aa_1b=1,
+                    sequence="MAAA",
+                )],
+                ("p2|second_genome", ""): [LeaderSequenceCandidate(
+                    accession="p2_with_leader_1_M|second_genome",
+                    start_label="1",
+                    start_aa_1b=1,
+                    sequence="MCCC",
+                )],
+            }
+
+            self.check.normalize_deeploc_ids(source, destination, candidates)
+
+            with open(destination, "r", encoding="utf-8", newline="") as f:
+                normalized = list(csv.DictReader(f))
+            self.assertEqual(normalized[0]["Protein_ID"], "p1_with_leader_1_M|genome")
+            self.assertEqual(normalized[0]["Localizations"], "Cytoplasm")
+            self.assertEqual(normalized[1]["Protein_ID"], "p2_with_leader_1_M|second_genome")
+            self.assertEqual(normalized[1]["Signals"], "Mitochondrial transit peptide")
+            self.assertEqual(normalized[2]["Protein_ID"], "unknown")
+
+    def test_check_artifacts_rejects_ambiguous_deeploc_truncated_identifier(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            source = os.path.join(tmpd, "deeploc.csv")
+            destination = os.path.join(tmpd, "normalized.csv")
+            with open(source, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["Protein_ID", "Localizations", "Signals"])
+                writer.writeheader()
+            candidates = {
+                ("p1|first", ""): [LeaderSequenceCandidate("candidate|first", "", 1, "MAAA")],
+                ("p1|second", ""): [LeaderSequenceCandidate("candidate|second", "", 1, "MCCC")],
+            }
+
+            with self.assertRaisesRegex(ValueError, "ambiguous.*candidate"):
+                self.check.normalize_deeploc_ids(source, destination, candidates)
 
     def test_stage_b_batch_aligns_recorded_candidates(self):
         with tempfile.TemporaryDirectory() as tmpd:
@@ -142,7 +262,7 @@ class TestArtifactWorkflow(unittest.TestCase):
             artifacts = os.path.join(tmpd, "artifacts")
             profile = os.path.join(tmpd, "profile.hmm")
             open(profile, "w").close()
-            write_fasta_from_dict({"p1": "MMT"}, fasta)
+            write_fasta_from_dict({"p1|genome_description": "MMT"}, fasta)
             build_rule = self.write_rule(tmpd, "build_rules", "Leader().betweenAA(1, 2)")
             check_rule = self.write_rule(
                 tmpd,
@@ -194,7 +314,7 @@ class TestArtifactWorkflow(unittest.TestCase):
                     pass
             with open(thresholds, "w", encoding="utf-8") as f:
                 f.write("model threshold score_type\nK04564 100 full\n")
-            write_fasta_from_dict({"p1": "MAAA"}, fasta)
+            write_fasta_from_dict({"p1|genome_description": "MAAA"}, fasta)
             build_rule = self.write_rule(
                 tmpd, "build_rules", "Pfam.matches('PF00081')", imports="Pfam, Rules",
             )
@@ -210,9 +330,9 @@ class TestArtifactWorkflow(unittest.TestCase):
                 commands.append(cmd)
                 domtblout = cmd[cmd.index("--domtblout") + 1]
                 if "--cut_ga" in cmd:
-                    line = domtblout_line("p1", "PFAM", "PF00081.1", 120, 110)
+                    line = domtblout_line("p1|genome_description", "PFAM", "PF00081.1", 120, 110)
                 else:
-                    line = domtblout_line("p1", "K04564", "-", 120, 110)
+                    line = domtblout_line("p1|genome_description", "K04564", "-", 120, 110)
                 with open(domtblout, "w", encoding="utf-8") as f:
                     f.write(line + "\n")
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -248,7 +368,7 @@ class TestArtifactWorkflow(unittest.TestCase):
             with open(ko_hmm, "w", encoding="utf-8"):
                 pass
             sequence = "M" + "A" * 99
-            write_fasta_from_dict({"p1": sequence}, fasta)
+            write_fasta_from_dict({"p1|genome_description": sequence}, fasta)
             unbounded_rule = self.write_rule(
                 tmpd, "unbounded_rules", "KO.matches('K04564')", imports="KO, Rules",
             )
@@ -264,7 +384,7 @@ class TestArtifactWorkflow(unittest.TestCase):
                 commands.append(cmd)
                 domtblout = cmd[cmd.index("--domtblout") + 1]
                 with open(domtblout, "w", encoding="utf-8") as f:
-                    f.write(domtblout_line("p1", "K04564", "-", 80, 70) + "\n")
+                    f.write(domtblout_line("p1|genome_description", "K04564", "-", 80, 70) + "\n")
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
 
             sys.path.insert(0, tmpd)
@@ -288,17 +408,17 @@ class TestArtifactWorkflow(unittest.TestCase):
 
             self.assertNotIn("--cut_ga", commands[0])
             candidates = read_fasta_as_dict(sequences_fasta(artifacts))
-            self.assertEqual(candidates["p1"], sequence)
-            self.assertEqual(candidates["p1_to_K04564_54"], sequence[:54])
+            self.assertEqual(candidates["p1|genome_description"], sequence)
+            self.assertEqual(candidates["p1_to_K04564_54|genome_description"], sequence[:54])
             rows = self.read_tsv(sequences_tsv(artifacts))
-            bounded = next(row for row in rows if row["sequence accession"] == "p1_to_K04564_54")
+            bounded = next(row for row in rows if row["sequence accession"] == "p1_to_K04564_54|genome_description")
             self.assertEqual(bounded["end aa 1b"], "54")
 
     def test_fasta_builder_requires_ko_hmm_for_cterm_bound(self):
         with tempfile.TemporaryDirectory() as tmpd:
             fasta = os.path.join(tmpd, "input.faa")
             artifacts = os.path.join(tmpd, "artifacts")
-            write_fasta_from_dict({"p1": "MAAA"}, fasta)
+            write_fasta_from_dict({"p1|genome_description": "MAAA"}, fasta)
             rule = self.write_rule(
                 tmpd,
                 "bounded_rules",
@@ -331,6 +451,37 @@ class TestCuratedArtifactBuilder(unittest.TestCase):
     def read_tsv(self, path):
         with open(path, "r", encoding="utf-8", newline="") as f:
             return list(csv.DictReader(f, delimiter="\t"))
+
+    def test_zero_candidate_original_is_only_written_to_input_fasta(self):
+        ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
+            dict(
+                sequence_accession="p1",
+                sequence_database="g1",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_NCBI,
+            ),
+        ])
+        self.fx.write_ncbi_proteins("g1", {"p1": "AAAA"})
+        with tempfile.TemporaryDirectory() as tmpd:
+            rule_path = os.path.join(tmpd, "rules.py")
+            with open(rule_path, "w", encoding="utf-8") as f:
+                f.write("from sieve.rules import Leader, Rules\n")
+                f.write("rule = Rules(Leader().betweenAA(1, 2))\n")
+            artifacts = os.path.join(tmpd, "artifacts")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", io.StringIO("p1\tg1\n")):
+                    self.build.main(["--rule", "rules.rule", "--artifacts-dir", artifacts])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("rules", None)
+
+            self.assertEqual(read_fasta_as_dict(input_fasta(artifacts)), {"p1": "AAAA"})
+            self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {})
+            manifest = self.read_tsv(sequences_tsv(artifacts))
+            self.assertEqual(len(manifest), 1)
+            self.assertEqual(manifest[0]["protein accession"], "p1")
+            self.assertEqual(manifest[0]["sequence accession"], "")
 
     def test_accepts_accession_genome_pipeline_and_writes_originals(self):
         ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [

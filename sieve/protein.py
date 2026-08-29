@@ -25,6 +25,13 @@ GFF_TYPE_CDS = "CDS"
 GFF_TYPE_GENE = "gene"
 
 
+def accession_with_suffix(accession, suffix):
+    if "|" not in accession:
+        return f"{accession}_{suffix}"
+    identifier, genome_description = accession.split("|", 1)
+    return f"{identifier}_{suffix}|{genome_description}"
+
+
 def hmm_align_sequences(hmm_profile_fn, sequences_by_id):
     if not sequences_by_id:
         return {}

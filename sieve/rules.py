@@ -6,7 +6,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from sieve.protein import CuratedProtein, LeaderSequenceCandidate, hmm_align_sequences
+from sieve.protein import CuratedProtein, LeaderSequenceCandidate, accession_with_suffix, hmm_align_sequences
 from tangle.sequence import write_fasta_from_dict
 
 
@@ -16,9 +16,12 @@ RULE_MAYBE = "maybe"
 RULE_ERROR = "error"
 RULE_YES = "yes"
 RULE_TOO_FAR = "too_far"
+RULE_NOT_APPLICABLE = "not_applicable"
 
-RULE_PASSING = {RULE_TRUE, RULE_YES, RULE_TOO_FAR}
-RULE_STANDARD_ORDER = [RULE_TRUE, RULE_FALSE, RULE_MAYBE, RULE_ERROR, RULE_YES, RULE_TOO_FAR]
+RULE_PASSING = {RULE_TRUE, RULE_YES, RULE_TOO_FAR, RULE_NOT_APPLICABLE}
+RULE_STANDARD_ORDER = [
+    RULE_TRUE, RULE_FALSE, RULE_MAYBE, RULE_ERROR, RULE_YES, RULE_TOO_FAR, RULE_NOT_APPLICABLE,
+]
 TARGETP_PROBABILITY_THRESHOLD = 0.7
 TARGETP_PROBABILITY_ORDER = ["noTP", "mTP", "SP"]
 TARGETP_PROBABILITY_COLUMNS = {
@@ -353,7 +356,7 @@ class Rules(object):
                 continue
             length = endpoint - start + 1 if start >= 1 else endpoint - start
             bounded.append(LeaderSequenceCandidate(
-                accession=f"{candidate.accession}_to_{rule.accession}_{endpoint}",
+                accession=accession_with_suffix(candidate.accession, f"to_{rule.accession}_{endpoint}"),
                 start_label=candidate.start_label,
                 start_aa_1b=candidate.start_aa_1b,
                 sequence=candidate.sequence[:length],
@@ -1485,8 +1488,15 @@ class TFMotifWithinRule(Rule):
             raise ValueError("TFMotifs rules can only be scoped once")
 
     def evaluate_many(self, contexts, artifacts_dir=None, **kwargs):
-        sequence_ids = {_locus_sequence_id(context): context for context in contexts}
-        results = {context.key: RULE_ERROR for context in contexts}
+        sequence_ids = {
+            _locus_sequence_id(context): context
+            for context in contexts
+            if context.protein.genome_accession
+        }
+        results = {
+            context.key: RULE_ERROR if context.protein.genome_accession else RULE_NOT_APPLICABLE
+            for context in contexts
+        }
         loci = {}
         for sequence_id, context in sequence_ids.items():
             try:

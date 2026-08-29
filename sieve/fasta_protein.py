@@ -9,6 +9,7 @@ from sieve.protein import (
     LEADER_CANDIDATE_MAX_PROTEIN_START_1B,
     LeaderSequenceCandidate,
     ProteinHMMAlignment,
+    accession_with_suffix,
     _leader_relative_label,
     _leader_start_label,
     _protein_start_at_anchor,
@@ -28,6 +29,9 @@ class FastaProtein(object):
 
     def sequence(self):
         return self._sequence
+
+    def _candidate_accession(self, suffix):
+        return accession_with_suffix(self.protein_accession, suffix)
 
     def detected_pfam(self):
         return self._pfam_rows
@@ -59,7 +63,7 @@ class FastaProtein(object):
             start_aa_1b = index + 1
             start_label = _leader_start_label(start_aa_1b)
             candidates.append(LeaderSequenceCandidate(
-                accession=f"{self.protein_accession}_with_leader_{start_label}_M",
+                accession=self._candidate_accession(f"with_leader_{start_label}_M"),
                 start_label=start_label,
                 start_aa_1b=start_aa_1b,
                 sequence=sequence[index:],
@@ -100,7 +104,7 @@ class FastaProtein(object):
                 continue
             seen_start_labels.add(start_label)
             candidates.append(LeaderSequenceCandidate(
-                accession=f"{self.protein_accession}_with_leader_{start_label}_M",
+                accession=self._candidate_accession(f"with_leader_{start_label}_M"),
                 start_label=start_label,
                 start_aa_1b=relative_start,
                 sequence=sequence[index:],

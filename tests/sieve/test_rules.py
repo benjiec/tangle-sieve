@@ -28,6 +28,7 @@ from sieve.rules import (
     RULE_ERROR,
     RULE_FALSE,
     RULE_MAYBE,
+    RULE_NOT_APPLICABLE,
     RULE_TOO_FAR,
     RULE_TRUE,
     RULE_YES,
@@ -1382,7 +1383,27 @@ class TestRules(unittest.TestCase):
 
         results = {row["protein accession"]: row["pass all"] for row in rows}
         self.assertEqual(results["p1"], RULE_TRUE)
-        self.assertEqual(results["fasta1"], RULE_ERROR)
+        self.assertEqual(results["fasta1"], RULE_TRUE)
+        tf_label = "TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_intron(2)"
+        transcript_row = next(row for row in rows if row["protein accession"] == "fasta1")
+        self.assertEqual(transcript_row[tf_label], RULE_NOT_APPLICABLE)
+
+    def test_tf_motifs_not_applicable_is_passing_when_other_rules_match(self):
+        pfam_row = self.fx.detected_row("fasta1", "", "PF00081.1", "Pfam")
+        protein = FastaProtein("fasta1", "MA", pfam_rows=[pfam_row])
+
+        with patch("sieve.rules.subprocess.run") as run:
+            with tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(
+                    TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_intron(2)
+                    & Pfam.matches("PF00081")
+                ).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+
+        run.assert_not_called()
+        tf_label = "TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_intron(2)"
+        self.assertEqual(rows[0][tf_label], RULE_NOT_APPLICABLE)
+        self.assertEqual(rows[0]["Pfam.matches('PF00081')"], RULE_TRUE)
+        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
 
     def test_tf_motifs_use_gene_direction_for_reverse_gene_intron_order(self):
         self.fx.write_three_exon_gene("p1", "g1", "-")

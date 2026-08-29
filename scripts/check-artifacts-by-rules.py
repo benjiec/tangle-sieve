@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import csv
 import os
 import sys
+import tempfile
 from collections import defaultdict
 
 from tangle.sequence import read_fasta_as_dict
@@ -17,6 +19,7 @@ from sieve.rule_loader import load_rules
 
 PFAM_DOMTBLOUT = "pfam.domtblout"
 KO_DOMTBLOUT = "ko.domtblout"
+DEEPLOC_PROTEIN_ID_COLUMN = "Protein_ID"
 
 
 def _rows_by_query(rows):
@@ -111,6 +114,43 @@ def load_artifact_proteins(artifacts_dir, pfam_rows, ko_rows):
     return proteins, candidates_by_key
 
 
+def normalize_deeploc_ids(source, destination, candidates_by_key):
+    full_ids = {
+        candidate.accession
+        for candidates in candidates_by_key.values()
+        for candidate in candidates
+    }
+    full_ids_by_deeploc_id = defaultdict(set)
+    for full_id in full_ids:
+        full_ids_by_deeploc_id[full_id.split("|", 1)[0]].add(full_id)
+        full_ids_by_deeploc_id[full_id.replace("|", "_")].add(full_id)
+    ambiguous = {
+        deeploc_id: sorted(ids)
+        for deeploc_id, ids in full_ids_by_deeploc_id.items()
+        if len(ids) > 1
+    }
+    if ambiguous:
+        deeploc_id = sorted(ambiguous)[0]
+        raise ValueError(
+            f"DeepLoc Protein_ID alias is ambiguous: {deeploc_id} maps to "
+            f"{', '.join(ambiguous[deeploc_id])}"
+        )
+
+    with open(source, "r", encoding="utf-8-sig", newline="") as input_file:
+        reader = csv.DictReader(input_file)
+        fieldnames = reader.fieldnames or []
+        with open(destination, "w", encoding="utf-8", newline="") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in reader:
+                sequence_id = row.get(DEEPLOC_PROTEIN_ID_COLUMN, "")
+                if sequence_id not in full_ids:
+                    matches = full_ids_by_deeploc_id.get(sequence_id, set())
+                    if matches:
+                        row[DEEPLOC_PROTEIN_ID_COLUMN] = next(iter(matches))
+                writer.writerow(row)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("-r", "--rule", required=True)
@@ -128,14 +168,20 @@ def main(argv=None):
     profiles = hmm_profiles_in_dirs(args.hmm_dir)
     profiles.extend(path for path in (args.pfam_hmm, args.ko_hmm) if path is not None)
     try:
-        rules.check_proteins(
-            proteins,
-            rule_results_tsv(args.artifacts_dir),
-            artifacts_dir=args.artifacts_dir,
-            deeploc_csv=args.deeploc_csv,
-            hmm_profiles=profiles,
-            sequence_candidates_by_key=candidates_by_key,
-        )
+        with tempfile.TemporaryDirectory() as tmpd:
+            deeploc_csv = args.deeploc_csv
+            if deeploc_csv is not None:
+                normalized_deeploc_csv = os.path.join(tmpd, "deeploc.csv")
+                normalize_deeploc_ids(deeploc_csv, normalized_deeploc_csv, candidates_by_key)
+                deeploc_csv = normalized_deeploc_csv
+            rules.check_proteins(
+                proteins,
+                rule_results_tsv(args.artifacts_dir),
+                artifacts_dir=args.artifacts_dir,
+                deeploc_csv=deeploc_csv,
+                hmm_profiles=profiles,
+                sequence_candidates_by_key=candidates_by_key,
+            )
     finally:
         CuratedProtein.clear_cache()
     return 0
