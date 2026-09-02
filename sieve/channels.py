@@ -1,10 +1,12 @@
-"""Position-wise protein sequence channels and proteome backgrounds."""
+"""Position-wise protein sequence channel definitions."""
 
 import math
 import os
 import re
+from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
 from numbers import Real
 from types import MappingProxyType
 
@@ -83,9 +85,10 @@ TOP_IDP_DISORDER_PROPENSITY = MappingProxyType({
     "V": -0.121,
 })
 
+# Simplified side-chain charge convention used by localCIDER at neutral pH.
 NEUTRAL_PH_CHARGE = MappingProxyType({
-    aa: 1.0 if aa in "KR" else -1.0 if aa in "DE" else 0.0
-    for aa in CANONICAL_AMINO_ACIDS
+    amino_acid: 1.0 if amino_acid in "KR" else -1.0 if amino_acid in "DE" else 0.0
+    for amino_acid in CANONICAL_AMINO_ACIDS
 })
 
 
@@ -111,7 +114,7 @@ def _validate_sequence(sequence):
     return sequence
 
 
-def _validate_background(bg_mu, bg_sigma):
+def _validate_background_values(bg_mu, bg_sigma):
     if (
         isinstance(bg_mu, bool)
         or not isinstance(bg_mu, Real)
@@ -156,21 +159,24 @@ def _validate_scale(scale):
             + "; ".join(details)
             + ")"
         )
-    return normalized
+    return MappingProxyType(normalized)
 
 
 def _validate_residues(residues):
     if isinstance(residues, str):
         residues = set(residues.upper())
-    elif isinstance(residues, Iterable):
-        normalized = set()
-        for residue in residues:
-            if not isinstance(residue, str) or len(residue) != 1:
-                raise ValueError("residues must contain one-letter amino-acid codes")
-            normalized.add(residue.upper())
-        residues = normalized
     else:
-        raise TypeError("residues must be a string or iterable")
+        try:
+            normalized = set()
+            for residue in residues:
+                if not isinstance(residue, str) or len(residue) != 1:
+                    raise ValueError(
+                        "residues must contain one-letter amino-acid codes"
+                    )
+                normalized.add(residue.upper())
+            residues = normalized
+        except TypeError as error:
+            raise TypeError("residues must be a string or iterable") from error
     if not residues:
         raise ValueError("residues must not be empty")
     invalid = sorted(residues - CANONICAL_AMINO_ACIDS)
@@ -193,6 +199,18 @@ def _validate_dipeptide(dipeptide):
     return dipeptide
 
 
+def _validate_angle(angle):
+    if (
+        isinstance(angle, bool)
+        or not isinstance(angle, Real)
+        or not math.isfinite(angle)
+        or angle <= 0
+        or angle > 360
+    ):
+        raise ValueError("angle must be finite and in the interval (0, 360]")
+    return float(angle)
+
+
 def _window_bounds(sequence_length, index, radius):
     return max(0, index - radius), min(sequence_length, index + radius + 1)
 
@@ -205,64 +223,232 @@ def _window_values(sequence, radius, score):
     return values
 
 
-def _zscore_channel(raw_values, bg_mu, bg_sigma):
-    bg_mu, bg_sigma = _validate_background(bg_mu, bg_sigma)
-
-    def channel(sequence):
-        sequence = _validate_sequence(sequence)
-        return [(value - bg_mu) / bg_sigma for value in raw_values(sequence)]
-
-    return channel
-
-
 def _mean_scale_values(sequence, start, end, scale):
     return sum(scale[amino_acid] for amino_acid in sequence[start:end]) / (end - start)
 
 
-def _composition_values(sequence, radius, residues):
-    return _window_values(
-        sequence,
-        radius,
-        lambda seq, start, end: sum(
-            amino_acid in residues for amino_acid in seq[start:end]
-        ) / (end - start),
-    )
+def iter_fasta_records(fasta_path, on_invalid_sequence=None):
+    """Yield ``(sequence_id, sequence)`` records from a protein FASTA file."""
+    path = os.fspath(fasta_path)
+    found_record = False
+    sequence_id = None
+    sequence_lines = []
+    seen_sequence_ids = set()
+    with open(path, encoding="utf-8") as fasta:
+        for line_number, raw_line in enumerate(fasta, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if sequence_id is not None:
+                    if not sequence_lines:
+                        raise ValueError(f"FASTA record {sequence_id!r} has no sequence")
+                    sequence = "".join(sequence_lines)
+                    try:
+                        sequence = _validate_sequence(sequence)
+                    except ValueError as error:
+                        if on_invalid_sequence is None:
+                            raise
+                        on_invalid_sequence(sequence_id, error)
+                    else:
+                        yield sequence_id, sequence
+                header = line[1:].strip()
+                if not header:
+                    raise ValueError(f"FASTA header on line {line_number} is empty")
+                sequence_id = header.split()[0]
+                if sequence_id in seen_sequence_ids:
+                    raise ValueError(f"duplicate FASTA sequence ID: {sequence_id}")
+                seen_sequence_ids.add(sequence_id)
+                found_record = True
+                sequence_lines = []
+            else:
+                if sequence_id is None:
+                    raise ValueError(
+                        f"FASTA sequence data precedes the first header on line {line_number}"
+                    )
+                sequence_lines.append(line)
+    if sequence_id is not None:
+        if not sequence_lines:
+            raise ValueError(f"FASTA record {sequence_id!r} has no sequence")
+        sequence = "".join(sequence_lines)
+        try:
+            sequence = _validate_sequence(sequence)
+        except ValueError as error:
+            if on_invalid_sequence is None:
+                raise
+            on_invalid_sequence(sequence_id, error)
+        else:
+            yield sequence_id, sequence
+    if not found_record:
+        raise ValueError("FASTA file contains no records")
 
 
-def _scale_values(sequence, radius, scale):
-    return _window_values(
-        sequence,
-        radius,
-        lambda seq, start, end: _mean_scale_values(seq, start, end, scale),
-    )
+@dataclass(frozen=True)
+class ChannelBackground:
+    bg_mu: float
+    bg_sigma: float
+
+    def __post_init__(self):
+        bg_mu, bg_sigma = _validate_background_values(self.bg_mu, self.bg_sigma)
+        object.__setattr__(self, "bg_mu", bg_mu)
+        object.__setattr__(self, "bg_sigma", bg_sigma)
+
+    def as_dict(self):
+        return {"bg_mu": self.bg_mu, "bg_sigma": self.bg_sigma}
 
 
-def mk_composition_bias(radius, residues, bg_mu, bg_sigma):
-    """Return a channel for the local fraction of a specified residue set."""
-    radius = _validate_radius(radius)
-    residues = _validate_residues(residues)
+class _BackgroundAccumulator:
 
-    def raw_values(sequence):
-        return _composition_values(sequence, radius, residues)
+    def __init__(self, channel):
+        self.channel = channel
+        self.count = 0
+        self.mean = 0.0
+        self.sum_squared_deviations = 0.0
 
-    return _zscore_channel(raw_values, bg_mu, bg_sigma)
+    def add_sequence(self, sequence):
+        for value in self.channel.raw_values(sequence):
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"channel {self.channel.short_name!r} produced a nonfinite value"
+                )
+            self.count += 1
+            difference = value - self.mean
+            self.mean += difference / self.count
+            self.sum_squared_deviations += difference * (value - self.mean)
+
+    def result(self):
+        if self.count == 0:
+            raise ValueError(
+                f"channel {self.channel.short_name!r} has no usable positions"
+            )
+        sigma = math.sqrt(max(0.0, self.sum_squared_deviations / self.count))
+        if not math.isfinite(sigma) or sigma <= 0:
+            raise ValueError(
+                f"channel {self.channel.short_name!r} background standard deviation "
+                "is zero or nonfinite"
+            )
+        return ChannelBackground(self.mean, sigma)
 
 
-def mk_short_motif(pattern):
-    """Return a binary channel marking residues covered by regex matches."""
-    try:
-        compiled = re.compile(pattern)
-    except (TypeError, re.error) as error:
-        raise ValueError(f"invalid motif pattern: {error}") from error
-    empty_match = compiled.search("")
-    if empty_match is not None and empty_match.start() == empty_match.end():
-        raise ValueError("motif pattern must not produce zero-length matches")
+class Channel(ABC):
+    """Base class for one position-wise protein sequence channel."""
 
-    def channel(sequence):
-        sequence = _validate_sequence(sequence)
+    kind = None
+    requires_background = True
+
+    def __init__(self, short_name):
+        if not isinstance(short_name, str) or not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*", short_name
+        ):
+            raise ValueError(
+                "short_name must start with a letter or underscore and contain "
+                "only letters, numbers, and underscores"
+            )
+        self.short_name = short_name
+
+    def raw_values(self, sequence):
+        """Return unnormalized values, one for each residue in ``sequence``."""
+        return self._raw_values(_validate_sequence(sequence))
+
+    @abstractmethod
+    def _raw_values(self, sequence):
+        raise NotImplementedError
+
+    @abstractmethod
+    def arguments(self):
+        """Return a JSON-compatible description of channel arguments."""
+        raise NotImplementedError
+
+    def definition(self):
+        return {
+            "short_name": self.short_name,
+            "type": self.kind,
+            "arguments": self.arguments(),
+        }
+
+    def background_accumulator(self):
+        if not self.requires_background:
+            return None
+        return _BackgroundAccumulator(self)
+
+    def background_sequence_is_usable(self, sequence):
+        return True
+
+    def compute_background(self, fasta_path):
+        """Compute residue-weighted population statistics from a FASTA file."""
+        accumulator = self.background_accumulator()
+        if accumulator is None:
+            return None
+        for _sequence_id, sequence in iter_fasta_records(fasta_path):
+            if self.background_sequence_is_usable(sequence):
+                accumulator.add_sequence(sequence)
+        return accumulator.result()
+
+    def make_function(self, background=None):
+        """Return ``f(sequence)`` for this channel."""
+        if not self.requires_background:
+            if background is not None:
+                raise ValueError(
+                    f"channel {self.short_name!r} does not use a background"
+                )
+            return self.raw_values
+        if not isinstance(background, ChannelBackground):
+            raise TypeError(
+                f"channel {self.short_name!r} requires a ChannelBackground"
+            )
+
+        def function(sequence):
+            return [
+                (value - background.bg_mu) / background.bg_sigma
+                for value in self.raw_values(sequence)
+            ]
+
+        return function
+
+
+class CompositionBiasChannel(Channel):
+    kind = "composition_bias"
+
+    def __init__(self, short_name, radius, residues):
+        super().__init__(short_name)
+        self.radius = _validate_radius(radius)
+        self.residues = _validate_residues(residues)
+
+    def _raw_values(self, sequence):
+        return _window_values(
+            sequence,
+            self.radius,
+            lambda seq, start, end: sum(
+                amino_acid in self.residues for amino_acid in seq[start:end]
+            ) / (end - start),
+        )
+
+    def arguments(self):
+        return {"radius": self.radius, "residues": "".join(sorted(self.residues))}
+
+
+class ShortMotifChannel(Channel):
+    kind = "short_motif"
+    requires_background = False
+
+    def __init__(self, short_name, pattern, flags=0):
+        super().__init__(short_name)
+        if isinstance(flags, bool) or not isinstance(flags, int):
+            raise TypeError("flags must be an integer")
+        try:
+            self._compiled = re.compile(pattern, flags)
+        except (TypeError, re.error) as error:
+            raise ValueError(f"invalid motif pattern: {error}") from error
+        self.pattern = self._compiled.pattern
+        self.flags = flags
+        empty_match = self._compiled.search("")
+        if empty_match is not None and empty_match.start() == empty_match.end():
+            raise ValueError("motif pattern must not produce zero-length matches")
+
+    def _raw_values(self, sequence):
         result = [0] * len(sequence)
         for start in range(len(sequence) + 1):
-            match = compiled.match(sequence, start)
+            match = self._compiled.match(sequence, start)
             if match is None:
                 continue
             match_start, match_end = match.span()
@@ -272,45 +458,49 @@ def mk_short_motif(pattern):
                 result[index] = 1
         return result
 
-    return channel
+    def arguments(self):
+        return {"pattern": self.pattern, "flags": self.flags}
 
 
-def mk_net_charge(radius, bg_mu, bg_sigma):
-    """Return a channel for local net charge per residue at neutral pH."""
-    radius = _validate_radius(radius)
+class NetChargeChannel(Channel):
+    kind = "net_charge"
 
-    def raw_values(sequence):
-        return _scale_values(sequence, radius, NEUTRAL_PH_CHARGE)
+    def __init__(self, short_name, radius):
+        super().__init__(short_name)
+        self.radius = _validate_radius(radius)
 
-    return _zscore_channel(raw_values, bg_mu, bg_sigma)
+    def _raw_values(self, sequence):
+        return _window_values(
+            sequence,
+            self.radius,
+            lambda seq, start, end: _mean_scale_values(
+                seq, start, end, NEUTRAL_PH_CHARGE
+            ),
+        )
 
-
-def mk_hydropathy(
-    radius,
-    bg_mu,
-    bg_sigma,
-    scale=KYTE_DOOLITTLE_HYDROPATHY,
-):
-    """Return a channel for mean local hydropathy."""
-    radius = _validate_radius(radius)
-    scale = _validate_scale(scale)
-
-    def raw_values(sequence):
-        return _scale_values(sequence, radius, scale)
-
-    return _zscore_channel(raw_values, bg_mu, bg_sigma)
+    def arguments(self):
+        return {"radius": self.radius}
 
 
-def _validate_angle(angle):
-    if (
-        isinstance(angle, bool)
-        or not isinstance(angle, Real)
-        or not math.isfinite(angle)
-        or angle <= 0
-        or angle > 360
-    ):
-        raise ValueError("angle must be finite and in the interval (0, 360]")
-    return math.radians(float(angle))
+class HydropathyChannel(Channel):
+    kind = "hydropathy"
+
+    def __init__(self, short_name, radius, scale=KYTE_DOOLITTLE_HYDROPATHY):
+        super().__init__(short_name)
+        self.radius = _validate_radius(radius)
+        self.scale = _validate_scale(scale)
+
+    def _raw_values(self, sequence):
+        return _window_values(
+            sequence,
+            self.radius,
+            lambda seq, start, end: _mean_scale_values(
+                seq, start, end, self.scale
+            ),
+        )
+
+    def arguments(self):
+        return {"radius": self.radius, "scale": dict(sorted(self.scale.items()))}
 
 
 def _hydrophobic_moment(sequence, start, end, scale, angle_radians):
@@ -324,48 +514,63 @@ def _hydrophobic_moment(sequence, start, end, scale, angle_radians):
     return math.hypot(x, y) / (end - start)
 
 
-def _hydrophobic_moment_values(sequence, radius, angle_radians, scale):
-    return _window_values(
-        sequence,
+class HydrophobicMomentChannel(Channel):
+    kind = "hydrophobic_moment"
+
+    def __init__(
+        self,
+        short_name,
         radius,
-        lambda seq, start, end: _hydrophobic_moment(
-            seq, start, end, scale, angle_radians
-        ),
-    )
+        angle=100.0,
+        scale=EISENBERG_HYDROPHOBICITY,
+    ):
+        super().__init__(short_name)
+        self.radius = _validate_radius(radius)
+        self.angle = _validate_angle(angle)
+        self.scale = _validate_scale(scale)
+
+    def _raw_values(self, sequence):
+        angle_radians = math.radians(self.angle)
+        return _window_values(
+            sequence,
+            self.radius,
+            lambda seq, start, end: _hydrophobic_moment(
+                seq, start, end, self.scale, angle_radians
+            ),
+        )
+
+    def arguments(self):
+        return {
+            "radius": self.radius,
+            "angle": self.angle,
+            "scale": dict(sorted(self.scale.items())),
+        }
 
 
-def mk_hydrophobic_moment(
-    radius,
-    bg_mu,
-    bg_sigma,
-    angle=100.0,
-    scale=EISENBERG_HYDROPHOBICITY,
-):
-    """Return an Eisenberg-style local hydrophobic-moment channel."""
-    radius = _validate_radius(radius)
-    angle_radians = _validate_angle(angle)
-    scale = _validate_scale(scale)
+class DisorderPropensityChannel(Channel):
+    kind = "disorder_propensity"
 
-    def raw_values(sequence):
-        return _hydrophobic_moment_values(sequence, radius, angle_radians, scale)
+    def __init__(
+        self,
+        short_name,
+        radius,
+        scale=TOP_IDP_DISORDER_PROPENSITY,
+    ):
+        super().__init__(short_name)
+        self.radius = _validate_radius(radius)
+        self.scale = _validate_scale(scale)
 
-    return _zscore_channel(raw_values, bg_mu, bg_sigma)
+    def _raw_values(self, sequence):
+        return _window_values(
+            sequence,
+            self.radius,
+            lambda seq, start, end: _mean_scale_values(
+                seq, start, end, self.scale
+            ),
+        )
 
-
-def mk_disorder_propensity(
-    radius,
-    bg_mu,
-    bg_sigma,
-    scale=TOP_IDP_DISORDER_PROPENSITY,
-):
-    """Return a channel for mean local TOP-IDP disorder propensity."""
-    radius = _validate_radius(radius)
-    scale = _validate_scale(scale)
-
-    def raw_values(sequence):
-        return _scale_values(sequence, radius, scale)
-
-    return _zscore_channel(raw_values, bg_mu, bg_sigma)
+    def arguments(self):
+        return {"radius": self.radius, "scale": dict(sorted(self.scale.items()))}
 
 
 def _sequence_entropy(sequence, start, end):
@@ -377,14 +582,18 @@ def _sequence_entropy(sequence, start, end):
     )
 
 
-def mk_sequence_entropy(radius, bg_mu, bg_sigma):
-    """Return a channel for local Shannon entropy in bits."""
-    radius = _validate_radius(radius)
+class SequenceEntropyChannel(Channel):
+    kind = "sequence_entropy"
 
-    def raw_values(sequence):
-        return _window_values(sequence, radius, _sequence_entropy)
+    def __init__(self, short_name, radius):
+        super().__init__(short_name)
+        self.radius = _validate_radius(radius)
 
-    return _zscore_channel(raw_values, bg_mu, bg_sigma)
+    def _raw_values(self, sequence):
+        return _window_values(sequence, self.radius, _sequence_entropy)
+
+    def arguments(self):
+        return {"radius": self.radius}
 
 
 def _dipeptide_frequency(sequence, start, end, dipeptide):
@@ -395,158 +604,29 @@ def _dipeptide_frequency(sequence, start, end, dipeptide):
     ) / pair_count
 
 
-def _dipeptide_values(sequence, radius, dipeptide, *, allow_too_short=False):
-    if len(sequence) < 2:
-        if allow_too_short:
-            return []
-        raise ValueError("dipeptide frequency requires a sequence of at least two residues")
-    return _window_values(
-        sequence,
-        radius,
-        lambda seq, start, end: _dipeptide_frequency(seq, start, end, dipeptide),
-    )
+class DipeptideFrequencyChannel(Channel):
+    kind = "dipeptide_frequency"
 
+    def __init__(self, short_name, radius, dipeptide):
+        super().__init__(short_name)
+        self.radius = _validate_radius(radius, allow_zero=False)
+        self.dipeptide = _validate_dipeptide(dipeptide)
 
-def mk_dipeptide_frequency(radius, dipeptide, bg_mu, bg_sigma):
-    """Return a channel for the local frequency of one ordered dipeptide."""
-    radius = _validate_radius(radius, allow_zero=False)
-    dipeptide = _validate_dipeptide(dipeptide)
+    def _raw_values(self, sequence):
+        if len(sequence) < 2:
+            raise ValueError(
+                "dipeptide frequency requires a sequence of at least two residues"
+            )
+        return _window_values(
+            sequence,
+            self.radius,
+            lambda seq, start, end: _dipeptide_frequency(
+                seq, start, end, self.dipeptide
+            ),
+        )
 
-    def raw_values(sequence):
-        return _dipeptide_values(sequence, radius, dipeptide)
+    def arguments(self):
+        return {"radius": self.radius, "dipeptide": self.dipeptide}
 
-    return _zscore_channel(raw_values, bg_mu, bg_sigma)
-
-
-def _iter_fasta_sequences(fasta_path):
-    path = os.fspath(fasta_path)
-    found_record = False
-    header = None
-    sequence_lines = []
-    with open(path, encoding="utf-8") as fasta:
-        for line_number, raw_line in enumerate(fasta, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.startswith(">"):
-                if header is not None:
-                    if not sequence_lines:
-                        raise ValueError(f"FASTA record {header!r} has no sequence")
-                    yield _validate_sequence("".join(sequence_lines))
-                header = line[1:].strip()
-                if not header:
-                    raise ValueError(f"FASTA header on line {line_number} is empty")
-                found_record = True
-                sequence_lines = []
-            else:
-                if header is None:
-                    raise ValueError(
-                        f"FASTA sequence data precedes the first header on line {line_number}"
-                    )
-                sequence_lines.append(line)
-    if header is not None:
-        if not sequence_lines:
-            raise ValueError(f"FASTA record {header!r} has no sequence")
-        yield _validate_sequence("".join(sequence_lines))
-    if not found_record:
-        raise ValueError("FASTA file contains no records")
-
-
-def _compute_background(fasta_path, raw_values: Callable[[str], Iterable[float]]):
-    count = 0
-    mean = 0.0
-    sum_squared_deviations = 0.0
-    for sequence in _iter_fasta_sequences(fasta_path):
-        for value in raw_values(sequence):
-            if not math.isfinite(value):
-                raise ValueError("channel produced a nonfinite background value")
-            count += 1
-            difference = value - mean
-            mean += difference / count
-            sum_squared_deviations += difference * (value - mean)
-    if count == 0:
-        raise ValueError("FASTA file contains no usable positions")
-    sigma = math.sqrt(max(0.0, sum_squared_deviations / count))
-    if not math.isfinite(sigma) or sigma <= 0:
-        raise ValueError("background standard deviation is zero or nonfinite")
-    return mean, sigma
-
-
-def compute_composition_background(fasta_path, radius, residues):
-    radius = _validate_radius(radius)
-    residues = _validate_residues(residues)
-
-    return _compute_background(
-        fasta_path,
-        lambda sequence: _composition_values(sequence, radius, residues),
-    )
-
-
-def compute_net_charge_background(fasta_path, radius):
-    radius = _validate_radius(radius)
-    return _compute_background(
-        fasta_path,
-        lambda sequence: _scale_values(sequence, radius, NEUTRAL_PH_CHARGE),
-    )
-
-
-def compute_hydropathy_background(
-    fasta_path,
-    radius,
-    scale=KYTE_DOOLITTLE_HYDROPATHY,
-):
-    radius = _validate_radius(radius)
-    scale = _validate_scale(scale)
-    return _compute_background(
-        fasta_path,
-        lambda sequence: _scale_values(sequence, radius, scale),
-    )
-
-
-def compute_hydrophobic_moment_background(
-    fasta_path,
-    radius,
-    angle=100.0,
-    scale=EISENBERG_HYDROPHOBICITY,
-):
-    radius = _validate_radius(radius)
-    angle_radians = _validate_angle(angle)
-    scale = _validate_scale(scale)
-    return _compute_background(
-        fasta_path,
-        lambda sequence: _hydrophobic_moment_values(
-            sequence, radius, angle_radians, scale
-        ),
-    )
-
-
-def compute_disorder_background(
-    fasta_path,
-    radius,
-    scale=TOP_IDP_DISORDER_PROPENSITY,
-):
-    radius = _validate_radius(radius)
-    scale = _validate_scale(scale)
-    return _compute_background(
-        fasta_path,
-        lambda sequence: _scale_values(sequence, radius, scale),
-    )
-
-
-def compute_entropy_background(fasta_path, radius):
-    radius = _validate_radius(radius)
-    return _compute_background(
-        fasta_path,
-        lambda sequence: _window_values(sequence, radius, _sequence_entropy),
-    )
-
-
-def compute_dipeptide_background(fasta_path, radius, dipeptide):
-    radius = _validate_radius(radius, allow_zero=False)
-    dipeptide = _validate_dipeptide(dipeptide)
-    return _compute_background(
-        fasta_path,
-        lambda sequence: _dipeptide_values(
-            sequence, radius, dipeptide, allow_too_short=True
-        ),
-    )
+    def background_sequence_is_usable(self, sequence):
+        return len(sequence) >= 2
