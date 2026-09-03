@@ -34,23 +34,32 @@ def find_matches(
     if match_ends_before is not None:
         filters.append(f"query_end <= {int(match_ends_before)}")
     if max_evalue_rank is not None:
-        filters.extend([
-            "custom_metric_name = 'evalue-rank'",
-            f"TRY_CAST(custom_metric_value AS DOUBLE) <= {float(max_evalue_rank)}",
-        ])
+        filters.append(f"evalue_rank <= {float(max_evalue_rank)}")
 
     schema = Schema("__ko_find_matches__" + unique_batch())
     source = CSVSource(
         DetectedTable,
         Defaults.area_protein_ko_assigned_tsv(),
-        load_filters=filters,
     )
     schema.add_table(source)
     schema.duckdb_load()
     try:
+        filter_sql = " AND ".join(filters)
         query = f"""
+            WITH eligible AS (
+                SELECT *,
+                       RANK() OVER (
+                           PARTITION BY query_accession, query_database, query_type
+                           ORDER BY evalue ASC
+                       ) AS evalue_rank
+                  FROM {schema.name}.{DetectedTable.name}
+                 WHERE TRY_CAST(bitscore_threshold AS DOUBLE) IS NULL
+                    OR TRY_CAST(bitscore AS DOUBLE) >=
+                       TRY_CAST(bitscore_threshold AS DOUBLE)
+            )
             SELECT DISTINCT query_accession, query_database
-              FROM {schema.name}.{DetectedTable.name}
+              FROM eligible
+             WHERE {filter_sql}
              ORDER BY query_database, query_accession
         """
         matches = [

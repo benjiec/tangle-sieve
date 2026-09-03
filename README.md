@@ -89,12 +89,13 @@ sieve-py sieve/scripts/ko-find-matches.py K04564 \
 Pass `-o OUTPUT.faa` to write the full matched protein sequences as FASTA
 instead of printing the protein and genome accessions as tab-separated rows.
 
-Use `--max-evalue-rank VALUE` to retain only detection rows whose
-`custom_metric_name` is `evalue-rank` and whose numeric `custom_metric_value`
-is at most `VALUE`. The default is `1`, so rows without an `evalue-rank` metric
-are excluded unless a different maximum is specified. Position constraints are
-applied to these same rows. For example, this requires one hit to have e-value
-rank at most 3 and start at or before protein position 50:
+Use `--max-evalue-rank VALUE` to retain only detection rows whose e-value rank
+is at most `VALUE`. Ranks are calculated separately for each protein after
+excluding hits whose bit score is below an available bit-score threshold. Hits
+without a bit-score threshold remain eligible. The default maximum rank is `1`.
+Position constraints are applied to these same rows. For example, this requires
+one hit to have e-value rank at most 3 and start at or before protein position
+50:
 
 ```
 sieve-py sieve/scripts/ko-find-matches.py K04564 \

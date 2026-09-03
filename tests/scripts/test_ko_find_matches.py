@@ -32,6 +32,8 @@ class TestKoFindMatchesScript(unittest.TestCase):
         query_end=10,
         custom_metric_name=None,
         custom_metric_value=None,
+        bitscore=100,
+        bitscore_threshold=None,
     ):
         return dict(
             detection_type="sequence",
@@ -48,6 +50,8 @@ class TestKoFindMatchesScript(unittest.TestCase):
             target_start=1,
             target_end=10,
             evalue=evalue,
+            bitscore=bitscore,
+            bitscore_threshold=bitscore_threshold,
             custom_metric_name=custom_metric_name,
             custom_metric_value=custom_metric_value,
         )
@@ -140,28 +144,55 @@ class TestKoFindMatchesScript(unittest.TestCase):
     def test_filters_by_inclusive_evalue_rank(self):
         script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
         DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
-            self.detected_row(
-                "below", "g1", "K04564", 1e-20,
-                custom_metric_name="evalue-rank", custom_metric_value=2,
-            ),
-            self.detected_row(
-                "boundary", "g1", "K04564", 1e-20,
-                custom_metric_name="evalue-rank", custom_metric_value=3,
-            ),
-            self.detected_row(
-                "above", "g1", "K04564", 1e-20,
-                custom_metric_name="evalue-rank", custom_metric_value=4,
-            ),
-            self.detected_row(
-                "wrong_metric", "g1", "K04564", 1e-20,
-                custom_metric_name="score-rank", custom_metric_value=1,
-            ),
-            self.detected_row("missing_metric", "g1", "K04564", 1e-20),
+            self.detected_row("rank2", "g1", "K00001", 1e-30),
+            self.detected_row("rank2", "g1", "K04564", 1e-20),
+            self.detected_row("rank3", "g1", "K00001", 1e-40),
+            self.detected_row("rank3", "g1", "K00002", 1e-30),
+            self.detected_row("rank3", "g1", "K04564", 1e-20),
+            self.detected_row("rank4", "g1", "K00001", 1e-50),
+            self.detected_row("rank4", "g1", "K00002", 1e-40),
+            self.detected_row("rank4", "g1", "K00003", 1e-30),
+            self.detected_row("rank4", "g1", "K04564", 1e-20),
         ])
 
         self.assertEqual(
             script.find_matches("K04564", max_evalue_rank=3),
-            [("below", "g1"), ("boundary", "g1")],
+            [("rank2", "g1"), ("rank3", "g1")],
+        )
+
+    def test_ranks_only_hits_meeting_an_available_bitscore_threshold(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row(
+                "eligible", "g1", "K00001", 1e-30,
+                bitscore=99, bitscore_threshold=100,
+            ),
+            self.detected_row(
+                "eligible", "g1", "K04564", 1e-20,
+                bitscore=100, bitscore_threshold=100,
+            ),
+            self.detected_row(
+                "below", "g1", "K04564", 1e-40,
+                bitscore=99, bitscore_threshold=100,
+            ),
+            self.detected_row("no_threshold", "g1", "K04564", 1e-10),
+        ])
+
+        self.assertEqual(
+            script.find_matches("K04564", max_evalue_rank=1),
+            [("eligible", "g1"), ("no_threshold", "g1")],
+        )
+
+    def test_equal_evalues_share_the_lowest_rank(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row("tied", "g1", "K00001", 1e-20),
+            self.detected_row("tied", "g1", "K04564", 1e-20),
+        ])
+
+        self.assertEqual(
+            script.find_matches("K04564", max_evalue_rank=1),
+            [("tied", "g1")],
         )
 
     def test_main_defaults_max_evalue_rank_to_one(self):
@@ -182,16 +213,13 @@ class TestKoFindMatchesScript(unittest.TestCase):
         script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
         DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
             self.detected_row(
-                "different_hits", "g1", "K04564", 1e-20, query_start=10,
-                custom_metric_name="evalue-rank", custom_metric_value=5,
+                "different_hits", "g1", "K04564", 1e-10, query_start=10,
             ),
             self.detected_row(
                 "different_hits", "g1", "K04564", 1e-20, query_start=50,
-                custom_metric_name="evalue-rank", custom_metric_value=1,
             ),
             self.detected_row(
                 "same_hit", "g1", "K04564", 1e-20, query_start=20,
-                custom_metric_name="evalue-rank", custom_metric_value=2,
             ),
         ])
 
@@ -199,7 +227,7 @@ class TestKoFindMatchesScript(unittest.TestCase):
             script.find_matches(
                 "K04564",
                 match_starts_before=20,
-                max_evalue_rank=2,
+                max_evalue_rank=1,
             ),
             [("same_hit", "g1")],
         )
