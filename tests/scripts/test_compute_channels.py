@@ -114,24 +114,31 @@ class TestComputeChannelsScripts(unittest.TestCase):
         with open(output_path, encoding="utf-8", newline="") as output:
             rows = list(csv.DictReader(output, delimiter="\t"))
         self.assertEqual(
-            [(row["sequence_id"], row["position"], row["residue"]) for row in rows],
             [
-                ("protein_1", "1", "A"),
-                ("protein_1", "2", "C"),
-                ("protein_2", "1", "C"),
+                (
+                    row["filename"],
+                    row["sequence_id"],
+                    row["position"],
+                    row["residue"],
+                )
+                for row in rows
+            ],
+            [
+                ("proteins.faa", "protein_1", "1", "A"),
+                ("proteins.faa", "protein_1", "2", "C"),
+                ("proteins.faa", "protein_2", "1", "C"),
             ],
         )
         self.assertAlmostEqual(float(rows[0]["alanine"]), math.sqrt(2))
         self.assertAlmostEqual(float(rows[1]["alanine"]), -1 / math.sqrt(2))
         self.assertEqual([row["ac_motif"] for row in rows], ["1", "1", "0"])
 
-    def test_channel_tsv_rejects_duplicate_first_header_tokens(self):
+    def test_channel_tsv_appends_with_filename_and_without_repeating_header(self):
         proteome_path = self.write("proteome.faa", ">one\nA\n>two\nCC\n")
-        proteins_path = self.write(
-            "proteins.faa",
-            ">duplicate first\nA\n>duplicate second\nC\n",
-        )
+        first_path = self.write("first.faa", ">first\nA\n")
+        second_path = self.write("second.faa", ">second\nC\n")
         background_path = self.path("backgrounds.json")
+        output_path = self.path("channels.tsv")
         with redirect_stderr(StringIO()):
             self.background_script.main([
                 proteome_path,
@@ -141,15 +148,134 @@ class TestComputeChannelsScripts(unittest.TestCase):
                 background_path,
             ])
 
-        with redirect_stderr(StringIO()):
-            with self.assertRaisesRegex(ValueError, "duplicate FASTA sequence ID"):
+        for fasta_path in (first_path, second_path):
+            with redirect_stderr(StringIO()):
                 self.channel_script.main([
-                    proteins_path,
+                    fasta_path,
                     "-c",
                     "example_channels.CHANNELS",
                     "-b",
                     background_path,
                     "-o",
-                    self.path("channels.tsv"),
+                    output_path,
                 ])
-        self.assertFalse(os.path.exists(self.path("channels.tsv")))
+
+        with open(output_path, encoding="utf-8", newline="") as output:
+            raw_lines = output.readlines()
+        self.assertEqual(
+            sum(line.startswith("filename\tsequence_id\t") for line in raw_lines),
+            1,
+        )
+        rows = list(csv.DictReader(raw_lines, delimiter="\t"))
+        self.assertEqual(
+            [(row["filename"], row["sequence_id"]) for row in rows],
+            [("first.faa", "first"), ("second.faa", "second")],
+        )
+
+    def test_channel_tsv_rejects_existing_mismatched_header_without_modifying_file(self):
+        proteome_path = self.write("proteome.faa", ">one\nA\n>two\nCC\n")
+        proteins_path = self.write("proteins.faa", ">protein\nA\n")
+        background_path = self.path("backgrounds.json")
+        output_path = self.write(
+            "channels.tsv",
+            "sequence_id\tposition\tresidue\talanine\tac_motif\n",
+        )
+        with redirect_stderr(StringIO()):
+            self.background_script.main([
+                proteome_path,
+                "-c",
+                "example_channels.CHANNELS",
+                "-o",
+                background_path,
+            ])
+
+        with self.assertRaisesRegex(ValueError, "header does not match"):
+            self.channel_script.main([
+                proteins_path,
+                "-c",
+                "example_channels.CHANNELS",
+                "-b",
+                background_path,
+                "-o",
+                output_path,
+            ])
+        with open(output_path, encoding="utf-8") as output:
+            self.assertEqual(
+                output.read(),
+                "sequence_id\tposition\tresidue\talanine\tac_motif\n",
+            )
+
+    def test_channel_tsv_warns_and_skips_duplicate_first_header_tokens(self):
+        proteome_path = self.write("proteome.faa", ">one\nA\n>two\nCC\n")
+        proteins_path = self.write(
+            "proteins.faa",
+            ">duplicate first\nA\n"
+            ">duplicate second\nC\n"
+            ">later\nD\n",
+        )
+        background_path = self.path("backgrounds.json")
+        output_path = self.path("channels.tsv")
+        with redirect_stderr(StringIO()):
+            self.background_script.main([
+                proteome_path,
+                "-c",
+                "example_channels.CHANNELS",
+                "-o",
+                background_path,
+            ])
+
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            result = self.channel_script.main([
+                proteins_path,
+                "-c",
+                "example_channels.CHANNELS",
+                "-b",
+                background_path,
+                "-o",
+                output_path,
+            ])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr.getvalue().splitlines(), [
+            "Processing duplicate",
+            "Skipping duplicate accession duplicate",
+            "Processing later",
+        ])
+        with open(output_path, encoding="utf-8", newline="") as output:
+            rows = list(csv.DictReader(output, delimiter="\t"))
+        self.assertEqual(
+            [(row["sequence_id"], row["residue"]) for row in rows],
+            [("duplicate", "A"), ("later", "D")],
+        )
+
+    def test_channel_tsv_can_append_after_header_without_final_newline(self):
+        proteome_path = self.write("proteome.faa", ">one\nA\n>two\nCC\n")
+        proteins_path = self.write("proteins.faa", ">protein\nA\n")
+        background_path = self.path("backgrounds.json")
+        output_path = self.write(
+            "channels.tsv",
+            "filename\tsequence_id\tposition\tresidue\talanine\tac_motif",
+        )
+        with redirect_stderr(StringIO()):
+            self.background_script.main([
+                proteome_path,
+                "-c",
+                "example_channels.CHANNELS",
+                "-o",
+                background_path,
+            ])
+            self.channel_script.main([
+                proteins_path,
+                "-c",
+                "example_channels.CHANNELS",
+                "-b",
+                background_path,
+                "-o",
+                output_path,
+            ])
+
+        with open(output_path, encoding="utf-8") as output:
+            lines = output.read().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith("proteins.faa\tprotein\t1\tA\t"))

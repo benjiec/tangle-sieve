@@ -227,13 +227,18 @@ def _mean_scale_values(sequence, start, end, scale):
     return sum(scale[amino_acid] for amino_acid in sequence[start:end]) / (end - start)
 
 
-def iter_fasta_records(fasta_path, on_invalid_sequence=None):
+def iter_fasta_records(
+    fasta_path,
+    on_invalid_sequence=None,
+    on_duplicate_sequence_id=None,
+):
     """Yield ``(sequence_id, sequence)`` records from a protein FASTA file."""
     path = os.fspath(fasta_path)
     found_record = False
     sequence_id = None
     sequence_lines = []
     seen_sequence_ids = set()
+    skip_record = False
     with open(path, encoding="utf-8") as fasta:
         for line_number, raw_line in enumerate(fasta, start=1):
             line = raw_line.strip()
@@ -243,22 +248,28 @@ def iter_fasta_records(fasta_path, on_invalid_sequence=None):
                 if sequence_id is not None:
                     if not sequence_lines:
                         raise ValueError(f"FASTA record {sequence_id!r} has no sequence")
-                    sequence = "".join(sequence_lines)
-                    try:
-                        sequence = _validate_sequence(sequence)
-                    except ValueError as error:
-                        if on_invalid_sequence is None:
-                            raise
-                        on_invalid_sequence(sequence_id, error)
-                    else:
-                        yield sequence_id, sequence
+                    if not skip_record:
+                        sequence = "".join(sequence_lines)
+                        try:
+                            sequence = _validate_sequence(sequence)
+                        except ValueError as error:
+                            if on_invalid_sequence is None:
+                                raise
+                            on_invalid_sequence(sequence_id, error)
+                        else:
+                            yield sequence_id, sequence
                 header = line[1:].strip()
                 if not header:
                     raise ValueError(f"FASTA header on line {line_number} is empty")
                 sequence_id = header.split()[0]
                 if sequence_id in seen_sequence_ids:
-                    raise ValueError(f"duplicate FASTA sequence ID: {sequence_id}")
-                seen_sequence_ids.add(sequence_id)
+                    if on_duplicate_sequence_id is None:
+                        raise ValueError(f"duplicate FASTA sequence ID: {sequence_id}")
+                    on_duplicate_sequence_id(sequence_id)
+                    skip_record = True
+                else:
+                    seen_sequence_ids.add(sequence_id)
+                    skip_record = False
                 found_record = True
                 sequence_lines = []
             else:
@@ -270,15 +281,16 @@ def iter_fasta_records(fasta_path, on_invalid_sequence=None):
     if sequence_id is not None:
         if not sequence_lines:
             raise ValueError(f"FASTA record {sequence_id!r} has no sequence")
-        sequence = "".join(sequence_lines)
-        try:
-            sequence = _validate_sequence(sequence)
-        except ValueError as error:
-            if on_invalid_sequence is None:
-                raise
-            on_invalid_sequence(sequence_id, error)
-        else:
-            yield sequence_id, sequence
+        if not skip_record:
+            sequence = "".join(sequence_lines)
+            try:
+                sequence = _validate_sequence(sequence)
+            except ValueError as error:
+                if on_invalid_sequence is None:
+                    raise
+                on_invalid_sequence(sequence_id, error)
+            else:
+                yield sequence_id, sequence
     if not found_record:
         raise ValueError("FASTA file contains no records")
 
