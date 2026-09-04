@@ -6,7 +6,8 @@ import math
 import sys
 import tempfile
 
-from tangle.sequence import read_fasta_as_dict
+from tangle import open_file_to_read
+from tangle.sequence import read_fasta_as_dict, write_fasta_from_dict
 
 from sieve.artifacts import read_sequence_rows, rule_results_tsv, sequences_fasta
 from sieve.hmmsearch import parse_domtblout, run_hmmsearch
@@ -25,6 +26,35 @@ OUTPUT_HEADERS = [
 ]
 
 
+def read_fasta_ignoring_duplicate_accessions(path):
+    sequences = {}
+    accession = None
+    sequence_parts = []
+
+    def add_sequence():
+        if accession is not None and accession not in sequences:
+            sequences[accession] = "".join(sequence_parts)
+
+    with open_file_to_read(path) as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                add_sequence()
+                header = line[1:].strip()
+                if not header:
+                    raise ValueError(f"FASTA header has no accession: {path}")
+                accession = header.split(None, 1)[0]
+                sequence_parts = []
+            else:
+                if accession is None:
+                    raise ValueError(f"FASTA sequence precedes first header: {path}")
+                sequence_parts.append(line)
+        add_sequence()
+    return sequences
+
+
 def read_tsv(path):
     with open(path, "r", encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f, delimiter="\t"))
@@ -34,14 +64,46 @@ def best_hmm_hits(hits):
     best = {}
     for hit in hits:
         accession = hit.sequence_accession
-        bitscore = hit.domain_bitscore
+        bitscore = hit.full_bitscore
         current = best.get(accession)
         if current is None or bitscore > current["bitscore"]:
             best[accession] = {"bitscore": bitscore, "hit": hit}
     return best
 
 
-def joined_entries(hmm_hits, rule_rows, sequence_rows, fasta_path):
+def joined_entries(hmm_hits, positive_sequences, all_sequences):
+    hits_by_sequence = best_hmm_hits(hmm_hits)
+    missing = sorted(set(positive_sequences) - set(all_sequences))
+    if missing:
+        raise ValueError(f"Positive FASTA accessions are absent from all FASTA: {', '.join(missing[:5])}")
+    mismatched = sorted(
+        accession for accession, sequence in positive_sequences.items()
+        if all_sequences[accession] != sequence
+    )
+    if mismatched:
+        raise ValueError(f"Positive and all FASTA sequences disagree: {', '.join(mismatched[:5])}")
+    if not positive_sequences:
+        raise ValueError("Positive FASTA contains no sequences")
+    if len(positive_sequences) == len(all_sequences):
+        raise ValueError("All FASTA contains no negative sequences")
+
+    entries = []
+    for accession in all_sequences:
+        hit = hits_by_sequence.get(accession)
+        entries.append({
+            "sequence accession": accession,
+            "bitscore": hit["bitscore"] if hit is not None else 0.0,
+            "hmm_hit": hit["hit"] if hit is not None else None,
+            "positive": accession in positive_sequences,
+        })
+
+    extra_hits = sorted(set(hits_by_sequence) - set(all_sequences))
+    if extra_hits:
+        raise ValueError(f"HMM search results contain accessions absent from FASTA: {', '.join(extra_hits[:5])}")
+    return entries
+
+
+def joined_artifact_entries(hmm_hits, rule_rows, sequence_rows, fasta_path):
     sequences = read_fasta_as_dict(fasta_path)
     hits_by_sequence = best_hmm_hits(hmm_hits)
     manifest_by_sequence = {}
@@ -227,37 +289,59 @@ def write_hmmsearch_domtblout(stream, domtblout):
         stream.write(f"# {line}\n")
 
 
-def discover_threshold(hmm_profile, artifacts_dir):
+def discover_threshold(hmm_profile, artifacts_dir=None, positive_fasta=None, all_fasta=None):
+    if artifacts_dir is not None:
+        search_fasta = sequences_fasta(artifacts_dir)
+    else:
+        positive_sequences = read_fasta_ignoring_duplicate_accessions(positive_fasta)
+        all_sequences = read_fasta_ignoring_duplicate_accessions(all_fasta)
     with tempfile.TemporaryDirectory() as tmpd:
         domtblout = f"{tmpd}/hmmsearch.domtblout"
+        if artifacts_dir is None:
+            search_fasta = f"{tmpd}/all.faa"
+            write_fasta_from_dict(all_sequences, search_fasta)
         run_hmmsearch(
             hmm_profile,
-            sequences_fasta(artifacts_dir),
+            search_fasta,
             domtblout,
             use_cut_ga=False,
         )
         hits = parse_domtblout(domtblout)
         with open(domtblout, "r", encoding="utf-8") as f:
             hmmsearch_domtblout = f.read()
-    entries = joined_entries(
-        hits,
-        read_tsv(rule_results_tsv(artifacts_dir)),
-        read_sequence_rows(artifacts_dir),
-        sequences_fasta(artifacts_dir),
-    )
+    if artifacts_dir is not None:
+        entries = joined_artifact_entries(
+            hits,
+            read_tsv(rule_results_tsv(artifacts_dir)),
+            read_sequence_rows(artifacts_dir),
+            sequences_fasta(artifacts_dir),
+        )
+    else:
+        entries = joined_entries(hits, positive_sequences, all_sequences)
     return threshold_stats(entries), hmmsearch_domtblout
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--hmm", required=True)
-    parser.add_argument("--artifacts-dir", required=True)
+    parser.add_argument("--artifacts-dir")
+    parser.add_argument("--positive-fasta")
+    parser.add_argument("--all-fasta")
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
+    fasta_mode = args.positive_fasta is not None or args.all_fasta is not None
+    if args.artifacts_dir is not None and fasta_mode:
+        parser.error("--artifacts-dir cannot be combined with --positive-fasta or --all-fasta")
+    if args.artifacts_dir is None and not fasta_mode:
+        parser.error("provide --artifacts-dir or both --positive-fasta and --all-fasta")
+    if fasta_mode and (args.positive_fasta is None or args.all_fasta is None):
+        parser.error("--positive-fasta and --all-fasta must be provided together")
 
     rows, hmmsearch_domtblout = discover_threshold(
         args.hmm,
-        args.artifacts_dir,
+        artifacts_dir=args.artifacts_dir,
+        positive_fasta=args.positive_fasta,
+        all_fasta=args.all_fasta,
     )
     write_threshold_stats(rows, args.output, hmmsearch_domtblout)
     return 0

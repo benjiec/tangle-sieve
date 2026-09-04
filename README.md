@@ -147,6 +147,7 @@ Use the following to search every candidate in an artifact directory and
 compute a threshold for a new HMM profile. Candidate rows whose `pass all`
 value is `true` are labeled positive; all other rows are labeled negative.
 Threshold discovery deliberately searches without `--cut_ga`.
+Thresholds use HMMER full-sequence bit scores rather than domain bit scores.
 The output appends the HMMER `--domtblout` used for scoring as comment-prefixed
 lines under `# hmmsearch domtblout`, so individual domain scores remain
 available without making the threshold TSV invalid.
@@ -155,6 +156,19 @@ available without making the threshold TSV invalid.
 PYTHONPATH=coral sieve-py sieve/scripts/hmmsearch-threshold.py \
   --hmm mt_MnSOD_cnidaria.hmm \
   --artifacts-dir mt_MnSOD_cnidaria \
+  --output mt_MnSOD_cnidaria_thresholds.tsv
+```
+
+Alternatively, supply positive and complete FASTA files. Accessions in the
+positive FASTA are labeled positive; all other accessions in the complete
+FASTA are labeled negative. Repeated accessions are ignored after their first
+occurrence. This mode also uses full-sequence bit scores.
+
+```
+PYTHONPATH=coral sieve-py sieve/scripts/hmmsearch-threshold.py \
+  --hmm mt_MnSOD_cnidaria.hmm \
+  --positive-fasta mt_MnSOD_cnidaria.faa \
+  --all-fasta cn_PF00061.faa \
   --output mt_MnSOD_cnidaria_thresholds.tsv
 ```
 
