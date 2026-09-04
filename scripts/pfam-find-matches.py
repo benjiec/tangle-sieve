@@ -18,7 +18,7 @@ def _sql_string(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def find_matches(pfam_accession, max_evalue=None, taxon=None):
+def find_matches(pfam_accession, max_evalue=None, taxon=None, include_coordinates=False):
     accession = _sql_string(pfam_accession)
     version_prefix = _sql_string(f"{pfam_accession}.")
     filters = [
@@ -36,15 +36,28 @@ def find_matches(pfam_accession, max_evalue=None, taxon=None):
     schema.add_table(source)
     schema.duckdb_load()
     try:
+        coordinate_columns = ", query_start, query_end" if include_coordinates else ""
         query = f"""
-            SELECT DISTINCT query_accession, query_database
+            SELECT DISTINCT query_accession, query_database{coordinate_columns}
               FROM {schema.name}.{DetectedTable.name}
-             ORDER BY query_database, query_accession
+             ORDER BY query_database, query_accession{coordinate_columns}
         """
-        matches = [
-            (row["query_accession"], row["query_database"])
-            for row in duckdb.execute(query).fetchdf().to_dict("records")
-        ]
+        rows = duckdb.execute(query).fetchdf().to_dict("records")
+        if include_coordinates:
+            matches = [
+                (
+                    row["query_accession"],
+                    row["query_database"],
+                    row["query_start"],
+                    row["query_end"],
+                )
+                for row in rows
+            ]
+        else:
+            matches = [
+                (row["query_accession"], row["query_database"])
+                for row in rows
+            ]
         if taxon is None:
             return matches
         taxonomy_by_genome = read_taxonomy_rows()
@@ -60,9 +73,10 @@ def _is_missing_manifest_error(error):
     return str(error).startswith("Cannot find protein ") and str(error).endswith(" in manifest")
 
 
-def write_matches_fasta(matches, output):
+def write_matches_fasta(matches, output, target_accession=None, match_only=False):
     with open_file_to_write(output, "wt") as f:
-        for protein_accession, genome_accession in matches:
+        for match in matches:
+            protein_accession, genome_accession = match[:2]
             protein = CuratedProtein(protein_accession, genome_accession)
             try:
                 try:
@@ -75,7 +89,16 @@ def write_matches_fasta(matches, output):
                         file=sys.stderr,
                     )
                     continue
-                f.write(f">{protein_accession}\n{sequence}\n")
+                output_accession = protein_accession
+                if match_only:
+                    query_start, query_end = match[2:]
+                    left = min(query_start, query_end)
+                    right = max(query_start, query_end)
+                    sequence = sequence[left - 1:right]
+                    output_accession = (
+                        f"{protein_accession}_{target_accession}_{query_start}_{query_end}"
+                    )
+                f.write(f">{output_accession}\n{sequence}\n")
             finally:
                 CuratedProtein.clear_cache()
 
@@ -85,16 +108,24 @@ def main(argv=None):
     parser.add_argument("pfam_accession")
     parser.add_argument("--max-evalue", type=float)
     parser.add_argument("--taxon")
+    parser.add_argument("--match-only", action="store_true")
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
 
-    matches = find_matches(
-        args.pfam_accession,
-        args.max_evalue,
-        taxon=args.taxon,
-    )
+    if args.match_only and args.output is None:
+        parser.error("--match-only requires --output")
+
+    find_kwargs = {"taxon": args.taxon}
+    if args.match_only:
+        find_kwargs["include_coordinates"] = True
+    matches = find_matches(args.pfam_accession, args.max_evalue, **find_kwargs)
     if args.output is not None:
-        write_matches_fasta(matches, args.output)
+        write_matches_fasta(
+            matches,
+            args.output,
+            target_accession=args.pfam_accession,
+            match_only=args.match_only,
+        )
         return 0
     for protein_accession, genome_accession in matches:
         print(f"{protein_accession}\t{genome_accession}")

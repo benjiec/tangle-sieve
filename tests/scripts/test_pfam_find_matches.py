@@ -88,3 +88,36 @@ class TestPfamFindMatchesScript(unittest.TestCase):
             with open(output, encoding="utf-8") as f:
                 self.assertEqual(f.read(), ">p1\nMSEQ\n")
             self.assertIn("Ignoring missing\tg1:", stderr.getvalue())
+
+    def test_match_only_writes_every_matched_region_with_coordinates(self):
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [
+            self.detected_row("p1", "g1", "PF00504.27", 1e-20) | {
+                "query_start": 2,
+                "query_end": 4,
+            },
+            self.detected_row("p1", "g1", "PF00504.27", 1e-20) | {
+                "query_start": 6,
+                "query_end": 8,
+            },
+        ])
+        self.fx.write_manifest([{
+            "sequence_accession": "p1",
+            "sequence_database": "g1",
+            "sequence_type": "protein",
+            "sequence_source": SEQUENCE_SOURCE_NCBI,
+        }])
+        self.fx.write_ncbi_proteins("g1", {"p1": "ABCDEFGHIJ"})
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            output = os.path.join(tmpd, "matches.faa")
+            self.script.main(["PF00504", "--match-only", "-o", output])
+
+            with open(output, encoding="utf-8") as f:
+                self.assertEqual(
+                    f.read(),
+                    ">p1_PF00504_2_4\nBCD\n>p1_PF00504_6_8\nFGH\n",
+                )
+
+    def test_match_only_requires_output(self):
+        with self.assertRaises(SystemExit):
+            self.script.main(["PF00504", "--match-only"])

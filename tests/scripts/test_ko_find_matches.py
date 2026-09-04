@@ -321,3 +321,26 @@ class TestKoFindMatchesScript(unittest.TestCase):
             with patch.object(script, "find_matches", return_value=[("p1", "g1")]):
                 with self.assertRaises(FileNotFoundError):
                     script.main(["K04564", "-o", output])
+
+    def test_match_only_writes_every_matched_region_with_coordinates(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_ko_assigned.tsv"), [
+            self.detected_row("p1", "g1", "K04564", 1e-20, 2, 4),
+            self.detected_row("p1", "g1", "K04564", 1e-20, 6, 8),
+        ])
+        self.add_ncbi_proteins("g1", {"p1": "ABCDEFGHIJ"})
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            output = os.path.join(tmpd, "matches.faa")
+            script.main(["K04564", "--match-only", "-o", output])
+
+            with open(output, encoding="utf-8") as f:
+                self.assertEqual(
+                    f.read(),
+                    ">p1_K04564_2_4\nBCD\n>p1_K04564_6_8\nFGH\n",
+                )
+
+    def test_match_only_requires_output(self):
+        script = load_script(os.path.join(self.repo, "scripts", "ko-find-matches.py"))
+        with self.assertRaises(SystemExit):
+            script.main(["K04564", "--match-only"])
