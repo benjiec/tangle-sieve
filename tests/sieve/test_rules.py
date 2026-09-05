@@ -287,6 +287,22 @@ class TestRules(unittest.TestCase):
             self.assertEqual(rows[0]["pass all"], RULE_TRUE)
             self.assertEqual(self.read_tsv(out)[0]["Pfam.matches('PF02777')"], RULE_TRUE)
 
+    def test_non_leader_rules_do_not_run_leader_discovery(self):
+        protein = FastaProtein("p1", "MOTIF", pfam_rows=[])
+        rule = Pfam.matches("PF00001") | Sequence.length_between(1, 10)
+
+        with patch.object(
+            protein,
+            "sequences_with_leader",
+            side_effect=AssertionError("leader discovery should not run"),
+        ):
+            candidates = Rules(rule).scoped_sequence_candidates_for_protein_row(protein, {})
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].accession, "p1")
+        self.assertEqual(candidates[0].sequence, "MOTIF")
+        self.assertEqual(candidates[0].protein_start_aa_1b, 1)
+
     def test_pfam_matches_any_and_matches_only_compose_as_allowlist(self):
         proteins = [
             FastaProtein("allowed", "MA", pfam_rows=[{"target_accession": "PF00001.2"}]),

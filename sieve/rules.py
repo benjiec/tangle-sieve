@@ -461,7 +461,7 @@ class Rules(object):
 
     def _scoped_sequence_candidates(self, protein, row):
         if not self.uses_leader_candidates():
-            return _original_sequence_candidate(protein)
+            return _direct_original_sequence_candidate(protein)
         candidates = protein.sequences_with_leader()
         return _dedupe_sequence_candidates(self.rule.scope_sequence_candidates(protein, candidates, row))
 
@@ -1566,6 +1566,10 @@ def _original_sequence_candidate(protein):
     for candidate in protein.sequences_with_leader():
         if not candidate.start_label:
             return [candidate]
+    return _direct_original_sequence_candidate(protein)
+
+
+def _direct_original_sequence_candidate(protein):
     return [
         LeaderSequenceCandidate(
             accession=protein.protein_accession,
