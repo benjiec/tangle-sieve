@@ -182,6 +182,9 @@ class Rule(object):
     def uses_pfam(self):
         return False
 
+    def uses_genomic_locus(self):
+        return False
+
     def resolve(self, context, atomic_results):
         return atomic_results[self.label][context.key]
 
@@ -224,6 +227,9 @@ class CompositeRule(Rule):
 
     def uses_pfam(self):
         return any(rule.uses_pfam() for rule in self.rules)
+
+    def uses_genomic_locus(self):
+        return any(rule.uses_genomic_locus() for rule in self.rules)
 
 
 class AndRule(CompositeRule):
@@ -306,6 +312,9 @@ class NotRule(Rule):
 
     def uses_pfam(self):
         return self.rule.uses_pfam()
+
+    def uses_genomic_locus(self):
+        return self.rule.uses_genomic_locus()
 
     def evaluate(self, context):
         return self._invert(self.rule.evaluate(context))
@@ -458,6 +467,9 @@ class Rules(object):
 
     def uses_deeploc(self):
         return self.rule.uses_deeploc()
+
+    def uses_genomic_locus(self):
+        return self.rule.uses_genomic_locus()
 
     def _scoped_sequence_candidates(self, protein, row):
         if not self.uses_leader_candidates():
@@ -1649,6 +1661,9 @@ class TFMotifWithinRule(Rule):
         self.min_score_threshold = min_score_threshold
         self.scope = scope
         self.label = self._label()
+
+    def uses_genomic_locus(self):
+        return True
 
     def _label(self):
         base = (

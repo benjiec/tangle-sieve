@@ -1497,6 +1497,13 @@ class TestRules(unittest.TestCase):
 
         self.assertEqual(rows[0]["pass all"], RULE_TRUE)
 
+    def test_genomic_locus_requirement_propagates_through_composites_and_negation(self):
+        motif = TFMotifs.has_within(20, "A", "B")
+
+        self.assertTrue(Rules(motif).uses_genomic_locus())
+        self.assertTrue(Rules(Pfam.matches("PF00001") | ~motif).uses_genomic_locus())
+        self.assertFalse(Rules(Pfam.matches("PF00001")).uses_genomic_locus())
+
     def test_tf_motifs_missing_fasta_locus_does_not_poison_curated_batch(self):
         self.fx.write_three_exon_gene("p1", "g1", "+")
         gimme_output = "\n".join([

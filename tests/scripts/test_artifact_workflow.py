@@ -508,6 +508,7 @@ class TestCuratedArtifactBuilder(unittest.TestCase):
             self.assertEqual(len(manifest), 1)
             self.assertEqual(manifest[0]["protein accession"], "p1")
             self.assertEqual(manifest[0]["sequence accession"], "")
+            self.assertFalse(os.path.exists(os.path.join(artifacts, "genomic_loci.tsv")))
 
     def test_accepts_accession_genome_pipeline_and_writes_originals(self):
         ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
@@ -528,7 +529,9 @@ class TestCuratedArtifactBuilder(unittest.TestCase):
             sys.path.insert(0, tmpd)
             try:
                 with patch("sys.stdin", io.StringIO("p1\tg1\n")):
-                    self.build.main(["--rule", "rules.rule", "--artifacts-dir", artifacts])
+                    self.build.main([
+                        "--rule", "rules.rule", "--artifacts-dir", artifacts, "--write-loci",
+                    ])
             finally:
                 sys.path.remove(tmpd)
                 sys.modules.pop("rules", None)
@@ -537,6 +540,32 @@ class TestCuratedArtifactBuilder(unittest.TestCase):
             self.assertEqual(set(read_fasta_as_dict(sequences_fasta(artifacts))), {
                 "p1_with_leader_1_M", "p1_with_leader_2_M",
             })
+            self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_loci.tsv")))
+
+    def test_genomic_rule_automatically_writes_loci(self):
+        ManifestTable.write_tsv(str(self.fx.area_genomics / "sequences.tsv"), [
+            dict(
+                sequence_accession="p1",
+                sequence_database="g1",
+                sequence_type="protein",
+                sequence_source=SEQUENCE_SOURCE_NCBI,
+            ),
+        ])
+        self.fx.write_ncbi_proteins("g1", {"p1": "MMT"})
+        with tempfile.TemporaryDirectory() as tmpd:
+            rule_path = os.path.join(tmpd, "rules.py")
+            with open(rule_path, "w", encoding="utf-8") as f:
+                f.write("from sieve.rules import Rules, TFMotifs\n")
+                f.write("rule = Rules(TFMotifs.has_within(20, 'A', 'B'))\n")
+            artifacts = os.path.join(tmpd, "artifacts")
+            sys.path.insert(0, tmpd)
+            try:
+                with patch("sys.stdin", io.StringIO("p1\tg1\n")):
+                    self.build.main(["--rule", "rules.rule", "--artifacts-dir", artifacts])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("rules", None)
+
             self.assertTrue(os.path.exists(os.path.join(artifacts, "genomic_loci.tsv")))
 
     def test_same_accession_in_later_genome_is_ignored_when_sequence_matches(self):
@@ -558,7 +587,9 @@ class TestCuratedArtifactBuilder(unittest.TestCase):
                     patch("sys.stdin", io.StringIO("p1\tg1\np1\tg2\n")),
                     patch("sys.stderr", new_callable=io.StringIO) as stderr,
                 ):
-                    self.build.main(["--rule", "rules.rule", "--artifacts-dir", artifacts])
+                    self.build.main([
+                        "--rule", "rules.rule", "--artifacts-dir", artifacts, "--write-loci",
+                    ])
             finally:
                 sys.path.remove(tmpd)
                 sys.modules.pop("rules", None)

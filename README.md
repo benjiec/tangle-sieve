@@ -53,7 +53,8 @@ An artifact directory contains:
 * `sequences.faa`: discovered candidate sequences.
 * `sequences.tsv`: candidate-to-original associations, candidate start
   metadata, and the candidate's start coordinate on the original protein.
-* `genomic_loci.tsv`: genomic locus metadata for curated inputs.
+* `genomic_loci.tsv`: genomic locus metadata for curated inputs, written when
+  required by the rule or requested with `--write-loci`.
 
 `sequences.tsv` also records an inclusive `end aa 1b` when candidate sequences
 are C-terminally bounded.
@@ -63,6 +64,10 @@ idempotent, and newly discovered candidates are added. An accession that has a
 different sequence is rejected. If a curated protein accession occurs in more
 than one genome with the same sequence, the first genome is retained and later
 genomes are ignored; their candidates and locus rows are not added.
+
+`build-protein-artifacts.py` skips genomic-locus collection unless the selected
+rule requires it. Genomic rules such as `TFMotifs` enable it automatically.
+Pass `--write-loci` to create `genomic_loci.tsv` for other downstream uses.
 
 If using DeepLoc to classify leaders, then submit the FASTA in
 `res-mt_MnSOD_cnidaria/sequences.faa` to DeepLoc and download results to

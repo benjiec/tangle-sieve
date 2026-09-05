@@ -45,11 +45,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("-r", "--rule", required=True)
     parser.add_argument("--artifacts-dir", required=True)
+    parser.add_argument(
+        "--write-loci",
+        action="store_true",
+        help="write genomic_loci.tsv even when the selected rule does not require it",
+    )
     args = parser.parse_args(argv)
 
     proteins = curated_proteins(read_protein_keys(sys.stdin))
     try:
-        build_artifacts(proteins, load_rules(args.rule), args.artifacts_dir, write_loci=True)
+        rules = load_rules(args.rule)
+        build_artifacts(
+            proteins,
+            rules,
+            args.artifacts_dir,
+            write_loci=args.write_loci or rules.uses_genomic_locus(),
+        )
     finally:
         CuratedProtein.clear_cache()
     return 0
