@@ -22,6 +22,16 @@ KO_DOMTBLOUT = "ko.domtblout"
 DEEPLOC_PROTEIN_ID_COLUMN = "Protein_ID"
 
 
+def _positive_int(value):
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def _rows_by_query(rows):
     grouped = defaultdict(list)
     for row in rows:
@@ -44,7 +54,7 @@ def _run_detection_searches(args, rules):
         if args.pfam_hmm is None:
             raise ValueError("--pfam-hmm is required for Pfam rules")
         path = os.path.join(args.artifacts_dir, PFAM_DOMTBLOUT)
-        run_hmmsearch(args.pfam_hmm, input_path, path)
+        run_hmmsearch(args.pfam_hmm, input_path, path, cpus=args.cpus)
         pfam_rows = detected_rows_from_hits(parse_domtblout(path), "Pfam")
     if _uses_rule(rules, "KO."):
         if args.ko_hmm is None:
@@ -52,7 +62,7 @@ def _run_detection_searches(args, rules):
         if args.ko_thresholds is None:
             raise ValueError("--ko-thresholds is required for KO rules")
         path = os.path.join(args.artifacts_dir, KO_DOMTBLOUT)
-        run_hmmsearch(args.ko_hmm, input_path, path, use_cut_ga=False)
+        run_hmmsearch(args.ko_hmm, input_path, path, use_cut_ga=False, cpus=args.cpus)
         ko_rows = detected_rows_from_hits(
             parse_domtblout(path),
             "KO",
@@ -165,6 +175,7 @@ def main(argv=None):
     parser.add_argument("--pfam-hmm")
     parser.add_argument("--ko-hmm")
     parser.add_argument("--ko-thresholds")
+    parser.add_argument("--cpus", type=_positive_int)
     parser.add_argument("--hmm-dir", action="append", default=[])
     parser.add_argument("--deeploc-csv")
     args = parser.parse_args(argv)

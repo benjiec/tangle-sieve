@@ -30,10 +30,14 @@ class KOThreshold:
     score_type: str
 
 
-def run_hmmsearch(hmm_file, fasta_file, domtblout_path, use_cut_ga=True):
+def run_hmmsearch(hmm_file, fasta_file, domtblout_path, use_cut_ga=True, cpus=None):
     cmd = ["hmmsearch"]
     if use_cut_ga:
         cmd.append("--cut_ga")
+    if cpus is not None:
+        if not isinstance(cpus, int) or cpus < 1:
+            raise ValueError("cpus must be an integer greater than or equal to 1")
+        cmd.extend(["--cpu", str(cpus)])
     cmd.extend(["--domtblout", domtblout_path, hmm_file, fasta_file])
     return subprocess.run(cmd, check=True, capture_output=True, text=True)
 

@@ -119,6 +119,7 @@ PYTHONPATH=coral sieve-py sieve/scripts/check-artifacts-by-rules.py \
   --pfam-hmm assets/pfam.hmm \
   --ko-hmm assets/k04564.hmm \
   --ko-thresholds assets/k04564_threshold.tsv \
+  --cpus 8 \
   --deeploc-csv deeploc.csv
 ```
 
@@ -126,6 +127,9 @@ Rule evaluation never discovers leaders. It uses only the candidates recorded
 by the build step. Pfam searches use HMMER gathering thresholds (`--cut_ga`).
 KO searches disable gathering thresholds and require the model-specific
 threshold file supplied with `--ko-thresholds`.
+
+Use `--cpus N` to pass `--cpu N` to both Pfam and KO `hmmsearch` processes.
+When omitted, Sieve leaves HMMER's CPU setting unspecified.
 
 Dump sequences (original protein sequence plus discovered leaders, if leader
 discovery was performed) that passed all the rules to a FASTA file

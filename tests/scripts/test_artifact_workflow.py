@@ -353,6 +353,7 @@ class TestArtifactWorkflow(unittest.TestCase):
                         "--pfam-hmm", pfam_hmm,
                         "--ko-hmm", ko_hmm,
                         "--ko-thresholds", thresholds,
+                        "--cpus", "7",
                     ])
             finally:
                 sys.path.remove(tmpd)
@@ -361,6 +362,7 @@ class TestArtifactWorkflow(unittest.TestCase):
 
             self.assertIn("--cut_ga", commands[0])
             self.assertNotIn("--cut_ga", commands[1])
+            self.assertEqual([command[command.index("--cpu") + 1] for command in commands], ["7", "7"])
             rows = self.read_tsv(os.path.join(artifacts, "rule-results.tsv"))
             self.assertEqual(rows[0]["pass all"], "true")
 
@@ -460,6 +462,16 @@ class TestArtifactWorkflow(unittest.TestCase):
             finally:
                 sys.path.remove(tmpd)
                 sys.modules.pop("anchored_rules", None)
+
+    def test_check_artifacts_rejects_invalid_cpu_count(self):
+        with patch("sys.stderr", new_callable=io.StringIO):
+            for value in ("0", "-1", "not-an-integer"):
+                with self.subTest(value=value), self.assertRaises(SystemExit):
+                    self.check.main([
+                        "--rule", "rules.rule",
+                        "--artifacts-dir", "artifacts",
+                        "--cpus", value,
+                    ])
 
 
 class TestCuratedArtifactBuilder(unittest.TestCase):

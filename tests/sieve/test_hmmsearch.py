@@ -144,3 +144,19 @@ class TestHmmsearch(unittest.TestCase):
             run.call_args.args[0],
             ["hmmsearch", "--cut_ga", "--domtblout", "pfam.domtblout", "pfam.hmm", "proteins.faa"],
         )
+
+    def test_run_hmmsearch_passes_cpu_count(self):
+        with patch("subprocess.run") as run:
+            run_hmmsearch("pfam.hmm", "proteins.faa", "pfam.domtblout", cpus=8)
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "hmmsearch", "--cut_ga", "--cpu", "8", "--domtblout",
+                "pfam.domtblout", "pfam.hmm", "proteins.faa",
+            ],
+        )
+
+    def test_run_hmmsearch_rejects_invalid_cpu_count(self):
+        for cpus in (0, -1, 1.5, "2"):
+            with self.subTest(cpus=cpus), self.assertRaisesRegex(ValueError, "cpus"):
+                run_hmmsearch("pfam.hmm", "proteins.faa", "pfam.domtblout", cpus=cpus)
