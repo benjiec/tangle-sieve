@@ -183,6 +183,10 @@ def merge_locus_artifact(artifacts_dir, proteins, entries):
             start_label=row["start label"],
             start_aa_1b=int(row["start aa 1b"]),
             sequence=candidate_sequences[row["sequence accession"]],
+            protein_start_aa_1b=(
+                int(row["protein start aa 1b"])
+                if row["protein start aa 1b"] else None
+            ),
             end_aa_1b=int(row["end aa 1b"]) if row["end aa 1b"] else None,
         ))
     replaced = {(protein.protein_accession, protein.genome_accession) for protein in proteins}

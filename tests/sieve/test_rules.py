@@ -24,6 +24,7 @@ from sieve.rules import (
     HMMAlignment,
     KO,
     Leader,
+    NotRule,
     Pfam,
     RULE_ERROR,
     RULE_FALSE,
@@ -34,6 +35,7 @@ from sieve.rules import (
     RULE_YES,
     RuleContext,
     Rules,
+    Sequence,
     TFMotifs,
     _edge_distance,
     _parse_gimme_scan_output,
@@ -284,6 +286,120 @@ class TestRules(unittest.TestCase):
 
             self.assertEqual(rows[0]["pass all"], RULE_TRUE)
             self.assertEqual(self.read_tsv(out)[0]["Pfam.matches('PF02777')"], RULE_TRUE)
+
+    def test_pfam_matches_any_and_matches_only_compose_as_allowlist(self):
+        proteins = [
+            FastaProtein("allowed", "MA", pfam_rows=[{"target_accession": "PF00001.2"}]),
+            FastaProtein("mixed", "MA", pfam_rows=[
+                {"target_accession": "PF00001.2"},
+                {"target_accession": "PF99999.1"},
+            ]),
+            FastaProtein("empty", "MA", pfam_rows=[]),
+        ]
+        rule = Pfam.matches_any("PF00001", "PF00002") & Pfam.matches_only("PF00001", "PF00002")
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(rule).check_proteins(proteins, os.path.join(tmpd, "rules.tsv"), trace=False)
+
+        self.assertEqual(
+            {row["protein accession"]: row["pass all"] for row in rows},
+            {"allowed": RULE_TRUE, "mixed": RULE_FALSE, "empty": RULE_FALSE},
+        )
+        with tempfile.TemporaryDirectory() as tmpd:
+            only_rows = Rules(Pfam.matches_only("PF00001")).check_proteins(
+                [proteins[2]], os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+        self.assertEqual(only_rows[0]["pass all"], RULE_TRUE)
+
+    def test_rule_invert_rejects_matching_pfam_and_preserves_error_states(self):
+        proteins = [
+            FastaProtein("match", "MA", pfam_rows=[{"target_accession": "PF00001.4"}]),
+            FastaProtein("other", "MA", pfam_rows=[]),
+        ]
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(~Pfam.matches("PF00001")).check_proteins(
+                proteins, os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+        self.assertEqual(
+            {row["protein accession"]: row["pass all"] for row in rows},
+            {"match": RULE_FALSE, "other": RULE_TRUE},
+        )
+        self.assertEqual(NotRule._invert(RULE_MAYBE), RULE_MAYBE)
+        self.assertEqual(NotRule._invert(RULE_ERROR), RULE_ERROR)
+        self.assertEqual(NotRule._invert(RULE_NOT_APPLICABLE), RULE_FALSE)
+
+    def test_sequence_length_and_regex_apply_to_each_candidate(self):
+        protein = FastaProtein("p1", "MAAAAA")
+        candidates = [
+            LeaderSequenceCandidate("short", "", 1, "MAAA", protein_start_aa_1b=1),
+            LeaderSequenceCandidate("long", "u2", -2, "XXMAAAAA", protein_start_aa_1b=-2),
+        ]
+        rule = Sequence.length_between(4, 6) & Sequence.matches_regex("M.A").betweenAA(1, 4)
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(rule).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+                sequence_candidates_by_key={("p1", ""): candidates},
+            )
+
+        self.assertEqual(
+            [(row["sequence accession"], row["pass all"]) for row in rows],
+            [("short", RULE_TRUE), ("long", RULE_FALSE)],
+        )
+
+    def test_sequence_regex_relative_to_any_pfam_anchor_uses_candidate_coordinates(self):
+        protein = FastaProtein("p1", "AAAAMOTIFAAAA", pfam_rows=[
+            {"target_accession": "PF00001.3", "query_start": 5, "query_end": 8, "target_start": 1},
+            {"target_accession": "PF00001.3", "query_start": 12, "query_end": 13, "target_start": 1},
+        ])
+        candidates = [
+            LeaderSequenceCandidate(
+                "with_leader", "u2", -2, "XXAAAAMOTIFAAAA", protein_start_aa_1b=-2,
+            ),
+        ]
+        rule = Sequence.matches_regex("MOTIF").relativeToPfam("PF00001", 1, 5)
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(rule).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+                sequence_candidates_by_key={("p1", ""): candidates},
+            )
+
+        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
+
+    def test_sequence_regex_relative_to_pfam_rejects_missing_anchor_and_crossing_boundary(self):
+        candidate = LeaderSequenceCandidate("p1", "", 1, "AAMOTIF", protein_start_aa_1b=1)
+        rules = [
+            Sequence.matches_regex("MOTIF").relativeToPfam("PF99999", -2, 5),
+            Sequence.matches_regex("MOTIF").relativeToPfam("PF00001", 1, 4),
+        ]
+        protein = FastaProtein("p1", "AAMOTIF", pfam_rows=[
+            {"target_accession": "PF00001", "query_start": 3, "query_end": 7, "target_start": 1},
+        ])
+        for rule in rules:
+            with self.subTest(label=rule.label), tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(rule).check_proteins(
+                    [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+                    sequence_candidates_by_key={("p1", ""): [candidate]},
+                )
+                self.assertEqual(rows[0]["pass all"], RULE_FALSE)
+
+    def test_sequence_regex_matches_upstream_of_pfam_on_leader_candidate(self):
+        protein = FastaProtein("p1", "AAAADOMAIN", pfam_rows=[
+            {"target_accession": "PF00001", "query_start": 5, "query_end": 10, "target_start": 1},
+        ])
+        candidate = LeaderSequenceCandidate(
+            "with_leader", "u5", -5, "MOTIFAAAADOMAIN", protein_start_aa_1b=-5,
+        )
+        rule = Sequence.matches_regex("MOTIF").relativeToPfam("PF00001", -9, -5)
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(rule).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+                sequence_candidates_by_key={("p1", ""): [candidate]},
+            )
+
+        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
 
     def test_ko_bound_cterm_uses_greatest_inclusive_query_end(self):
         protein = FastaProtein("p1", "MABCDEFGHIJ", ko_rows=[

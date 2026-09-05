@@ -138,6 +138,10 @@ class TestArtifactWorkflow(unittest.TestCase):
                 [row["start aa 1b"] for row in self.read_tsv(sequences_tsv(artifacts))],
                 ["1", "2"],
             )
+            self.assertEqual(
+                [row["protein start aa 1b"] for row in self.read_tsv(sequences_tsv(artifacts))],
+                ["1", "2"],
+            )
 
     def test_fasta_builder_rejects_conflicting_input_accession(self):
         with tempfile.TemporaryDirectory() as tmpd:
@@ -435,6 +439,28 @@ class TestArtifactWorkflow(unittest.TestCase):
                 sys.path.remove(tmpd)
                 sys.modules.pop("bounded_rules", None)
 
+    def test_pfam_anchored_sequence_regex_requires_pfam_database(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "input.faa")
+            artifacts = os.path.join(tmpd, "artifacts")
+            write_fasta_from_dict({"p1|genome_description": "MOTIF"}, fasta)
+            rule = self.write_rule(
+                tmpd,
+                "anchored_rules",
+                "Sequence.matches_regex('MOTIF').relativeToPfam('PF00001', 1, 5)",
+                imports="Rules, Sequence",
+            )
+            sys.path.insert(0, tmpd)
+            try:
+                self.build_fasta.main([
+                    "--fasta", fasta, "--rule", rule, "--artifacts-dir", artifacts,
+                ])
+                with self.assertRaisesRegex(ValueError, "--pfam-hmm is required"):
+                    self.check.main(["--rule", rule, "--artifacts-dir", artifacts])
+            finally:
+                sys.path.remove(tmpd)
+                sys.modules.pop("anchored_rules", None)
+
 
 class TestCuratedArtifactBuilder(unittest.TestCase):
 
@@ -599,7 +625,6 @@ class TestCuratedArtifactBuilder(unittest.TestCase):
             self.assertEqual(read_fasta_as_dict(sequences_fasta(artifacts)), {
                 "p1_to_K04564_6": "MABCDE",
             })
-
 
 if __name__ == "__main__":
     unittest.main()

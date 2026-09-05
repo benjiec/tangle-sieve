@@ -145,6 +145,9 @@ class Rule(object):
     def __or__(self, other):
         return OrRule(self, _as_rule(other))
 
+    def __invert__(self):
+        return NotRule(self)
+
     def evaluate(self, context):
         raise NotImplementedError
 
@@ -174,6 +177,9 @@ class Rule(object):
         return False
 
     def uses_deeploc(self):
+        return False
+
+    def uses_pfam(self):
         return False
 
     def resolve(self, context, atomic_results):
@@ -215,6 +221,9 @@ class CompositeRule(Rule):
 
     def uses_deeploc(self):
         return any(rule.uses_deeploc() for rule in self.rules)
+
+    def uses_pfam(self):
+        return any(rule.uses_pfam() for rule in self.rules)
 
 
 class AndRule(CompositeRule):
@@ -275,6 +284,49 @@ class OrRule(CompositeRule):
             for candidate in rule.scope_sequence_candidates(protein, candidates, row):
                 scoped[candidate.accession] = candidate
         return list(scoped.values())
+
+
+class NotRule(Rule):
+
+    def __init__(self, rule):
+        self.rule = _as_rule(rule)
+
+    @property
+    def label(self):
+        return f"~({self.rule.label})"
+
+    def atomic_rules(self):
+        return self.rule.atomic_rules()
+
+    def uses_leader_candidates(self):
+        return self.rule.uses_leader_candidates()
+
+    def uses_deeploc(self):
+        return self.rule.uses_deeploc()
+
+    def uses_pfam(self):
+        return self.rule.uses_pfam()
+
+    def evaluate(self, context):
+        return self._invert(self.rule.evaluate(context))
+
+    def resolve(self, context, atomic_results):
+        return self._invert(self.rule.resolve(context, atomic_results))
+
+    def resolve_row(self, row):
+        return self._invert(self.rule.resolve_row(row))
+
+    def filter_sequence_candidates(self, protein, candidates, row):
+        return candidates if _rule_passes(self.resolve_row(row)) else []
+
+    def scope_sequence_candidates(self, protein, candidates, row):
+        return self.rule.scope_sequence_candidates(protein, candidates, row)
+
+    @staticmethod
+    def _invert(value):
+        if value in (RULE_MAYBE, RULE_ERROR):
+            return value
+        return RULE_FALSE if _rule_passes(value) else RULE_TRUE
 
 
 class RuleContext(object):
@@ -603,6 +655,36 @@ class Pfam(object):
             prefix_match=True,
         )
 
+    @staticmethod
+    def matches_any(*accessions):
+        return DetectedTargetSetRule("matches_any", accessions, require_match=True)
+
+    @staticmethod
+    def matches_only(*accessions):
+        return DetectedTargetSetRule("matches_only", accessions, require_match=False)
+
+
+class DetectedTargetSetRule(Rule):
+
+    def __init__(self, operation, accessions, require_match):
+        if not accessions:
+            raise ValueError(f"Pfam.{operation}() requires at least one accession")
+        if any(not isinstance(accession, str) or not accession for accession in accessions):
+            raise ValueError(f"Pfam.{operation}() accessions must be non-empty strings")
+        self.accessions = tuple(accessions)
+        self.require_match = require_match
+        arguments = ", ".join(repr(accession) for accession in self.accessions)
+        self.label = f"Pfam.{operation}({arguments})"
+
+    def _allowed(self, target):
+        return any(_target_prefix(target) == _target_prefix(accession) for accession in self.accessions)
+
+    def evaluate(self, context):
+        targets = [row["target_accession"] for row in context.protein.detected_pfam()]
+        if self.require_match:
+            return _rule_bool(any(self._allowed(target) for target in targets))
+        return _rule_bool(all(self._allowed(target) for target in targets))
+
 
 class KO(object):
 
@@ -783,6 +865,139 @@ class HMMRegexRule(HMMRule):
         if not aligned:
             return RULE_FALSE
         return _rule_bool(re.match(self.pattern, "".join(aligned)) is not None)
+
+
+class Sequence(object):
+
+    @staticmethod
+    def length_between(minimum, maximum):
+        return SequenceLengthRule(minimum, maximum)
+
+    @staticmethod
+    def matches_regex(pattern):
+        return SequenceRegexBuilder(pattern)
+
+
+class CandidateSequenceRule(Rule):
+
+    def evaluate(self, context):
+        return RULE_FALSE
+
+    def sequence_result(self, row, candidate):
+        return self.evaluate_candidate(row, candidate)
+
+
+class SequenceLengthRule(CandidateSequenceRule):
+
+    def __init__(self, minimum, maximum):
+        if not isinstance(minimum, int) or not isinstance(maximum, int):
+            raise TypeError("Sequence length bounds must be integers")
+        if minimum < 0 or maximum < 0:
+            raise ValueError("Sequence length bounds must be non-negative")
+        self.minimum = min(minimum, maximum)
+        self.maximum = max(minimum, maximum)
+        self.label = f"Sequence.length_between({minimum}, {maximum})"
+
+    def evaluate_candidate(self, row, candidate):
+        return _rule_bool(self.minimum <= len(candidate.sequence) <= self.maximum)
+
+
+class SequenceRegexBuilder(object):
+
+    def __init__(self, pattern):
+        re.compile(pattern)
+        self.pattern = pattern
+
+    def betweenAA(self, start, end):
+        return SequenceRegexRule(self.pattern, start, end)
+
+    def relativeToPfam(self, accession, start, end):
+        return PfamAnchoredSequenceRegexRule(self.pattern, accession, start, end)
+
+
+def _validate_aa_range(start, end, allow_negative):
+    if not isinstance(start, int) or not isinstance(end, int):
+        raise TypeError("Amino-acid coordinates must be integers")
+    if start == 0 or end == 0:
+        raise ValueError("Amino-acid coordinates cannot be zero")
+    if not allow_negative and (start < 1 or end < 1):
+        raise ValueError("Candidate amino-acid coordinates must be 1 or greater")
+
+
+def _regex_matches_range(sequence, pattern, start_1b, end_1b):
+    low = max(1, min(start_1b, end_1b))
+    high = min(len(sequence), max(start_1b, end_1b))
+    if low > high:
+        return False
+    return re.search(pattern, sequence[low - 1:high]) is not None
+
+
+class SequenceRegexRule(CandidateSequenceRule):
+
+    def __init__(self, pattern, start, end):
+        _validate_aa_range(start, end, allow_negative=False)
+        self.pattern = pattern
+        self.start = start
+        self.end = end
+        self.label = f"Sequence.matches_regex({pattern!r}).betweenAA({start}, {end})"
+
+    def evaluate_candidate(self, row, candidate):
+        return _rule_bool(_regex_matches_range(candidate.sequence, self.pattern, self.start, self.end))
+
+
+class PfamAnchoredSequenceRegexRule(CandidateSequenceRule):
+
+    def __init__(self, pattern, accession, start, end):
+        _validate_aa_range(start, end, allow_negative=True)
+        self.pattern = pattern
+        self.accession = accession
+        self.start = start
+        self.end = end
+        self._anchors_by_key = {}
+        self.label = (
+            f"Sequence.matches_regex({pattern!r}).relativeToPfam("
+            f"{accession!r}, {start}, {end})"
+        )
+
+    def uses_pfam(self):
+        return True
+
+    def evaluate_many(self, contexts, artifacts_dir=None, **kwargs):
+        self._anchors_by_key = {
+            context.key: _pfam_anchors(context.protein, self.accession)
+            for context in contexts
+        }
+        return {
+            context.key: _rule_bool(bool(self._anchors_by_key[context.key]))
+            for context in contexts
+        }
+
+    def evaluate_candidate(self, row, candidate):
+        protein_start = candidate.protein_start_aa_1b
+        if protein_start is None:
+            return RULE_ERROR
+        key = (row["protein accession"], row["genome accession"])
+        for anchor in self._anchors_by_key.get(key, []):
+            candidate_anchor = (
+                anchor - protein_start if protein_start < 1
+                else anchor - protein_start + 1
+            )
+            start = candidate_anchor + self.start if self.start < 0 else candidate_anchor + self.start - 1
+            end = candidate_anchor + self.end if self.end < 0 else candidate_anchor + self.end - 1
+            if _regex_matches_range(candidate.sequence, self.pattern, start, end):
+                return RULE_TRUE
+        return RULE_FALSE
+
+
+def _pfam_anchors(protein, accession):
+    anchors = []
+    for row in protein.detected_pfam():
+        if not _motif_matches(row["target_accession"], accession):
+            continue
+        query_start = min(row["query_start"], row["query_end"])
+        target_start = row.get("target_start") or 1
+        anchors.append(query_start - (target_start - 1))
+    return sorted(set(anchors))
 
 
 class Leader(Rule):

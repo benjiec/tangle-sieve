@@ -30,7 +30,10 @@ def _rows_by_query(rows):
 
 
 def _uses_rule(rules, prefix):
-    return any(rule.label.startswith(prefix) for rule in rules.atomic_rules())
+    return any(
+        rule.label.startswith(prefix) or (prefix == "Pfam." and rule.uses_pfam())
+        for rule in rules.atomic_rules()
+    )
 
 
 def _run_detection_searches(args, rules):
@@ -91,6 +94,10 @@ def load_artifact_proteins(artifacts_dir, pfam_rows, ko_rows):
             start_label=row["start label"],
             start_aa_1b=int(row["start aa 1b"]),
             sequence=candidate_sequences[sequence_accession],
+            protein_start_aa_1b=(
+                int(row["protein start aa 1b"])
+                if row["protein start aa 1b"] else None
+            ),
             end_aa_1b=int(row["end aa 1b"]) if row["end aa 1b"] else None,
         ))
 

@@ -16,9 +16,11 @@ SEQUENCE_HEADERS = [
     "sequence accession",
     "start label",
     "start aa 1b",
+    "protein start aa 1b",
     "end aa 1b",
 ]
-LEGACY_SEQUENCE_HEADERS = SEQUENCE_HEADERS[:-1]
+LEGACY_SEQUENCE_HEADERS = SEQUENCE_HEADERS[:5]
+PREVIOUS_SEQUENCE_HEADERS = SEQUENCE_HEADERS[:5] + ["end aa 1b"]
 
 
 def rule_results_tsv(artifacts_dir):
@@ -50,12 +52,15 @@ def read_sequence_rows(artifacts_dir):
         return []
     with open(path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
-        if reader.fieldnames not in (SEQUENCE_HEADERS, LEGACY_SEQUENCE_HEADERS):
+        if reader.fieldnames not in (SEQUENCE_HEADERS, PREVIOUS_SEQUENCE_HEADERS, LEGACY_SEQUENCE_HEADERS):
             raise ValueError(f"Unexpected columns in {path}: {reader.fieldnames}")
         rows = list(reader)
         if reader.fieldnames == LEGACY_SEQUENCE_HEADERS:
             for row in rows:
                 row["end aa 1b"] = ""
+        if reader.fieldnames != SEQUENCE_HEADERS:
+            for row in rows:
+                row["protein start aa 1b"] = ""
         return rows
 
 
@@ -108,6 +113,7 @@ def merge_sequence_artifacts(artifacts_dir, originals, candidate_entries):
                 "sequence accession": "",
                 "start label": "",
                 "start aa 1b": "",
+                "protein start aa 1b": "",
                 "end aa 1b": "",
             })
         for candidate in entry["candidates"]:
@@ -121,6 +127,10 @@ def merge_sequence_artifacts(artifacts_dir, originals, candidate_entries):
                 "sequence accession": candidate.accession,
                 "start label": candidate.start_label,
                 "start aa 1b": str(candidate.start_aa_1b),
+                "protein start aa 1b": (
+                    "" if candidate.protein_start_aa_1b is None
+                    else str(candidate.protein_start_aa_1b)
+                ),
                 "end aa 1b": "" if candidate.end_aa_1b is None else str(candidate.end_aa_1b),
             })
 
@@ -136,7 +146,12 @@ def merge_sequence_artifacts(artifacts_dir, originals, candidate_entries):
         accession = row["sequence accession"]
         identity = accession or (row["protein accession"], row["genome accession"], "")
         if identity in rows_by_identity and rows_by_identity[identity] != row:
-            raise ValueError(f"Conflicting candidate metadata for accession {accession}")
+            previous = rows_by_identity[identity]
+            upgrade = dict(previous)
+            if not upgrade.get("protein start aa 1b"):
+                upgrade["protein start aa 1b"] = row["protein start aa 1b"]
+            if upgrade != row:
+                raise ValueError(f"Conflicting candidate metadata for accession {accession}")
         rows_by_identity[identity] = row
 
     genome_by_protein = {}

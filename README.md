@@ -51,7 +51,8 @@ An artifact directory contains:
 
 * `input.faa`: original protein sequences.
 * `sequences.faa`: discovered candidate sequences.
-* `sequences.tsv`: candidate-to-original associations and start metadata.
+* `sequences.tsv`: candidate-to-original associations, candidate start
+  metadata, and the candidate's start coordinate on the original protein.
 * `genomic_loci.tsv`: genomic locus metadata for curated inputs.
 
 `sequences.tsv` also records an inclusive `end aa 1b` when candidate sequences

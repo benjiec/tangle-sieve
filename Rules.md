@@ -49,7 +49,9 @@ missing_<value>
 missing_<value>_and_<value>
 ```
 
-`true`, `yes`, and `too_far` are considered passing values. `false`, `maybe`,
+`true`, `yes`, `too_far`, and `not_applicable` are considered passing values.
+`not_applicable` is used when a rule cannot apply to an input type, such as a
+genomic-locus rule evaluated for a FASTA-only protein. `false`, `maybe`,
 `error`, and `missing_*` values are not passing values.
 
 For `&`, any `false` makes the combined rule false. If there is no false value,
@@ -74,6 +76,16 @@ mnsod_rule = Rules(
 
 Use parentheses whenever mixing `&` and `|`; normal Python precedence applies.
 
+Negate any rule with `~`:
+
+```python
+rule = Rules(~Pfam.matches("PF12345"))
+```
+
+Negation converts passing results (`true`, `yes`, `too_far`, and
+`not_applicable`) to `false`, and other non-passing rule-specific results to
+`true`. It preserves `maybe` and `error`.
+
 
 ## Pfam Rules
 
@@ -89,10 +101,89 @@ Pfam accessions are prefix-matched before the first dot. This means
 `PF00081` matches versioned hits such as `PF00081.28`. The rule returns `true`
 when any detected Pfam row for the protein matches, otherwise `false`.
 
+Use `matches_any(...)` to accept any Pfam family in a set:
+
+```python
+Pfam.matches_any("PF00081", "PF02777")
+```
+
+Use `matches_only(...)` to require every detected Pfam family to belong to an
+allowed set:
+
+```python
+Pfam.matches_only("PF00081", "PF02777")
+```
+
+`matches_only(...)` passes when there are no Pfam detections. Combine the two
+rules to require at least one allowed family and reject every other family:
+
+```python
+Pfam.matches_any("PF00081", "PF02777") & Pfam.matches_only("PF00081", "PF02777")
+```
+
+All Pfam match methods ignore accession version suffixes. A complete Pfam HMM
+database must be supplied during artifact evaluation when `matches_only(...)`
+is intended to exclude every family outside the allowed set. A database
+containing only the allowed profiles cannot detect disallowed families.
+
 During artifact evaluation, Pfam rows are regenerated from `input.faa` by
 `check-artifacts-by-rules.py`. The required `--pfam-hmm` search uses HMMER
 gathering thresholds (`--cut_ga`). Curated Pfam tables are used only while
 building curated artifacts when leader discovery is anchored to a Pfam hit.
+
+
+## Candidate Sequence Rules
+
+Candidate sequence rules operate on each sequence recorded in `sequences.faa`,
+not merely on its original input protein. A discovered leader is therefore
+included, and a C-terminal bound is excluded, when these rules inspect length
+or sequence content.
+
+Use `Sequence.length_between(minimum, maximum)` to require an inclusive amino
+acid length range:
+
+```python
+from sieve.rules import Rules, Sequence
+
+rule = Rules(Sequence.length_between(150, 250))
+```
+
+The bounds may be supplied in either order and must be non-negative.
+
+Use `matches_regex(...).betweenAA(...)` to search an inclusive, 1-based range
+of the candidate sequence with Python regular-expression syntax:
+
+```python
+rule = Rules(Sequence.matches_regex(r"H..H").betweenAA(40, 80))
+```
+
+The complete regex match must fit inside the range. Bounds may be supplied in
+either order, must be positive, and cannot be zero. A range extending beyond a
+candidate is clipped to that candidate; a range with no overlap returns
+`false`.
+
+Use `relativeToPfam(...)` to search relative to the inferred start of a Pfam
+alignment:
+
+```python
+rule = Rules(
+    Sequence.matches_regex(r"H..H").relativeToPfam("PF00081", -30, -5)
+)
+```
+
+Negative coordinates are upstream of the inferred Pfam start, position `1` is
+the inferred start, and position `0` is invalid. Positive coordinates are
+downstream from that start. Bounds are inclusive and may be supplied in either
+order. The rule returns `false` when the Pfam family is absent. With multiple
+matching Pfam alignments, the rule passes if the complete regex matches in the
+requested range relative to any inferred anchor. Pfam accessions are matched
+without their version suffix.
+
+Pfam coordinates are detected on the original input protein and translated to
+each candidate. New artifact manifests record `protein start aa 1b` for that
+translation. Older manifests remain readable, but an anchored candidate rule
+returns `error` when a candidate's original-protein start coordinate is not
+available. Rebuild those artifacts before using `relativeToPfam(...)`.
 
 
 ## KO Rules
