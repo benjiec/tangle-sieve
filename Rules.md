@@ -175,9 +175,9 @@ Negative coordinates are upstream of the inferred Pfam start, position `1` is
 the inferred start, and position `0` is invalid. Positive coordinates are
 downstream from that start. Bounds are inclusive and may be supplied in either
 order. The rule returns `false` when the Pfam family is absent. With multiple
-matching Pfam alignments, the rule passes if the complete regex matches in the
-requested range relative to any inferred anchor. Pfam accessions are matched
-without their version suffix.
+matching Pfam alignments, only the earliest inferred Pfam start on the original
+protein is used as the anchor; later matches cannot satisfy the regex rule.
+Pfam accessions are matched without their version suffix.
 
 Pfam coordinates are detected on the original input protein and translated to
 each candidate. New artifact manifests record `protein start aa 1b` for that

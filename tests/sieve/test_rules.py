@@ -364,14 +364,14 @@ class TestRules(unittest.TestCase):
             [("short", RULE_TRUE), ("long", RULE_FALSE)],
         )
 
-    def test_sequence_regex_relative_to_any_pfam_anchor_uses_candidate_coordinates(self):
-        protein = FastaProtein("p1", "AAAAMOTIFAAAA", pfam_rows=[
+    def test_sequence_regex_relative_to_pfam_uses_only_earliest_anchor(self):
+        protein = FastaProtein("p1", "AAAAAXXXXMOTIF", pfam_rows=[
             {"target_accession": "PF00001.3", "query_start": 5, "query_end": 8, "target_start": 1},
-            {"target_accession": "PF00001.3", "query_start": 12, "query_end": 13, "target_start": 1},
+            {"target_accession": "PF00001.3", "query_start": 9, "query_end": 13, "target_start": 1},
         ])
         candidates = [
             LeaderSequenceCandidate(
-                "with_leader", "u2", -2, "XXAAAAMOTIFAAAA", protein_start_aa_1b=-2,
+                "with_leader", "u2", -2, "XXAAAAAXXXXMOTIF", protein_start_aa_1b=-2,
             ),
         ]
         rule = Sequence.matches_regex("MOTIF").relativeToPfam("PF00001", 1, 5)
@@ -382,7 +382,7 @@ class TestRules(unittest.TestCase):
                 sequence_candidates_by_key={("p1", ""): candidates},
             )
 
-        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
+        self.assertEqual(rows[0]["pass all"], RULE_FALSE)
 
     def test_sequence_regex_relative_to_pfam_rejects_missing_anchor_and_crossing_boundary(self):
         candidate = LeaderSequenceCandidate("p1", "", 1, "AAMOTIF", protein_start_aa_1b=1)

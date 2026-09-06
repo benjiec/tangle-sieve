@@ -968,7 +968,7 @@ class PfamAnchoredSequenceRegexRule(CandidateSequenceRule):
         self.accession = accession
         self.start = start
         self.end = end
-        self._anchors_by_key = {}
+        self._anchor_by_key = {}
         self.label = (
             f"Sequence.matches_regex({pattern!r}).relativeToPfam("
             f"{accession!r}, {start}, {end})"
@@ -978,12 +978,12 @@ class PfamAnchoredSequenceRegexRule(CandidateSequenceRule):
         return True
 
     def evaluate_many(self, contexts, artifacts_dir=None, **kwargs):
-        self._anchors_by_key = {
-            context.key: _pfam_anchors(context.protein, self.accession)
+        self._anchor_by_key = {
+            context.key: _earliest_pfam_anchor(context.protein, self.accession)
             for context in contexts
         }
         return {
-            context.key: _rule_bool(bool(self._anchors_by_key[context.key]))
+            context.key: _rule_bool(self._anchor_by_key[context.key] is not None)
             for context in contexts
         }
 
@@ -992,27 +992,16 @@ class PfamAnchoredSequenceRegexRule(CandidateSequenceRule):
         if protein_start is None:
             return RULE_ERROR
         key = (row["protein accession"], row["genome accession"])
-        for anchor in self._anchors_by_key.get(key, []):
-            candidate_anchor = (
-                anchor - protein_start if protein_start < 1
-                else anchor - protein_start + 1
-            )
-            start = candidate_anchor + self.start if self.start < 0 else candidate_anchor + self.start - 1
-            end = candidate_anchor + self.end if self.end < 0 else candidate_anchor + self.end - 1
-            if _regex_matches_range(candidate.sequence, self.pattern, start, end):
-                return RULE_TRUE
-        return RULE_FALSE
-
-
-def _pfam_anchors(protein, accession):
-    anchors = []
-    for row in protein.detected_pfam():
-        if not _motif_matches(row["target_accession"], accession):
-            continue
-        query_start = min(row["query_start"], row["query_end"])
-        target_start = row.get("target_start") or 1
-        anchors.append(query_start - (target_start - 1))
-    return sorted(set(anchors))
+        anchor = self._anchor_by_key.get(key)
+        if anchor is None:
+            return RULE_FALSE
+        candidate_anchor = (
+            anchor - protein_start if protein_start < 1
+            else anchor - protein_start + 1
+        )
+        start = candidate_anchor + self.start if self.start < 0 else candidate_anchor + self.start - 1
+        end = candidate_anchor + self.end if self.end < 0 else candidate_anchor + self.end - 1
+        return _rule_bool(_regex_matches_range(candidate.sequence, self.pattern, start, end))
 
 
 class Leader(Rule):
