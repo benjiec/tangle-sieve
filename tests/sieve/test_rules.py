@@ -33,6 +33,7 @@ from sieve.rules import (
     RULE_TOO_FAR,
     RULE_TRUE,
     RULE_YES,
+    Rule,
     RuleContext,
     Rules,
     Sequence,
@@ -488,16 +489,42 @@ class TestRules(unittest.TestCase):
             [(1, "MAAMAA"), (4, "MAA")],
         )
 
-    def test_rules_check_includes_contig_accession_when_locus_is_available(self):
+    def test_rules_check_includes_contig_accession_for_genomic_rule(self):
         self.fx.write_three_exon_gene("p1", "g1", "+")
+
+        class GenomicRule(Rule):
+            label = "genomic rule"
+
+            def evaluate(self, context):
+                return RULE_TRUE
+
+            def uses_genomic_locus(self):
+                return True
 
         with tempfile.TemporaryDirectory() as tmpd:
             out = os.path.join(tmpd, "rules.tsv")
-            rows = Rules(Pfam.matches("PF00001")).check([("p1", "g1")], out)
+            rows = Rules(GenomicRule()).check([("p1", "g1")], out)
             tsv_rows = self.read_tsv(out)
 
         self.assertEqual(rows[0]["contig accession"], "ctg1")
         self.assertEqual(tsv_rows[0]["contig accession"], "ctg1")
+
+    def test_rules_check_skips_contig_lookup_for_non_genomic_rules(self):
+        protein = FastaProtein("p1", "MOTIF")
+        with (
+            patch.object(
+                protein,
+                "genomic_locus_with_leader",
+                side_effect=AssertionError("genomic locus lookup should not run"),
+            ),
+            tempfile.TemporaryDirectory() as tmpd,
+        ):
+            rows = Rules(Sequence.length_between(1, 10)).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+
+        self.assertEqual(rows[0]["contig accession"], "")
+        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
 
     def test_rules_check_traces_each_atomic_rule_concisely(self):
         self.fx.write_protein_fixture("p1", "g1")

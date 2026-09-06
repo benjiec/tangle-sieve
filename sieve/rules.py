@@ -556,7 +556,10 @@ class Rules(object):
             row = {
                 "protein accession": context.protein.protein_accession,
                 "genome accession": context.protein.genome_accession,
-                "contig accession": self._contig_accession(context),
+                "contig accession": (
+                    self._contig_accession(context)
+                    if self.uses_genomic_locus() else ""
+                ),
             }
             for rule in atomic_rules:
                 row[rule.label] = atomic_results[rule.label][context.key]
