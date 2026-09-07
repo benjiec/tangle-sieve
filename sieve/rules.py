@@ -663,7 +663,7 @@ class Pfam(object):
 
     @staticmethod
     def matches(accession):
-        return DetectedTargetRule(
+        return PfamMatchRule(
             label=f"Pfam.matches('{accession}')",
             row_getter=lambda protein: protein.detected_pfam(),
             accession=accession,
@@ -677,6 +677,93 @@ class Pfam(object):
     @staticmethod
     def matches_only(*accessions):
         return DetectedTargetSetRule("matches_only", accessions, require_match=False)
+
+
+class PfamMatchRule(DetectedTargetRule):
+
+    def times(self, minimum, maximum, overlap=True):
+        return PfamMatchCountRule(self.accession, minimum, maximum, overlap)
+
+    def betweenAA(self, start, end, all_matches=False):
+        return PfamMatchPositionRule(self.accession, start, end, all_matches)
+
+
+class PfamMatchPositionRule(Rule):
+
+    def __init__(self, accession, start, end, all_matches):
+        if not isinstance(start, int) or not isinstance(end, int):
+            raise TypeError("Pfam match-region coordinates must be integers")
+        if start < 1 or end < 1:
+            raise ValueError("Pfam match-region coordinates must be 1 or greater")
+        if not isinstance(all_matches, bool):
+            raise TypeError("all_matches must be a Boolean")
+        self.accession = accession
+        self.start = min(start, end)
+        self.end = max(start, end)
+        self.all_matches = all_matches
+        all_matches_argument = ", all_matches=True" if all_matches else ""
+        self.label = (
+            f"Pfam.matches('{accession}').betweenAA({start}, {end}"
+            f"{all_matches_argument})"
+        )
+
+    def evaluate(self, context):
+        rows = [
+            row for row in context.protein.detected_pfam()
+            if _target_prefix(row["target_accession"]) == _target_prefix(self.accession)
+        ]
+
+        def contained(row):
+            hit_start = min(row["query_start"], row["query_end"])
+            hit_end = max(row["query_start"], row["query_end"])
+            return self.start <= hit_start and hit_end <= self.end
+
+        if self.all_matches:
+            return _rule_bool(bool(rows) and all(contained(row) for row in rows))
+        return _rule_bool(any(contained(row) for row in rows))
+
+
+class PfamMatchCountRule(Rule):
+
+    def __init__(self, accession, minimum, maximum, overlap):
+        if not isinstance(minimum, int) or not isinstance(maximum, int):
+            raise TypeError("Pfam match-count bounds must be integers")
+        if minimum < 0 or maximum < 0:
+            raise ValueError("Pfam match-count bounds must be non-negative")
+        if not isinstance(overlap, bool):
+            raise TypeError("overlap must be a Boolean")
+        self.accession = accession
+        self.minimum = min(minimum, maximum)
+        self.maximum = max(minimum, maximum)
+        self.overlap = overlap
+        overlap_argument = "" if overlap else ", overlap=False"
+        self.label = (
+            f"Pfam.matches('{accession}').times({minimum}, {maximum}"
+            f"{overlap_argument})"
+        )
+
+    def evaluate(self, context):
+        rows = [
+            row for row in context.protein.detected_pfam()
+            if _target_prefix(row["target_accession"]) == _target_prefix(self.accession)
+        ]
+        count = len(rows) if self.overlap else self._non_overlapping_count(rows)
+        return _rule_bool(self.minimum <= count <= self.maximum)
+
+    @staticmethod
+    def _non_overlapping_count(rows):
+        intervals = sorted(
+            (min(row["query_start"], row["query_end"]), max(row["query_start"], row["query_end"]))
+            for row in rows
+        )
+        intervals.sort(key=lambda interval: (interval[1], interval[0]))
+        count = 0
+        previous_end = None
+        for start, end in intervals:
+            if previous_end is None or start > previous_end:
+                count += 1
+                previous_end = end
+        return count
 
 
 class DetectedTargetSetRule(Rule):
@@ -1006,16 +1093,17 @@ class PfamAnchoredSequenceRegexRule(CandidateSequenceRule):
 
 class Leader(Rule):
 
-    def __init__(self, window_start=-30, window_end=3, pfam_accession=None):
+    def __init__(self, window_start=-30, window_end=3, pfam_accession=None, explicit_window=False):
         self.window_start = window_start
         self.window_end = window_end
         self.pfam_accession = pfam_accession
+        self.explicit_window = explicit_window
 
     def upstreamOfPfam(self, accession):
-        return Leader(self.window_start, self.window_end, accession)
+        return Leader(self.window_start, self.window_end, accession, self.explicit_window)
 
     def betweenAA(self, start, end):
-        return Leader(start, end, self.pfam_accession)
+        return Leader(start, end, self.pfam_accession, explicit_window=True)
 
     @property
     def label(self):
@@ -1062,6 +1150,10 @@ class Leader(Rule):
         return LeaderRule("noTP", self.window_start, self.window_end, self.pfam_accession)
 
     def localize_at(self, localization):
+        if self.pfam_accession is None and self.explicit_window:
+            raise ValueError(
+                "Leader().betweenAA(...).localize_at(...) requires upstreamOfPfam(...)"
+            )
         return LeaderRule(
             localization,
             self.window_start,
@@ -1069,6 +1161,7 @@ class Leader(Rule):
             self.pfam_accession,
             source="deeploc",
             call_type="localization",
+            original_only=self.pfam_accession is None,
         )
 
 
@@ -1082,6 +1175,7 @@ class LeaderRule(Rule):
         pfam_accession=None,
         source="targetp",
         call_type="signal",
+        original_only=False,
     ):
         self.prediction = prediction
         self.window_start = window_start
@@ -1089,6 +1183,7 @@ class LeaderRule(Rule):
         self.pfam_accession = pfam_accession
         self.source = source
         self.call_type = call_type
+        self.original_only = original_only
         self.label = self._label()
         self._predictions_by_key = {}
         self._annotation_columns = []
@@ -1097,7 +1192,8 @@ class LeaderRule(Rule):
         base = "Leader()"
         if self.pfam_accession is not None:
             base += f".upstreamOfPfam('{self.pfam_accession}')"
-        base += f".betweenAA({self.window_start}, {self.window_end})"
+        if not self.original_only:
+            base += f".betweenAA({self.window_start}, {self.window_end})"
         if self.call_type == "localization":
             return f"{base}.localize_at('{self.prediction}')"
         if self.source == "deeploc":
@@ -1110,7 +1206,7 @@ class LeaderRule(Rule):
         return self._annotation_columns
 
     def uses_leader_candidates(self):
-        return True
+        return not self.original_only
 
     def uses_deeploc(self):
         return self.source == "deeploc"
@@ -1290,6 +1386,8 @@ class LeaderRule(Rule):
         return self._scoped_candidates(protein)
 
     def _scoped_candidates(self, protein):
+        if self.original_only:
+            return _direct_original_sequence_candidate(protein)
         return _scoped_leader_candidates(
             protein,
             self.window_start,

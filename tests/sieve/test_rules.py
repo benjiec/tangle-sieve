@@ -328,6 +328,139 @@ class TestRules(unittest.TestCase):
             )
         self.assertEqual(only_rows[0]["pass all"], RULE_TRUE)
 
+    def test_pfam_match_count_includes_overlaps_by_default(self):
+        protein = FastaProtein("p1", "M" * 100, pfam_rows=[
+            {"target_accession": "PF00023.1", "query_start": 1, "query_end": 20},
+            {"target_accession": "PF00023.2", "query_start": 10, "query_end": 30},
+            {"target_accession": "PF00023.3", "query_start": 31, "query_end": 50},
+            {"target_accession": "PF99999.1", "query_start": 60, "query_end": 70},
+        ])
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(Pfam.matches("PF00023").times(3, 3)).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+
+        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
+
+    def test_pfam_match_count_can_maximize_non_overlapping_intervals(self):
+        protein = FastaProtein("p1", "M" * 100, pfam_rows=[
+            {"target_accession": "PF00023", "query_start": 1, "query_end": 100},
+            {"target_accession": "PF00023", "query_start": 1, "query_end": 10},
+            {"target_accession": "PF00023", "query_start": 10, "query_end": 20},
+            {"target_accession": "PF00023", "query_start": 11, "query_end": 20},
+            {"target_accession": "PF00023", "query_start": 21, "query_end": 30},
+        ])
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(Pfam.matches("PF00023").times(3, 3, overlap=False)).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+
+        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
+
+    def test_pfam_match_count_handles_zero_reversed_bounds_and_invalid_arguments(self):
+        protein = FastaProtein("p1", "MA", pfam_rows=[])
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(Pfam.matches("PF00023").times(2, 0)).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
+
+        invalid = [
+            ((1.0, 2), {}, TypeError),
+            ((-1, 2), {}, ValueError),
+            ((1, 2), {"overlap": 1}, TypeError),
+        ]
+        for arguments, keywords, error in invalid:
+            with self.subTest(arguments=arguments, keywords=keywords), self.assertRaises(error):
+                Pfam.matches("PF00023").times(*arguments, **keywords)
+
+    def test_pfam_match_between_aa_requires_complete_containment(self):
+        cases = [
+            ("contained", 100, 200, RULE_TRUE),
+            ("exact_reversed_hit", 250, 50, RULE_TRUE),
+            ("overlaps_start", 40, 100, RULE_FALSE),
+            ("overlaps_end", 200, 260, RULE_FALSE),
+            ("outside", 251, 300, RULE_FALSE),
+        ]
+        proteins = [
+            FastaProtein(name, "M" * 300, pfam_rows=[{
+                "target_accession": "PF00023.7",
+                "query_start": start,
+                "query_end": end,
+            }])
+            for name, start, end, _expected in cases
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(Pfam.matches("PF00023").betweenAA(250, 50)).check_proteins(
+                proteins, os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+
+        self.assertEqual(
+            {row["protein accession"]: row["pass all"] for row in rows},
+            {name: expected for name, _start, _end, expected in cases},
+        )
+
+    def test_pfam_match_between_aa_passes_if_any_matching_hit_is_contained(self):
+        protein = FastaProtein("p1", "M" * 300, pfam_rows=[
+            {"target_accession": "PF00023", "query_start": 1, "query_end": 100},
+            {"target_accession": "PF00023", "query_start": 120, "query_end": 180},
+            {"target_accession": "PF99999", "query_start": 130, "query_end": 150},
+        ])
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(Pfam.matches("PF00023").betweenAA(110, 200)).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+        self.assertEqual(rows[0]["pass all"], RULE_TRUE)
+
+    def test_pfam_match_between_aa_can_require_all_matching_hits_contained(self):
+        cases = [
+            ("all_inside", [(120, 150), (151, 180)], RULE_TRUE),
+            ("one_outside", [(1, 99), (120, 150)], RULE_FALSE),
+            ("zero", [], RULE_FALSE),
+        ]
+        proteins = [
+            FastaProtein(name, "M" * 300, pfam_rows=[
+                {
+                    "target_accession": "PF00023.4",
+                    "query_start": start,
+                    "query_end": end,
+                }
+                for start, end in intervals
+            ] + [{
+                "target_accession": "PF99999",
+                "query_start": 1,
+                "query_end": 300,
+            }])
+            for name, intervals, _expected in cases
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(
+                Pfam.matches("PF00023").betweenAA(200, 100, all_matches=True)
+            ).check_proteins(
+                proteins, os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+
+        self.assertEqual(
+            {row["protein accession"]: row["pass all"] for row in rows},
+            {name: expected for name, _intervals, expected in cases},
+        )
+
+    def test_pfam_match_between_aa_rejects_invalid_coordinates(self):
+        invalid = [
+            ((1.5, 10), TypeError),
+            ((0, 10), ValueError),
+            ((-1, 10), ValueError),
+        ]
+        for arguments, error in invalid:
+            with self.subTest(arguments=arguments), self.assertRaises(error):
+                Pfam.matches("PF00023").betweenAA(*arguments)
+        with self.assertRaisesRegex(TypeError, "all_matches"):
+            Pfam.matches("PF00023").betweenAA(1, 10, all_matches=1)
+
     def test_rule_invert_rejects_matching_pfam_and_preserves_error_states(self):
         proteins = [
             FastaProtein("match", "MA", pfam_rows=[{"target_accession": "PF00001.4"}]),
@@ -1280,7 +1413,7 @@ class TestRules(unittest.TestCase):
                 deeploc_csv=deeploc_csv,
             )
 
-        label = "Leader().betweenAA(-30, 3).localize_at('Endoplasmic reticulum')"
+        label = "Leader().localize_at('Endoplasmic reticulum')"
         self.assertEqual(
             [
                 (
@@ -1293,8 +1426,34 @@ class TestRules(unittest.TestCase):
             ],
             [
                 ("p1", RULE_TRUE, "Endoplasmic reticulum", "5"),
-                ("p1_with_leader_2_M", RULE_FALSE, "Cytoplasm", "95"),
             ],
+        )
+
+    def test_unanchored_leader_localization_rejects_coordinate_window(self):
+        with self.assertRaisesRegex(ValueError, "requires upstreamOfPfam"):
+            Leader().betweenAA(-30, 3).localize_at("Nucleus")
+
+    def test_anchored_leader_localization_evaluates_discovered_candidates(self):
+        pfam_row = self.fx.detected_row("p1", "", "PF00081.28", "Pfam")
+        pfam_row.update(query_start=6, query_end=15, target_start=1, target_end=10)
+        protein = FastaProtein("p1", "MAMAAA", pfam_rows=[pfam_row])
+        with tempfile.TemporaryDirectory() as tmpd:
+            deeploc_csv = os.path.join(tmpd, "deeploc.csv")
+            self.write_deeploc_csv(deeploc_csv, [
+                {"Protein_ID": "p1", "Localizations": "Cytoplasm"},
+                {"Protein_ID": "p1_with_leader_u3_PF00081_M", "Localizations": "Nucleus"},
+            ])
+            rule = (
+                Leader().upstreamOfPfam("PF00081").betweenAA(-5, -3)
+                .localize_at("Nucleus")
+            )
+            rows = Rules(rule).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), deeploc_csv=deeploc_csv,
+            )
+
+        self.assertEqual(
+            [(row["sequence accession"], row["pass all"]) for row in rows],
+            [("p1", RULE_FALSE), ("p1_with_leader_u3_PF00081_M", RULE_TRUE)],
         )
 
     def test_leader_deeploc_rules_require_csv_when_evaluating(self):

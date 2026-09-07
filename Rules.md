@@ -101,6 +101,51 @@ Pfam accessions are prefix-matched before the first dot. This means
 `PF00081` matches versioned hits such as `PF00081.28`. The rule returns `true`
 when any detected Pfam row for the protein matches, otherwise `false`.
 
+Use `.times(minimum, maximum)` to require an inclusive number of matches to one
+Pfam family:
+
+```python
+Pfam.matches("PF00023").times(3, 11)
+```
+
+The bounds may be supplied in either order and must be non-negative integers.
+By default, every matching HMMER domain row is counted, including overlapping
+hits. Set `overlap=False` to count the maximum number of mutually
+non-overlapping matches instead:
+
+```python
+Pfam.matches("PF00023").times(3, 11, overlap=False)
+```
+
+Match intervals use inclusive original-protein coordinates. Two hits overlap
+when they share at least one amino acid; adjacent intervals such as `1-10` and
+`11-20` do not overlap. The non-overlapping count uses the largest possible
+set of mutually non-overlapping intervals. Version suffixes are ignored when
+selecting the Pfam family. `.times(...)` is available on `Pfam.matches(...)`,
+not on KO rules.
+
+Use `.betweenAA(start, end)` to require a complete matching Pfam hit within an
+inclusive region of the original protein:
+
+```python
+Pfam.matches("PF00023").betweenAA(100, 500)
+```
+
+By default, the rule passes when at least one hit to the selected Pfam family
+is completely contained in the region. A hit that only overlaps a boundary
+does not pass. The bounds may be supplied in either order and must be positive
+integers.
+
+Set `all_matches=True` to require at least one hit to the selected family and
+require every hit to that family to be completely contained in the region:
+
+```python
+Pfam.matches("PF00023").betweenAA(100, 500, all_matches=True)
+```
+
+Hits to other Pfam families are ignored. `.betweenAA(...)` is available on
+`Pfam.matches(...)`, not on KO rules.
+
 Use `matches_any(...)` to accept any Pfam family in a set:
 
 ```python
@@ -519,8 +564,17 @@ Leader().localize_at("Endoplasmic reticulum")
 ```
 
 `localize_at(...)` uses an exact string match against the `Localizations`
-column. It still evaluates scoped leader candidates in the same way as other
-`Leader()` rules.
+column. Without `upstreamOfPfam(...)`, it evaluates only the original input
+sequence and does not perform leader discovery. An unanchored
+`betweenAA(...).localize_at(...)` expression is invalid because the coordinate
+window has no anchor.
+
+To discover leader candidates and test their localizations, anchor the window
+to a Pfam family:
+
+```python
+Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).localize_at("Nucleus")
+```
 
 ## Candidate Accessions
 
