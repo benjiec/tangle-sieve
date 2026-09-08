@@ -146,6 +146,29 @@ Pfam.matches("PF00023").betweenAA(100, 500, all_matches=True)
 Hits to other Pfam families are ignored. `.betweenAA(...)` is available on
 `Pfam.matches(...)`, not on KO rules.
 
+Use `.spansAA(minimum, maximum)` to constrain the inclusive envelope from the
+start of the first matching hit through the end of the last matching hit:
+
+```python
+Pfam.matches("PF00023").spansAA(130, 280)
+```
+
+The span is `last hit end - first hit start + 1`, including gaps between hits.
+The bounds may be supplied in either order and must be positive integers. The
+rule fails when there are no matching hits. Input hit order and reversed hit
+coordinates do not affect the result.
+
+The three Pfam-family constraints are composable in one expression:
+
+```python
+Pfam.matches("PF00023").times(4, 9).betweenAA(
+    60, 2000, all_matches=True
+).spansAA(130, 280)
+```
+
+This requires all three criteria to pass for the same Pfam family. Each
+constraint is reported as a separate column in `rule-results.tsv`.
+
 Use `matches_any(...)` to accept any Pfam family in a set:
 
 ```python

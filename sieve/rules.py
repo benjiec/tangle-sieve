@@ -682,10 +682,32 @@ class Pfam(object):
 class PfamMatchRule(DetectedTargetRule):
 
     def times(self, minimum, maximum, overlap=True):
-        return PfamMatchCountRule(self.accession, minimum, maximum, overlap)
+        return PfamMatchConstraintsRule(self.accession).times(minimum, maximum, overlap)
 
     def betweenAA(self, start, end, all_matches=False):
-        return PfamMatchPositionRule(self.accession, start, end, all_matches)
+        return PfamMatchConstraintsRule(self.accession).betweenAA(start, end, all_matches)
+
+    def spansAA(self, minimum, maximum):
+        return PfamMatchConstraintsRule(self.accession).spansAA(minimum, maximum)
+
+
+class PfamMatchConstraintsRule(AndRule):
+
+    def __init__(self, accession, rules=None):
+        self.accession = accession
+        super().__init__(*(rules or []))
+
+    def times(self, minimum, maximum, overlap=True):
+        rule = PfamMatchCountRule(self.accession, minimum, maximum, overlap)
+        return PfamMatchConstraintsRule(self.accession, self.rules + [rule])
+
+    def betweenAA(self, start, end, all_matches=False):
+        rule = PfamMatchPositionRule(self.accession, start, end, all_matches)
+        return PfamMatchConstraintsRule(self.accession, self.rules + [rule])
+
+    def spansAA(self, minimum, maximum):
+        rule = PfamMatchSpanRule(self.accession, minimum, maximum)
+        return PfamMatchConstraintsRule(self.accession, self.rules + [rule])
 
 
 class PfamMatchPositionRule(Rule):
@@ -764,6 +786,31 @@ class PfamMatchCountRule(Rule):
                 count += 1
                 previous_end = end
         return count
+
+
+class PfamMatchSpanRule(Rule):
+
+    def __init__(self, accession, minimum, maximum):
+        if not isinstance(minimum, int) or not isinstance(maximum, int):
+            raise TypeError("Pfam match-span bounds must be integers")
+        if minimum < 1 or maximum < 1:
+            raise ValueError("Pfam match-span bounds must be 1 or greater")
+        self.accession = accession
+        self.minimum = min(minimum, maximum)
+        self.maximum = max(minimum, maximum)
+        self.label = f"Pfam.matches('{accession}').spansAA({minimum}, {maximum})"
+
+    def evaluate(self, context):
+        intervals = [
+            (min(row["query_start"], row["query_end"]),
+             max(row["query_start"], row["query_end"]))
+            for row in context.protein.detected_pfam()
+            if _target_prefix(row["target_accession"]) == _target_prefix(self.accession)
+        ]
+        if not intervals:
+            return RULE_FALSE
+        span = max(end for _start, end in intervals) - min(start for start, _end in intervals) + 1
+        return _rule_bool(self.minimum <= span <= self.maximum)
 
 
 class DetectedTargetSetRule(Rule):

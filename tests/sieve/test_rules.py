@@ -461,6 +461,59 @@ class TestRules(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "all_matches"):
             Pfam.matches("PF00023").betweenAA(1, 10, all_matches=1)
 
+    def test_pfam_match_constraints_can_chain_count_region_and_span(self):
+        cases = [
+            ("minimum_span", [(120, 100), (140, 160), (180, 200), (210, 229)], RULE_TRUE),
+            ("maximum_span", [(100, 120), (140, 160), (180, 200), (350, 379)], RULE_TRUE),
+            ("span_too_short", [(100, 105), (110, 115), (120, 125), (126, 129)], RULE_FALSE),
+            ("outside_region", [(50, 70), (100, 120), (150, 170), (210, 229)], RULE_FALSE),
+            ("too_few", [(100, 120), (150, 170), (210, 229)], RULE_FALSE),
+        ]
+        proteins = [
+            FastaProtein(name, "M" * 2000, pfam_rows=[
+                {"target_accession": "PF00023.9", "query_start": start, "query_end": end}
+                for start, end in intervals
+            ] + [{
+                "target_accession": "PF99999", "query_start": 1, "query_end": 2000,
+            }])
+            for name, intervals, _expected in cases
+        ]
+        rule = (
+            Pfam.matches("PF00023").times(4, 9)
+            .betweenAA(60, 2000, all_matches=True)
+            .spansAA(130, 280)
+        )
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(rule).check_proteins(
+                proteins, os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+
+        self.assertEqual(
+            {row["protein accession"]: row["pass all"] for row in rows},
+            {name: expected for name, _intervals, expected in cases},
+        )
+
+    def test_pfam_match_span_handles_reversed_bounds_no_hits_and_invalid_arguments(self):
+        proteins = [
+            FastaProtein("exact", "M" * 300, pfam_rows=[
+                {"target_accession": "PF00023", "query_start": 229, "query_end": 200},
+                {"target_accession": "PF00023", "query_start": 100, "query_end": 120},
+            ]),
+            FastaProtein("zero", "M" * 300, pfam_rows=[]),
+        ]
+        with tempfile.TemporaryDirectory() as tmpd:
+            rows = Rules(Pfam.matches("PF00023").spansAA(280, 130)).check_proteins(
+                proteins, os.path.join(tmpd, "rules.tsv"), trace=False,
+            )
+        self.assertEqual(
+            {row["protein accession"]: row["pass all"] for row in rows},
+            {"exact": RULE_TRUE, "zero": RULE_FALSE},
+        )
+
+        for arguments, error in [((1.5, 10), TypeError), ((0, 10), ValueError)]:
+            with self.subTest(arguments=arguments), self.assertRaises(error):
+                Pfam.matches("PF00023").spansAA(*arguments)
+
     def test_rule_invert_rejects_matching_pfam_and_preserves_error_states(self):
         proteins = [
             FastaProtein("match", "MA", pfam_rows=[{"target_accession": "PF00001.4"}]),
