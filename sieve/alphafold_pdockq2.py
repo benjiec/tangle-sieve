@@ -247,3 +247,14 @@ def write_rows(rows, output):
 def best_row(rows, scope=None):
     candidates = rows if scope is None else [row for row in rows if row["scope"] == scope]
     return max(candidates, key=lambda row: row["pDockQ2 max"]) if candidates else None
+
+
+def best_rows_by_pair(rows):
+    grouped = {}
+    for row in rows:
+        key = (row["chain 1"], row["chain 2"])
+        grouped.setdefault(key, []).append(row)
+    return [
+        (key, best_row(grouped[key], "full"), best_row(grouped[key], "regional"))
+        for key in sorted(grouped)
+    ]

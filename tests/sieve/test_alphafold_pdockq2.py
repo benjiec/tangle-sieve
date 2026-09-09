@@ -3,6 +3,7 @@ import unittest
 
 from sieve.alphafold_pdockq2 import (
     Residue,
+    best_rows_by_pair,
     collect_regions,
     parse_region,
     score_pair,
@@ -121,6 +122,23 @@ class ScoreTests(unittest.TestCase):
         bc_rows = [row for row in rows if row["chain 1"] == "B" and row["chain 2"] == "C"]
         self.assertEqual(len(bc_rows), 1)
         self.assertEqual(bc_rows[0]["scope"], "full")
+
+    def test_best_rows_are_selected_independently_for_each_pair_and_scope(self):
+        rows = [
+            {"chain 1": "A", "chain 2": "B", "scope": "full", "model": 0, "pDockQ2 max": 0.2},
+            {"chain 1": "A", "chain 2": "B", "scope": "full", "model": 1, "pDockQ2 max": 0.4},
+            {"chain 1": "A", "chain 2": "B", "scope": "regional", "model": 0, "pDockQ2 max": 0.6},
+            {"chain 1": "A", "chain 2": "C", "scope": "full", "model": 0, "pDockQ2 max": 0.8},
+            {"chain 1": "A", "chain 2": "C", "scope": "full", "model": 1, "pDockQ2 max": 0.3},
+        ]
+        selected = best_rows_by_pair(rows)
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(selected[0][0], ("A", "B"))
+        self.assertEqual(selected[0][1]["model"], 1)
+        self.assertEqual(selected[0][2]["model"], 0)
+        self.assertEqual(selected[1][0], ("A", "C"))
+        self.assertEqual(selected[1][1]["model"], 0)
+        self.assertIsNone(selected[1][2])
 
 
 if __name__ == "__main__":
