@@ -85,30 +85,31 @@ class TestPfamExtractRegionScript(unittest.TestCase):
         self.assertIn("found 0", reports[1])
         self.assertIn("outside sequence length 5", reports[2])
 
-    def test_rejects_x_anywhere_in_full_sequence(self):
+    def test_preserves_x_in_extracted_regions(self):
         reports = []
         matches = [(2, 2), (3, 3), (4, 4), (5, 5)]
         extracted = self.script.extract_regions(
             {
                 "inside": "ABXDEF",
                 "outside": "ABCDEX",
-                "accepted": "ABCDEF",
+                "boundaries": "AXCDXF",
             },
             {
                 "inside": matches,
                 "outside": matches,
-                "accepted": matches,
+                "boundaries": matches,
             },
             "PF00023",
             4,
             9,
             report=reports.append,
         )
-        self.assertEqual(extracted, {"accepted_PF00023_4_9": "BCDE"})
-        self.assertEqual(reports, [
-            "Ignoring inside: sequence contains X",
-            "Ignoring outside: sequence contains X",
-        ])
+        self.assertEqual(extracted, {
+            "inside_PF00023_4_9": "BXDE",
+            "outside_PF00023_4_9": "BCDE",
+            "boundaries_PF00023_4_9": "XCDX",
+        })
+        self.assertEqual(reports, [])
 
     def test_main_reads_and_writes_fasta(self):
         with tempfile.TemporaryDirectory() as tmpd:

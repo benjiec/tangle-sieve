@@ -89,10 +89,6 @@ def extract_regions(sequences, matches, pfam_accession, minimum, maximum, report
     extracted = {}
 
     for accession, sequence in sequences.items():
-        if "X" in sequence:
-            report(f"Ignoring {accession}: sequence contains X")
-            continue
-
         sequence_matches = matches.get(accession, [])
         count = len(sequence_matches)
         if not minimum <= count <= maximum:
