@@ -10,7 +10,9 @@ from sieve.alphafold_pdockq2 import (
     parse_region,
     score_pair,
     score_model,
+    score_column_name,
     score_pairs,
+    scores_by_model_and_column,
     validate_regions,
 )
 
@@ -24,15 +26,15 @@ class RegionTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_region(value)
 
-    def test_collects_disjoint_regions_as_union(self):
+    def test_collects_one_region_per_chain(self):
         self.assertEqual(
-            collect_regions(["A:20-40", "A:1-10", "B:2-3"]),
-            {"A": [(1, 10), (20, 40)], "B": [(2, 3)]},
+            collect_regions(["A:20-40", "B:2-3"]),
+            {"A": [(20, 40)], "B": [(2, 3)]},
         )
 
-    def test_rejects_overlapping_regions(self):
-        with self.assertRaisesRegex(ValueError, "overlaps"):
-            collect_regions(["A:1-10", "A:10-20"])
+    def test_rejects_more_than_one_region_for_same_chain(self):
+        with self.assertRaisesRegex(ValueError, "more than one region specified for chain A"):
+            collect_regions(["A:1-10", "A:20-30"])
 
     def test_rejects_unknown_chain_and_absent_residue(self):
         residues = {"A": [Residue("A", 1, 0, 90.0, (0.0, 0.0, 0.0))]}
@@ -170,6 +172,19 @@ class ScoreTests(unittest.TestCase):
         row = {"model": 0, "chain 1": "A", "chain 2": "B", "scope": "full", "pDockQ2 max": 0.4}
         with self.assertRaisesRegex(ValueError, "duplicate full score"):
             full_scores_by_model_and_pair([row, row])
+
+    def test_full_and_regional_score_column_names(self):
+        row = {
+            "model": 0, "scope": "full", "chain 1": "A", "chain 2": "B",
+            "region 1": "all", "region 2": "all", "pDockQ2 max": 0.4,
+        }
+        regional = dict(row, scope="regional", **{"region 1": "170-280", "region 2": "all"})
+        self.assertEqual(score_column_name(row), "A_B_pDockQ2_max")
+        self.assertEqual(score_column_name(regional), "A_170-280_B_all_pDockQ2_max")
+        self.assertEqual(scores_by_model_and_column([row, regional]), {
+            (0, "A_B_pDockQ2_max"): 0.4,
+            (0, "A_170-280_B_all_pDockQ2_max"): 0.4,
+        })
 
 
 if __name__ == "__main__":

@@ -44,12 +44,9 @@ def collect_regions(values):
     regions = {}
     for value in values:
         chain, start, end = parse_region(value)
-        ranges = regions.setdefault(chain, [])
-        if any(start <= old_end and old_start <= end for old_start, old_end in ranges):
-            raise ValueError(f"region {value!r} overlaps another region for chain {chain}")
-        ranges.append((start, end))
-    for ranges in regions.values():
-        ranges.sort()
+        if chain in regions:
+            raise ValueError(f"more than one region specified for chain {chain}")
+        regions[chain] = [(start, end)]
     return regions
 
 
@@ -279,5 +276,24 @@ def full_scores_by_model_and_pair(rows):
                 f"duplicate full score for model {row['model']} pair "
                 f"{row['chain 1']}-{row['chain 2']}"
             )
+        scores[key] = row["pDockQ2 max"]
+    return scores
+
+
+def score_column_name(row):
+    if row["scope"] == "full":
+        return f"{row['chain 1']}_{row['chain 2']}_pDockQ2_max"
+    return (
+        f"{row['chain 1']}_{row['region 1']}_"
+        f"{row['chain 2']}_{row['region 2']}_pDockQ2_max"
+    )
+
+
+def scores_by_model_and_column(rows):
+    scores = {}
+    for row in rows:
+        key = (row["model"], score_column_name(row))
+        if key in scores:
+            raise ValueError(f"duplicate score for model {key[0]} column {key[1]}")
         scores[key] = row["pDockQ2 max"]
     return scores
