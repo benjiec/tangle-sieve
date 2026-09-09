@@ -258,3 +258,26 @@ def best_rows_by_pair(rows):
         (key, best_row(grouped[key], "full"), best_row(grouped[key], "regional"))
         for key in sorted(grouped)
     ]
+
+
+def best_full_scores_by_pair(rows):
+    return {
+        key: full["pDockQ2 max"]
+        for key, full, _regional in best_rows_by_pair(rows)
+        if full is not None
+    }
+
+
+def full_scores_by_model_and_pair(rows):
+    scores = {}
+    for row in rows:
+        if row["scope"] != "full":
+            continue
+        key = (row["model"], row["chain 1"], row["chain 2"])
+        if key in scores:
+            raise ValueError(
+                f"duplicate full score for model {row['model']} pair "
+                f"{row['chain 1']}-{row['chain 2']}"
+            )
+        scores[key] = row["pDockQ2 max"]
+    return scores

@@ -3,8 +3,10 @@ import unittest
 
 from sieve.alphafold_pdockq2 import (
     Residue,
+    best_full_scores_by_pair,
     best_rows_by_pair,
     collect_regions,
+    full_scores_by_model_and_pair,
     parse_region,
     score_pair,
     score_model,
@@ -139,6 +141,35 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(selected[1][0], ("A", "C"))
         self.assertEqual(selected[1][1]["model"], 0)
         self.assertIsNone(selected[1][2])
+
+    def test_best_full_scores_by_pair_ignores_regional_rows(self):
+        rows = [
+            {"chain 1": "A", "chain 2": "B", "scope": "full", "pDockQ2 max": 0.4},
+            {"chain 1": "A", "chain 2": "B", "scope": "regional", "pDockQ2 max": 0.9},
+            {"chain 1": "A", "chain 2": "C", "scope": "full", "pDockQ2 max": 0.3},
+        ]
+        self.assertEqual(
+            best_full_scores_by_pair(rows),
+            {("A", "B"): 0.4, ("A", "C"): 0.3},
+        )
+
+    def test_full_scores_are_pres_by_model_and_pair(self):
+        rows = [
+            {"model": 0, "chain 1": "A", "chain 2": "B", "scope": "full", "pDockQ2 max": 0.4},
+            {"model": 1, "chain 1": "A", "chain 2": "B", "scope": "full", "pDockQ2 max": 0.8},
+            {"model": 1, "chain 1": "A", "chain 2": "B", "scope": "regional", "pDockQ2 max": 0.9},
+            {"model": 0, "chain 1": "A", "chain 2": "C", "scope": "full", "pDockQ2 max": 0.3},
+        ]
+        self.assertEqual(full_scores_by_model_and_pair(rows), {
+            (0, "A", "B"): 0.4,
+            (1, "A", "B"): 0.8,
+            (0, "A", "C"): 0.3,
+        })
+
+    def test_duplicate_full_model_pair_is_rejected(self):
+        row = {"model": 0, "chain 1": "A", "chain 2": "B", "scope": "full", "pDockQ2 max": 0.4}
+        with self.assertRaisesRegex(ValueError, "duplicate full score"):
+            full_scores_by_model_and_pair([row, row])
 
 
 if __name__ == "__main__":
