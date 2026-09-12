@@ -549,6 +549,16 @@ Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).is_mTP(deeploc=True)
 Leader().is_SP(deeploc=True)
 ```
 
+`Leader().is_NLS()` and `Leader().is_NES()` always use DeepLoc and require the
+same CSV. They support the same `betweenAA(...)` and `upstreamOfPfam(...)`
+scoping as `is_mTP()` and `is_SP()`. Each checks its own signal call for `100`,
+so both pass when both nuclear signals are present. For example:
+
+```python
+Leader().is_NLS() & Leader().is_NES()
+Leader().upstreamOfPfam("PF00081").betweenAA(-45, -15).is_NLS()
+```
+
 When a rule uses DeepLoc, the filtering script must be given a DeepLoc result
 CSV with `--deeploc-csv`. Sieve does not run DeepLoc itself.
 
@@ -568,7 +578,15 @@ For signal rules, Sieve reads the `Signals` column:
 
 * `Mitochondrial transit peptide` is treated as `Leader.call('mTP') == 100`.
 * `Signal peptide` is treated as `Leader.call('SP') == 100`.
-* A blank or unrecognized signal gives both `mTP` and `SP` a score of `0`.
+* `Nuclear localization signal` is treated as `Leader.call('NLS') == 100`.
+* `Nuclear export signal` is treated as `Leader.call('NES') == 100`.
+* Each absent signal receives `0`; a blank or unrecognized signal gives all
+  four calls a score of `0`.
+
+Signals separated by `|` are scored independently, with surrounding whitespace
+ignored and exact, case-sensitive matching. For example,
+`Nuclear localization signal|Nuclear export signal` gives both `NLS` and `NES`
+a score of `100`.
 
 Other numeric DeepLoc columns are copied into rule results as percentage-valued
 leader calls. For example, a CSV column named `Endoplasmic reticulum` with a

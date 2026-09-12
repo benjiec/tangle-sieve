@@ -33,7 +33,11 @@ DEEPLOC_LOCALIZATIONS_COLUMN = "Localizations"
 DEEPLOC_SIGNALS_COLUMN = "Signals"
 DEEPLOC_MTP_SIGNAL = "Mitochondrial transit peptide"
 DEEPLOC_SP_SIGNAL = "Signal peptide"
-DEEPLOC_SIGNAL_PREDICTIONS = ["mTP", "SP"]
+DEEPLOC_NUCLEAR_SIGNALS = {
+    "NLS": "Nuclear localization signal",
+    "NES": "Nuclear export signal",
+}
+DEEPLOC_SIGNAL_PREDICTIONS = ["mTP", "SP", *DEEPLOC_NUCLEAR_SIGNALS]
 LEADER_LOCALIZATION_COLUMN = "Leader.localization"
 
 
@@ -1193,6 +1197,12 @@ class Leader(Rule):
         source = "deeploc" if deeploc else "targetp"
         return LeaderRule("SP", self.window_start, self.window_end, self.pfam_accession, source=source)
 
+    def is_NLS(self):
+        return LeaderRule("NLS", self.window_start, self.window_end, self.pfam_accession, source="deeploc")
+
+    def is_NES(self):
+        return LeaderRule("NES", self.window_start, self.window_end, self.pfam_accession, source="deeploc")
+
     def is_noTP(self):
         return LeaderRule("noTP", self.window_start, self.window_end, self.pfam_accession)
 
@@ -1243,6 +1253,8 @@ class LeaderRule(Rule):
             base += f".betweenAA({self.window_start}, {self.window_end})"
         if self.call_type == "localization":
             return f"{base}.localize_at('{self.prediction}')"
+        if self.source == "deeploc" and self.prediction in DEEPLOC_NUCLEAR_SIGNALS:
+            return f"{base}.is_{self.prediction}()"
         if self.source == "deeploc":
             return f"{base}.is_{self.prediction}(deeploc=True)"
         return f"{base}.is_{self.prediction}()"
@@ -1404,7 +1416,7 @@ class LeaderRule(Rule):
             return candidates
         matching_starts = {
             start
-            for start, call in _parse_leader_calls(row)
+            for start, call in _parse_leader_calls(row.get("_Leader.calls_by_start", {}))
             if self._columns_match_prediction(call)
         }
         if self.pfam_accession is not None:
@@ -1415,18 +1427,20 @@ class LeaderRule(Rule):
         ]
 
     def _leader_call_matches(self, row):
-        if self.call_type == "localization":
-            return row.get(LEADER_LOCALIZATION_COLUMN, "") == self.prediction
-        return _leader_call_prediction_from_columns(row) == self.prediction
+        return self._columns_match_prediction(row)
 
     def _columns_match_prediction(self, columns):
         if self.call_type == "localization":
             return columns.get(LEADER_LOCALIZATION_COLUMN, "") == self.prediction
+        if self.source == "deeploc" and self.prediction in DEEPLOC_NUCLEAR_SIGNALS:
+            return _parse_probability(columns.get(_leader_call_column(self.prediction), "")) == 100
         return _leader_call_prediction_from_columns(columns) == self.prediction
 
     def _call_matches_prediction(self, call):
         if self.call_type == "localization":
             return call.localization == self.prediction
+        if self.source == "deeploc" and self.prediction in DEEPLOC_NUCLEAR_SIGNALS:
+            return call.probability(self.prediction) == 1.0
         return call.prediction == self.prediction
 
     def scope_sequence_candidates(self, protein, candidates, row):
@@ -1549,7 +1563,7 @@ def _format_deeploc_columns(call):
         LEADER_LOCALIZATION_COLUMN: call.localization,
     }
     for prediction in DEEPLOC_SIGNAL_PREDICTIONS:
-        columns[TARGETP_PROBABILITY_COLUMNS[prediction]] = _format_probability_percent(call.probability(prediction))
+        columns[_leader_call_column(prediction)] = _format_probability_percent(call.probability(prediction))
     for prediction in sorted(call.probabilities):
         if prediction in DEEPLOC_SIGNAL_PREDICTIONS:
             continue
@@ -1657,6 +1671,8 @@ def _parse_deeploc_csv(path):
             elif DEEPLOC_SP_SIGNAL in signals:
                 prediction = "SP"
                 probabilities["SP"] = 1.0
+            for name, signal in DEEPLOC_NUCLEAR_SIGNALS.items():
+                probabilities[name] = 1.0 if signal in signals else 0.0
             for column in score_columns:
                 probability = _parse_probability(row.get(column, ""))
                 if probability is not None:
@@ -1671,7 +1687,7 @@ def _parse_deeploc_csv(path):
 
 def _deeploc_annotation_columns(calls):
     columns = [
-        TARGETP_PROBABILITY_COLUMNS[prediction]
+        _leader_call_column(prediction)
         for prediction in DEEPLOC_SIGNAL_PREDICTIONS
     ]
     columns.append(LEADER_LOCALIZATION_COLUMN)

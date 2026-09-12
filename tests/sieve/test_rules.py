@@ -41,6 +41,7 @@ from sieve.rules import (
     _edge_distance,
     _parse_gimme_scan_output,
     _parse_deeploc_csv,
+    _format_deeploc_columns,
     _parse_targetp_output,
     _targetp_call,
 )
@@ -1394,7 +1395,7 @@ class TestRules(unittest.TestCase):
                 {
                     "Protein_ID": "p1_with_leader_2_M",
                     "Localizations": "Endoplasmic reticulum",
-                    "Signals": "Mitochondrial transit peptide|Signal peptide",
+                    "Signals": "Mitochondrial transit peptide|Signal peptide|Nuclear localization signal|Nuclear export signal",
                     "Cytoplasm": "0.1",
                     "Endoplasmic reticulum": "0.88",
                     "Soluble": "0.2",
@@ -1427,6 +1428,9 @@ class TestRules(unittest.TestCase):
             ],
         )
         self.assertEqual(output_rows[1]["Leader.call('Soluble')"], "20")
+        for name in ("NLS", "NES"):
+            self.assertEqual(output_rows[0][f"Leader.call('{name}')"], "0")
+            self.assertEqual(output_rows[1][f"Leader.call('{name}')"], "100")
 
     def test_leader_deeploc_sp_uses_signal_peptide(self):
         protein = FastaProtein("p1", "MMT")
@@ -1481,6 +1485,89 @@ class TestRules(unittest.TestCase):
                 ("p1", RULE_TRUE, "Endoplasmic reticulum", "5"),
             ],
         )
+
+    def test_nuclear_signal_predicates_and_combinations(self):
+        cases = [
+            ("", False, False),
+            ("Nuclear localization signal", True, False),
+            ("Nuclear export signal", False, True),
+            (" Nuclear localization signal | Nuclear export signal | Signal peptide | Mitochondrial transit peptide ", True, True),
+            ("nuclear localization signal|unknown", False, False),
+        ]
+        for signals, nls, nes in cases:
+            for kind in ("NLS", "NES", "and", "or"):
+                with self.subTest(signals=signals, kind=kind), tempfile.TemporaryDirectory() as tmpd:
+                    protein = FastaProtein("p1", "MMT")
+                    left, right = Leader().is_NLS(), Leader().is_NES()
+                    rule, expected = {
+                        "NLS": (left, nls), "NES": (right, nes),
+                        "and": (left & right, nls and nes),
+                        "or": (left | right, nls or nes),
+                    }[kind]
+                    path = os.path.join(tmpd, "deeploc.csv")
+                    self.write_deeploc_csv(path, [
+                        {"Protein_ID": "p1", "Signals": ""},
+                        {"Protein_ID": "p1_with_leader_2_M", "Signals": signals},
+                    ])
+                    rows = Rules(rule).check_proteins(
+                        [protein], os.path.join(tmpd, "rules.tsv"), deeploc_csv=path,
+                    )
+                    self.assertEqual(
+                        [(row["sequence accession"], row["pass all"]) for row in rows],
+                        [("p1", RULE_FALSE), ("p1_with_leader_2_M", RULE_TRUE if expected else RULE_FALSE)],
+                    )
+                    if kind in ("NLS", "NES"):
+                        context = RuleContext(protein)
+                        results = rule.evaluate_many([context], deeploc_csv=path)
+                        self.assertEqual(results[context.key], RULE_TRUE if expected else RULE_FALSE)
+                        aggregate = {rule.label: results[context.key]}
+                        aggregate.update(rule.annotations_many([context], results)[context.key])
+                        candidates = rule._scoped_candidates(protein)
+                        filtered = rule.filter_sequence_candidates(protein, candidates, aggregate)
+                        self.assertEqual(
+                            [candidate.accession for candidate in filtered],
+                            ["p1_with_leader_2_M"] if expected else [],
+                        )
+                        for row in rows:
+                            self.assertEqual(
+                                bool(rule.filter_sequence_candidates(protein, candidates, row)),
+                                row["pass all"] == RULE_TRUE,
+                            )
+
+    def test_nuclear_signal_predicates_require_complete_deeploc_csv(self):
+        for name in ("NLS", "NES"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpd:
+                rule = getattr(Leader(), f"is_{name}")()
+                self.assertEqual(rule.label, f"Leader().betweenAA(-30, 3).is_{name}()")
+                protein = FastaProtein("p1", "MMT")
+                output = os.path.join(tmpd, "rules.tsv")
+                with self.assertRaisesRegex(ValueError, "--deeploc-csv is required"):
+                    Rules(rule).check_proteins([protein], output)
+                path = os.path.join(tmpd, "deeploc.csv")
+                self.write_deeploc_csv(path, [{"Protein_ID": "p1", "Signals": ""}])
+                rows = Rules(rule).check_proteins([protein], output, deeploc_csv=path)
+                self.assertTrue(rows)
+                self.assertTrue(all(row[rule.label] == RULE_ERROR for row in rows))
+
+    def test_nuclear_signal_predicates_preserve_pfam_window(self):
+        for name, signal in (("NLS", "Nuclear localization signal"), ("NES", "Nuclear export signal")):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpd:
+                pfam_row = self.fx.detected_row("p1", "", "PF00081.28", "Pfam")
+                pfam_row.update(query_start=6, query_end=15, target_start=1, target_end=10)
+                protein = FastaProtein("p1", "MAMAAA", pfam_rows=[pfam_row])
+                rule = getattr(Leader().upstreamOfPfam("PF00081").betweenAA(-5, -3), f"is_{name}")()
+                path = os.path.join(tmpd, "deeploc.csv")
+                self.write_deeploc_csv(path, [
+                    {"Protein_ID": "p1", "Signals": ""},
+                    {"Protein_ID": "p1_with_leader_u3_PF00081_M", "Signals": signal},
+                ])
+                rows = Rules(rule).check_proteins(
+                    [protein], os.path.join(tmpd, "rules.tsv"), deeploc_csv=path,
+                )
+                self.assertEqual(
+                    [(row["sequence accession"], row["pass all"]) for row in rows],
+                    [("p1", RULE_FALSE), ("p1_with_leader_u3_PF00081_M", RULE_TRUE)],
+                )
 
     def test_unanchored_leader_localization_rejects_coordinate_window(self):
         with self.assertRaisesRegex(ValueError, "requires upstreamOfPfam"):
@@ -2072,6 +2159,34 @@ class TestRuleParsingHelpers(unittest.TestCase):
         self.assertEqual(parsed["seq3"].prediction, "mTP")
         self.assertEqual(parsed["seq3"].probability("mTP"), 1.0)
         self.assertEqual(parsed["seq3"].probability("SP"), 1.0)
+
+    def test_deeploc_nuclear_signal_calls(self):
+        cases = [
+            ("Nuclear localization signal", "100", "0"),
+            ("Nuclear export signal", "0", "100"),
+            ("Nuclear localization signal|Nuclear export signal", "100", "100"),
+            (" | Nuclear export signal | Nuclear localization signal || ", "100", "100"),
+            ("Nuclear localization signal|Nuclear localization signal", "100", "0"),
+            ("", "0", "0"),
+            ("Peroxisomal targeting signal", "0", "0"),
+            ("nuclear localization signal|Nuclear Export Signal", "0", "0"),
+            ("Nuclear localization signal extra|prefix Nuclear export signal", "0", "0"),
+            ("Nuclear localization signal,Nuclear export signal", "0", "0"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpd:
+            path = os.path.join(tmpd, "deeploc.csv")
+            self.write_deeploc_csv(path, [
+                {"Protein_ID": str(index), "Signals": signals}
+                for index, (signals, _nls, _nes) in enumerate(cases)
+            ])
+            parsed = _parse_deeploc_csv(path)
+        for index, (signals, nls, nes) in enumerate(cases):
+            with self.subTest(signals=signals):
+                columns = _format_deeploc_columns(parsed[str(index)])
+                self.assertEqual(columns["Leader.call('NLS')"], nls)
+                self.assertEqual(columns["Leader.call('NES')"], nes)
+                self.assertEqual(columns["Leader.call('mTP')"], "0")
+                self.assertEqual(columns["Leader.call('SP')"], "0")
 
     def test_parse_targetp_output(self):
         parsed = _parse_targetp_output("\n".join([
