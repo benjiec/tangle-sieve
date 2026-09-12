@@ -35,3 +35,8 @@ class ArtifactProtein(object):
         if self._curated is None:
             raise ValueError(f"Genomic locus is not available for FASTA-only protein {self.protein_accession}")
         return self._curated.genomic_locus_with_leader()
+
+    def genomic_locus_window(self, start, end):
+        if self._curated is None:
+            raise ValueError(f"Genomic locus is not available for FASTA-only protein {self.protein_accession}")
+        return self._curated.genomic_locus_window(start, end)

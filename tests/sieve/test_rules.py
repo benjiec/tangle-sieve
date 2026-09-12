@@ -11,6 +11,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from tangle.detected import DetectedTable
+from sieve.artifact_protein import ArtifactProtein
 from sieve.fasta_protein import FastaProtein
 from sieve.protein import (
     CuratedProtein,
@@ -2146,7 +2147,7 @@ class TestRules(unittest.TestCase):
                 f"ctg1\tsrc\tmRNA\t21\t40\t.\t{strand}\t.\tID=tx1",
                 f"ctg1\tsrc\tCDS\t24\t37\t.\t{strand}\t0\tID=cds1;Parent=tx1;protein_id=p1", "",
             ]))
-            protein = CuratedProtein("p1", genome)
+            proteins = [CuratedProtein("p1", genome), ArtifactProtein("p1", genome, "MGP")]
             # Independent expected sequence: enumerate contig positions in gene direction.
             anchor = 20 if strand == "+" else 39
             step = 1 if strand == "+" else -1
@@ -2156,8 +2157,12 @@ class TestRules(unittest.TestCase):
                                    if 0 <= anchor + step * offset < len(contig))
                 if strand == "-":
                     expected = str(Seq(expected).complement())
-                for base in (TFMotifs.has("A"), TFMotifs.has_within(20, "A", "B")):
-                    with self.subTest(strand=strand, start=start, end=end, rule=base.label):
+                for base, protein in (
+                    (base, protein) for base in (TFMotifs.has("A"), TFMotifs.has_within(20, "A", "B"))
+                    for protein in proteins
+                ):
+                    with self.subTest(strand=strand, start=start, end=end, rule=base.label,
+                                      protein_type=type(protein).__name__):
                         rule = base.between(start, end)
                         def scan(cmd, **kwargs):
                             with open(cmd[2]) as fasta:
@@ -2169,6 +2174,17 @@ class TestRules(unittest.TestCase):
                                 rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
                         self.assertEqual(rows[0][rule.label], RULE_YES if expected else RULE_FALSE)
                         self.assertEqual(run.call_count, int(bool(expected)))
+
+    def test_artifact_protein_without_genome_has_no_window(self):
+        protein = ArtifactProtein("fasta1", "", "MA")
+        with self.assertRaisesRegex(ValueError, "Genomic locus is not available"):
+            protein.genomic_locus_window(-1500, 500)
+        rule = TFMotifs.has("A").between(-1500, 500)
+        with patch("sieve.rules.subprocess.run") as run:
+            with tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+        run.assert_not_called()
+        self.assertEqual(rows[0][rule.label], RULE_NOT_APPLICABLE)
 
     def test_tf_motifs_between_rejects_noninteger_bounds(self):
         for base in (TFMotifs.has("A"), TFMotifs.has_within(20, "A", "B")):
