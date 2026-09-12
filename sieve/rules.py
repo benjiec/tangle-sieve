@@ -1801,28 +1801,21 @@ def _parse_targetp_output(text):
 class TFMotifs(object):
 
     @staticmethod
+    def has(motif, min_score_threshold=8):
+        return TFMotifHasRule(motif, min_score_threshold)
+
+    @staticmethod
     def has_within(distance, motif_a, motif_b, min_score_threshold=8):
         return TFMotifWithinRule(distance, motif_a, motif_b, min_score_threshold)
 
 
-class TFMotifWithinRule(Rule):
-
-    def __init__(self, distance, motif_a, motif_b, min_score_threshold, scope=None):
-        self.distance = distance
-        self.motif_a = motif_a
-        self.motif_b = motif_b
-        self.min_score_threshold = min_score_threshold
-        self.scope = scope
-        self.label = self._label()
+class _TFMotifRule(Rule):
 
     def uses_genomic_locus(self):
         return True
 
     def _label(self):
-        base = (
-            f"TFMotifs.has_within({self.distance}, '{self.motif_a}', '{self.motif_b}', "
-            f"min_score_threshold={self.min_score_threshold})"
-        )
+        base = self._base_label()
         if self.scope is None:
             return base
         scope_type = self.scope[0]
@@ -1842,33 +1835,17 @@ class TFMotifWithinRule(Rule):
 
     def in_intron(self, intron_number=None):
         self._require_unscoped()
-        return TFMotifWithinRule(
-            self.distance,
-            self.motif_a,
-            self.motif_b,
-            self.min_score_threshold,
-            scope=("intron", intron_number),
-        )
+        return self._with_scope(("intron", intron_number))
 
     def in_exon(self, exon_number=None):
         self._require_unscoped()
-        return TFMotifWithinRule(
-            self.distance,
-            self.motif_a,
-            self.motif_b,
-            self.min_score_threshold,
-            scope=("exon", exon_number),
-        )
+        return self._with_scope(("exon", exon_number))
 
     def between(self, start, end):
         self._require_unscoped()
-        return TFMotifWithinRule(
-            self.distance,
-            self.motif_a,
-            self.motif_b,
-            self.min_score_threshold,
-            scope=("between", start, end),
-        )
+        if type(start) is not int or type(end) is not int:
+            raise ValueError("Window bounds must be integers")
+        return self._with_scope(("between", start, end))
 
     def _require_unscoped(self):
         if self.scope is not None:
@@ -1887,7 +1864,14 @@ class TFMotifWithinRule(Rule):
         loci = {}
         for sequence_id, context in sequence_ids.items():
             try:
-                loci[sequence_id] = context.protein.genomic_locus_with_leader()
+                if self.scope is not None and self.scope[0] == "between":
+                    locus = context.protein.genomic_locus_window(*self.scope[1:])
+                    if locus is None:
+                        results[context.key] = RULE_FALSE
+                        continue
+                else:
+                    locus = context.protein.genomic_locus_with_leader()
+                loci[sequence_id] = locus
             except Exception as e:
                 print(f"{self.label} failed for {context.key}: {e}", file=sys.stderr)
         if not loci:
@@ -1926,6 +1910,56 @@ class TFMotifWithinRule(Rule):
                 print(f"{self.label} failed for {context.key}: {e}", file=sys.stderr)
                 results[context.key] = RULE_ERROR
         return results
+
+
+class TFMotifHasRule(_TFMotifRule):
+
+    def __init__(self, motif, min_score_threshold, scope=None):
+        self.motif = motif
+        self.min_score_threshold = min_score_threshold
+        self.scope = scope
+        self.label = self._label()
+
+    def _base_label(self):
+        return f"TFMotifs.has('{self.motif}', min_score_threshold={self.min_score_threshold})"
+
+    def _with_scope(self, scope):
+        return TFMotifHasRule(self.motif, self.min_score_threshold, scope=scope)
+
+    def _evaluate_locus(self, locus, hits):
+        intervals = _scope_intervals(locus, self.scope)
+        if not intervals:
+            return RULE_FALSE
+        for hit in hits:
+            if hit.score < self.min_score_threshold:
+                continue
+            if _motif_matches(hit.feature, self.motif) and _hit_in_any_interval(
+                *hit.normalized_interval(), intervals
+            ):
+                return RULE_YES
+        return f"missing_{_safe_result_value(self.motif)}"
+
+
+class TFMotifWithinRule(_TFMotifRule):
+
+    def __init__(self, distance, motif_a, motif_b, min_score_threshold, scope=None):
+        self.distance = distance
+        self.motif_a = motif_a
+        self.motif_b = motif_b
+        self.min_score_threshold = min_score_threshold
+        self.scope = scope
+        self.label = self._label()
+
+    def _base_label(self):
+        return (
+            f"TFMotifs.has_within({self.distance}, '{self.motif_a}', '{self.motif_b}', "
+            f"min_score_threshold={self.min_score_threshold})"
+        )
+
+    def _with_scope(self, scope):
+        return TFMotifWithinRule(
+            self.distance, self.motif_a, self.motif_b, self.min_score_threshold, scope=scope
+        )
 
     def _evaluate_locus(self, locus, hits):
         intervals = _scope_intervals(locus, self.scope)
@@ -2017,7 +2051,8 @@ def _scope_intervals(locus, scope):
         interval = _exon_interval(locus, exon_number)
         return [] if interval is None else [interval]
     if scope_type == "between":
-        return [(min(scope[1], scope[2]), max(scope[1], scope[2]))]
+        length = len(locus.sequence())
+        return [(0, length)] if length else []
     raise ValueError(f"Unsupported TFMotif scope: {scope}")
 
 

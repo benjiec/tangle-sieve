@@ -638,6 +638,21 @@ appears as `u15`.
 
 ## TF Motif Rules
 
+Use `TFMotifs.has(motif, min_score_threshold=8)` to require one qualifying
+motif hit:
+
+```python
+rule = Rules(TFMotifs.has("GM.5.0.Rel").between(80, 200))
+```
+
+This supports the same `.in_exon()`, `.in_intron()`, and `.between()` scopes
+as `has_within()`, including numbered exons and introns. Without a scope, it
+considers CDS/exon and intron intervals. Motif names are prefix-matched and hits
+on either strand qualify. It returns `yes` for a qualifying hit,
+`missing_<motif>` when none qualifies, and `false` when the scope has no intervals.
+Scanner or locus failures return `error`; proteins without a genome return
+`not_applicable`, following the existing TF motif behavior.
+
 `TFMotifs.has_within(distance, motif_a, motif_b, min_score_threshold=8)` scans
 genomic locus sequence with `gimme scan` and evaluates motif hits in genomic
 locus coordinates.
@@ -701,11 +716,30 @@ TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_exon()
 TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_exon(2)
 ```
 
-Use `.between(start, end)` to search a locus-relative genomic interval:
+Use `.between(start, end)` to extract and scan a genomic window relative to the
+existing locus start. Coordinates are zero-based and end-exclusive, in gene
+direction. Negative offsets extend upstream; positive offsets can extend beyond
+the original locus end. Gimme scans only the extracted window, and a hit must
+fit completely within it. For example, `[80, 90)` covers locus bases 81–90:
 
 ```python
-TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").between(81, 90)
+TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").between(80, 90)
+TFMotifs.has("GM.5.0.Rel").between(-1500, 500)
 ```
+
+The second example requests 2,000 bases: 1,500 upstream and the first 500 bases
+from the locus start. Reverse-strand windows are reverse-complemented. Windows
+are clipped at contig boundaries, without padding or wrapping; an empty window
+returns `false` without scanning. Bounds must be integers (not booleans).
+
+The anchor is the existing locus start: transcript boundaries when available
+for NCBI proteins, otherwise CDS boundaries; HMM-detected loci retain their
+existing leader/start adjustments. No artifact rebuild is required when the
+genome FASTA contains the requested sequence. Gimme output coordinates are local
+to the extracted window, beginning at zero after any clipping.
+
+Without `.between()`, the existing full locus is scanned. Unscoped rules and
+`.in_exon()` / `.in_intron()` retain their existing interval filtering.
 
 For `.between(...)`, start and end may be supplied in either order. For intron
 and exon scopes, numbering follows the gene's CDS order. On reverse-strand

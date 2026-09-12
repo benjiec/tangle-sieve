@@ -788,6 +788,45 @@ class CuratedProtein(object):
             start_trim_len=self._start_trim_len(),
         )
 
+    def genomic_locus_window(self, start, end):
+        """Extract a half-open window relative to the leader-adjusted locus start.
+
+        Offsets follow gene direction; negative offsets extend upstream.
+        The returned locus describes only the scan window, without CDS features.
+        Empty or wholly out-of-contig windows return None.
+        """
+        if type(start) is not int or type(end) is not int:
+            raise ValueError("Window bounds must be integers")
+        start, end = sorted((start, end))
+        if start == end:
+            return None
+        locus = self.genomic_locus_with_leader()
+        contig = self._genomic_sequences().get(locus.contig_accession)
+        if contig is None:
+            raise ValueError(f"Cannot find contig sequence {locus.contig_accession}")
+        if locus.strand == 1:
+            left = locus.start_1b - 1 + start
+            right = locus.start_1b - 1 + end
+        else:
+            left = locus.start_1b - end
+            right = locus.start_1b - start
+        left = max(0, left)
+        right = min(len(contig), right)
+        if left >= right:
+            return None
+        sequence = contig[left:right]
+        if locus.strand == -1:
+            sequence = str(Seq(sequence).reverse_complement())
+        return GenomicLocus(
+            genome_accession=locus.genome_accession,
+            contig_accession=locus.contig_accession,
+            start_1b=left + 1 if locus.strand == 1 else right,
+            end_1b=right if locus.strand == 1 else left + 1,
+            strand=locus.strand,
+            _sequence=sequence,
+            cds_intervals_1b=[],
+        )
+
     def _detected_rows_for_query(self, path):
         return _rows_from_table(DetectedTable, path, column_filters=[
             f"query_accession = {_sql_string(self.protein_accession)}",

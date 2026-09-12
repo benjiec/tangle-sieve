@@ -2053,12 +2053,12 @@ class TestRules(unittest.TestCase):
             RULE_YES,
         )
 
-    def test_tf_motifs_between_uses_locus_coordinates(self):
+    def test_tf_motifs_between_scans_window_coordinates(self):
         self.fx.write_three_exon_gene("p1", "g1", "+")
         gimme_output = "\n".join([
             "sequence start end feature score strand",
-            "p1_locus 82 85 GM.5.0.Rel.0001 8.0 +",
-            "p1_locus 86 90 GM.5.0.bZIP.0001 8.0 -",
+            "p1_locus 1 4 GM.5.0.Rel.0001 8.0 +",
+            "p1_locus 5 9 GM.5.0.bZIP.0001 8.0 -",
             "",
         ])
 
@@ -2072,6 +2072,123 @@ class TestRules(unittest.TestCase):
             rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).between(90, 81)"],
             RULE_YES,
         )
+
+    def test_tf_motifs_has_filters_single_hits(self):
+        self.fx.write_three_exon_gene("p1", "g1", "+")
+        locus = CuratedProtein("p1", "g1").genomic_locus_window(0, 10)
+        cases = [
+            ("0 10 GM.5.0.Rel 8 +", 8, RULE_YES),
+            ("0 10 GM.5.0.Rel.0001 8 -", 8, RULE_YES),
+            ("0 10 GM.5.0.RelOther 9 +", 8, "missing_GM.5.0.Rel"),
+            ("0 10 GM.5.0.Rel 7.9 +", 8, "missing_GM.5.0.Rel"),
+            ("0 10 GM.5.0.Rel 9 +", 10, "missing_GM.5.0.Rel"),
+            ("0 10 GM.5.0.Rel 10 +", 10, RULE_YES),
+            ("0 11 GM.5.0.Rel 8 +", 8, "missing_GM.5.0.Rel"),
+            ("", 8, "missing_GM.5.0.Rel"),
+        ]
+        for hit, threshold, expected in cases:
+            with self.subTest(hit=hit, threshold=threshold):
+                hits = _parse_gimme_scan_output("p1_locus " + hit).get("p1_locus", []) if hit else []
+                rule = TFMotifs.has("GM.5.0.Rel", threshold).between(10, 0)
+                self.assertEqual(rule._evaluate_locus(locus, hits), expected)
+
+    def test_tf_motifs_has_scopes_and_labels(self):
+        for strand in ("+", "-"):
+            self.fx.write_three_exon_gene("p1", "g1", strand)
+            locus = CuratedProtein("p1", "g1").genomic_locus_with_leader()
+            base = TFMotifs.has("A")
+            rules = [base, base.in_exon(), base.in_exon(2), base.in_intron(), base.in_intron(2)]
+            starts = [locus.cds_intervals_1b[0][0], locus.cds_intervals_1b[0][0],
+                      locus.cds_intervals_1b[1][0], locus.cds_intervals_1b[0][1] + 1,
+                      locus.cds_intervals_1b[1][1] + 1]
+            for rule, start in zip(rules, starts):
+                with self.subTest(strand=strand, label=rule.label):
+                    hits = _parse_gimme_scan_output(f"p1_locus {start} {start + 2} A 8 +")["p1_locus"]
+                    self.assertEqual(rule._evaluate_locus(locus, hits), RULE_YES)
+                    self.assertTrue(Rules(rule).uses_genomic_locus())
+            for rule in rules[1:] + [base.between(0, 10)]:
+                for scope in (lambda: rule.in_exon(), lambda: rule.in_intron(), lambda: rule.between(0, 10)):
+                    with self.assertRaises(ValueError):
+                        scope()
+            self.assertEqual(base.label, "TFMotifs.has('A', min_score_threshold=8)")
+            self.assertEqual(base.between(0, 10).label, base.label + ".between(0, 10)")
+        self.fx.write_single_exon_gene("single", "single_genome")
+        locus = CuratedProtein("single", "single_genome").genomic_locus_with_leader()
+        self.assertEqual(base.in_intron()._evaluate_locus(locus, []), RULE_FALSE)
+        self.assertEqual(base.in_exon(2)._evaluate_locus(locus, []), RULE_FALSE)
+
+    def test_tf_motifs_has_batch_scanning_and_failure(self):
+        self.fx.write_three_exon_gene("p1", "g1", "+")
+        proteins = [CuratedProtein("p1", "g1"), FastaProtein("fasta1", "MA")]
+        rule = TFMotifs.has("A").between(0, 10)
+        for returncode, expected in [(0, RULE_YES), (1, RULE_ERROR)]:
+            with self.subTest(returncode=returncode):
+                with patch("sieve.rules.subprocess.run", return_value=CompletedProcess(
+                    [], returncode, stdout="p1_locus 0 10 A.1 8 -\n", stderr=""
+                )) as run:
+                    with tempfile.TemporaryDirectory() as tmpd:
+                        rows = Rules(rule).check_proteins(proteins, os.path.join(tmpd, "rules.tsv"))
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(rows[0][rule.label], expected)
+                self.assertEqual(rows[1][rule.label], RULE_NOT_APPLICABLE)
+
+    def test_tf_motifs_between_extracts_actual_scan_sequence(self):
+        contig = "ACGTAGCTAACCGGTTAGCAACGTTCGATCGGATCCGTAACGTTAGCACTGATCGATCAGTACG"
+        # Transcript is bases 21..40; CDS is 24..37, deliberately a different anchor.
+        windows = [(-10, 5), (-10, -2), (5, 15), (15, 5), (0, 1),
+                   (-100, 5), (0, 100), (-100, 100), (30, 40),
+                   (0, 0), (-100, -90), (100, 110)]
+        for strand in ("+", "-"):
+            genome = "forward" if strand == "+" else "reverse"
+            self.fx.write_protein_fixture("p1", genome)
+            self.fx.write_genomic_fasta(genome, {"ctg1": contig})
+            self.fx.write_gff(genome, "\n".join([
+                f"ctg1\tsrc\tmRNA\t21\t40\t.\t{strand}\t.\tID=tx1",
+                f"ctg1\tsrc\tCDS\t24\t37\t.\t{strand}\t0\tID=cds1;Parent=tx1;protein_id=p1", "",
+            ]))
+            protein = CuratedProtein("p1", genome)
+            # Independent expected sequence: enumerate contig positions in gene direction.
+            anchor = 20 if strand == "+" else 39
+            step = 1 if strand == "+" else -1
+            for start, end in windows:
+                expected = "".join(contig[anchor + step * offset]
+                                   for offset in range(min(start, end), max(start, end))
+                                   if 0 <= anchor + step * offset < len(contig))
+                if strand == "-":
+                    expected = str(Seq(expected).complement())
+                for base in (TFMotifs.has("A"), TFMotifs.has_within(20, "A", "B")):
+                    with self.subTest(strand=strand, start=start, end=end, rule=base.label):
+                        rule = base.between(start, end)
+                        def scan(cmd, **kwargs):
+                            with open(cmd[2]) as fasta:
+                                self.assertEqual(fasta.read().splitlines(), [">p1_locus", expected])
+                            output = f"p1_locus 0 {len(expected)} A 8 +\np1_locus 0 {len(expected)} B 8 -\n"
+                            return CompletedProcess(cmd, 0, stdout=output, stderr="")
+                        with patch("sieve.rules.subprocess.run", side_effect=scan) as run:
+                            with tempfile.TemporaryDirectory() as tmpd:
+                                rows = Rules(rule).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
+                        self.assertEqual(rows[0][rule.label], RULE_YES if expected else RULE_FALSE)
+                        self.assertEqual(run.call_count, int(bool(expected)))
+
+    def test_tf_motifs_between_rejects_noninteger_bounds(self):
+        for base in (TFMotifs.has("A"), TFMotifs.has_within(20, "A", "B")):
+            for bad in (True, False, 1.0, "1", None):
+                for bounds in ((bad, 10), (0, bad)):
+                    with self.subTest(rule=base.label, bounds=bounds):
+                        with self.assertRaises(ValueError):
+                            base.between(*bounds)
+
+    def test_tf_motifs_between_boundary_containment(self):
+        self.fx.write_three_exon_gene("p1", "g1", "+")
+        locus = CuratedProtein("p1", "g1").genomic_locus_window(0, 10)
+        rule = TFMotifs.has_within(20, "A", "B").between(0, 10)
+        for start, end, expected in [(0, 10, RULE_YES), (-1, 10, "missing_A"),
+                                     (0, 11, "missing_A")]:
+            with self.subTest(start=start, end=end):
+                hits = _parse_gimme_scan_output(
+                    f"p1_locus {start} {end} A 8 +\np1_locus 5 10 B 8 -\n"
+                )["p1_locus"]
+                self.assertEqual(rule._evaluate_locus(locus, hits), expected)
 
     def test_tf_motifs_scope_methods_can_only_be_called_once(self):
         base = TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP")
