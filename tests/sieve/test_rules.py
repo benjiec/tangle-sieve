@@ -1,4 +1,5 @@
 import csv
+import gzip
 import io
 import os
 import tempfile
@@ -11,6 +12,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from tangle.detected import DetectedTable
+from tangle.defaults import Defaults
 from sieve.artifact_protein import ArtifactProtein
 from sieve.fasta_protein import FastaProtein
 from sieve.protein import (
@@ -40,6 +42,7 @@ from sieve.rules import (
     Sequence,
     TFMotifs,
     _edge_distance,
+    _gimme_genome_fasta,
     _parse_gimme_scan_output,
     _parse_deeploc_csv,
     _format_deeploc_columns,
@@ -212,6 +215,9 @@ class TestRules(unittest.TestCase):
     def setUp(self):
         CuratedProtein.clear_cache()
         self.fx = RulesFixture(self)
+        self.background = self.enterContext(patch(
+            "sieve.rules.genomic_background", side_effect=lambda path, length: path
+        ))
 
     def tearDown(self):
         CuratedProtein.clear_cache()
@@ -797,6 +803,7 @@ class TestRules(unittest.TestCase):
                 artifact_dirs = os.listdir(artifacts)
                 leader_dir = os.path.join(artifacts, next(d for d in artifact_dirs if d.startswith("Leader_")))
                 tf_dir = os.path.join(artifacts, next(d for d in artifact_dirs if d.startswith("TFMotifs.has_within")))
+                tf_dir = os.path.join(tf_dir, "g1")
 
                 self.assertTrue(os.path.exists(os.path.join(leader_dir, "query.faa")))
                 self.assertTrue(os.path.exists(os.path.join(leader_dir, "command.txt")))
@@ -867,7 +874,7 @@ class TestRules(unittest.TestCase):
         self.assertEqual(rows[0]["pass all"], RULE_FALSE)
         self.assertEqual(rows[0][LEADER_MTP_LABEL], RULE_ERROR)
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_intron(2)"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01).in_intron(2)"],
             "missing_GM.5.0.bZIP",
         )
 
@@ -1535,7 +1542,7 @@ class TestRules(unittest.TestCase):
                                 row["pass all"] == RULE_TRUE,
                             )
 
-    def test_nuclear_signal_predicates_require_complete_deeploc_csv(self):
+    def test_nuclear_signal_predicates_require_csv_and_isolate_missing_candidates(self):
         for name in ("NLS", "NES"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpd:
                 rule = getattr(Leader(), f"is_{name}")()
@@ -1548,7 +1555,9 @@ class TestRules(unittest.TestCase):
                 self.write_deeploc_csv(path, [{"Protein_ID": "p1", "Signals": ""}])
                 rows = Rules(rule).check_proteins([protein], output, deeploc_csv=path)
                 self.assertTrue(rows)
-                self.assertTrue(all(row[rule.label] == RULE_ERROR for row in rows))
+                self.assertEqual(rows[0][rule.label], RULE_FALSE)
+                self.assertGreater(len(rows), 1)
+                self.assertTrue(all(row[rule.label] == RULE_MAYBE for row in rows[1:]))
 
     def test_nuclear_signal_predicates_preserve_pfam_window(self):
         for name, signal in (("NLS", "Nuclear localization signal"), ("NES", "Nuclear export signal")):
@@ -1606,7 +1615,7 @@ class TestRules(unittest.TestCase):
                     os.path.join(tmpd, "rules.tsv"),
                 )
 
-    def test_leader_deeploc_missing_candidate_row_is_error(self):
+    def test_leader_deeploc_missing_candidate_row_is_maybe(self):
         protein = FastaProtein("p1", "MMT")
         with tempfile.TemporaryDirectory() as tmpd:
             deeploc_csv = os.path.join(tmpd, "deeploc.csv")
@@ -1619,7 +1628,52 @@ class TestRules(unittest.TestCase):
                 deeploc_csv=deeploc_csv,
             )
 
-        self.assertEqual(rows[0]["Leader().betweenAA(-30, 3).is_mTP(deeploc=True)"], RULE_ERROR)
+        label = "Leader().betweenAA(-30, 3).is_mTP(deeploc=True)"
+        self.assertEqual(rows[0][label], RULE_TRUE)
+        self.assertTrue(all(row[label] == RULE_MAYBE for row in rows[1:]))
+        self.assertGreater(len(rows), 1)
+
+    def test_deeploc_artifact_candidates_are_independent(self):
+        protein = ArtifactProtein("p1", "", "MMT")
+        candidates = {("p1", ""): [
+            LeaderSequenceCandidate("p1", "", 1, "MMT"),
+            LeaderSequenceCandidate("p1_with_leader_u17_M", "u17", -17, "MMMMT"),
+        ]}
+        rule = Leader().is_mTP(deeploc=True)
+        cases = [
+            (["p1"], "Mitochondrial transit peptide", [RULE_TRUE, RULE_MAYBE]),
+            (["p1_with_leader_u17_M"], "Mitochondrial transit peptide", [RULE_MAYBE, RULE_TRUE]),
+            (["p1"], "", [RULE_FALSE, RULE_MAYBE]),
+            ([], "", [RULE_MAYBE, RULE_MAYBE]),
+            (["p1", "p1_with_leader_u17_M"], "Mitochondrial transit peptide", [RULE_TRUE, RULE_TRUE]),
+        ]
+        for ids, signals, expected in cases:
+            with self.subTest(ids=ids, signals=signals):
+                with tempfile.TemporaryDirectory() as tmpd:
+                    csv_path = os.path.join(tmpd, "deeploc.csv")
+                    self.write_deeploc_csv(csv_path, [
+                        {"Protein_ID": accession, "Signals": signals} for accession in ids
+                    ])
+                    rows = Rules(rule).check_proteins(
+                        [protein], os.path.join(tmpd, "rules.tsv"), deeploc_csv=csv_path,
+                        sequence_candidates_by_key=candidates,
+                    )
+                self.assertEqual([row[rule.label] for row in rows], expected)
+                self.assertEqual([row["pass all"] for row in rows], expected)
+                for row in rows:
+                    if row[rule.label] == RULE_TRUE:
+                        self.assertEqual(row["Leader.call('mTP')"], "100")
+                    elif row[rule.label] == RULE_MAYBE:
+                        self.assertEqual(row.get("Leader.call('mTP')", ""), "")
+        with tempfile.TemporaryDirectory() as tmpd:
+            csv_path = os.path.join(tmpd, "bad.csv")
+            with open(csv_path, "w") as output:
+                output.write("Protein_ID\np1\n")
+            rows = Rules(rule).check_proteins(
+                [protein], os.path.join(tmpd, "rules.tsv"), deeploc_csv=csv_path,
+                sequence_candidates_by_key=candidates,
+            )
+        self.assertEqual([row[rule.label] for row in rows], [RULE_ERROR, RULE_ERROR])
 
     def test_leader_upstream_of_pfam_uses_ncbi_spliced_prefix_before_anchor(self):
         cases = [
@@ -1850,7 +1904,7 @@ class TestRules(unittest.TestCase):
         results = {row["protein accession"]: row["pass all"] for row in rows}
         self.assertEqual(results["p1"], RULE_TRUE)
         self.assertEqual(results["fasta1"], RULE_TRUE)
-        tf_label = "TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_intron(2)"
+        tf_label = "TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01).in_intron(2)"
         transcript_row = next(row for row in rows if row["protein accession"] == "fasta1")
         self.assertEqual(transcript_row[tf_label], RULE_NOT_APPLICABLE)
 
@@ -1866,7 +1920,7 @@ class TestRules(unittest.TestCase):
                 ).check_proteins([protein], os.path.join(tmpd, "rules.tsv"))
 
         run.assert_not_called()
-        tf_label = "TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_intron(2)"
+        tf_label = "TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01).in_intron(2)"
         self.assertEqual(rows[0][tf_label], RULE_NOT_APPLICABLE)
         self.assertEqual(rows[0]["Pfam.matches('PF00081')"], RULE_TRUE)
         self.assertEqual(rows[0]["pass all"], RULE_TRUE)
@@ -1910,7 +1964,7 @@ class TestRules(unittest.TestCase):
                 ).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
 
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_intron()"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01).in_intron()"],
             RULE_YES,
         )
 
@@ -1931,7 +1985,7 @@ class TestRules(unittest.TestCase):
 
         self.assertEqual(rows[0]["pass all"], RULE_FALSE)
 
-    def test_tf_motifs_reports_missing_motif_when_no_pair_above_default_threshold(self):
+    def test_tf_motifs_reports_missing_motif_when_no_pair_above_explicit_threshold(self):
         self.fx.write_three_exon_gene("p1", "g1", "+")
         gimme_output = "\n".join([
             "sequence start end feature score strand",
@@ -1943,12 +1997,12 @@ class TestRules(unittest.TestCase):
         with patch("sieve.rules.subprocess.run", return_value=CompletedProcess([], 0, stdout=gimme_output, stderr="")):
             with tempfile.TemporaryDirectory() as tmpd:
                 rows = Rules(
-                    TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP").in_intron(2)
+                    TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP", min_score_threshold=8).in_intron(2)
                 ).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
 
         self.assertEqual(rows[0]["pass all"], RULE_FALSE)
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_intron(2)"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8, fpr=0.01).in_intron(2)"],
             "missing_GM.5.0.Rel",
         )
 
@@ -1969,7 +2023,7 @@ class TestRules(unittest.TestCase):
 
         self.assertEqual(rows[0]["pass all"], RULE_TRUE)
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_intron(2)"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01).in_intron(2)"],
             RULE_TOO_FAR,
         )
 
@@ -1989,7 +2043,7 @@ class TestRules(unittest.TestCase):
                 ).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
 
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8)"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01)"],
             RULE_YES,
         )
 
@@ -2010,7 +2064,7 @@ class TestRules(unittest.TestCase):
 
         self.assertEqual(rows[0]["pass all"], RULE_FALSE)
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8)"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01)"],
             "missing_GM.5.0.Rel_and_GM.5.0.bZIP",
         )
 
@@ -2030,7 +2084,7 @@ class TestRules(unittest.TestCase):
                 ).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
 
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_exon()"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01).in_exon()"],
             RULE_YES,
         )
 
@@ -2050,7 +2104,7 @@ class TestRules(unittest.TestCase):
                 ).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
 
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).in_exon(2)"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01).in_exon(2)"],
             RULE_YES,
         )
 
@@ -2070,7 +2124,7 @@ class TestRules(unittest.TestCase):
                 ).check([("p1", "g1")], os.path.join(tmpd, "rules.tsv"))
 
         self.assertEqual(
-            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=8).between(90, 81)"],
+            rows[0]["TFMotifs.has_within(20, 'GM.5.0.Rel', 'GM.5.0.bZIP', min_score_threshold=None, fpr=0.01).between(90, 81)"],
             RULE_YES,
         )
 
@@ -2111,7 +2165,7 @@ class TestRules(unittest.TestCase):
                 for scope in (lambda: rule.in_exon(), lambda: rule.in_intron(), lambda: rule.between(0, 10)):
                     with self.assertRaises(ValueError):
                         scope()
-            self.assertEqual(base.label, "TFMotifs.has('A', min_score_threshold=8)")
+            self.assertEqual(base.label, "TFMotifs.has('A', min_score_threshold=None, fpr=0.01)")
             self.assertEqual(base.between(0, 10).label, base.label + ".between(0, 10)")
         self.fx.write_single_exon_gene("single", "single_genome")
         locus = CuratedProtein("single", "single_genome").genomic_locus_with_leader()
@@ -2205,6 +2259,106 @@ class TestRules(unittest.TestCase):
                     f"p1_locus {start} {end} A 8 +\np1_locus 5 10 B 8 -\n"
                 )["p1_locus"]
                 self.assertEqual(rule._evaluate_locus(locus, hits), expected)
+
+    def test_tf_motif_fpr_validation_and_scope_propagation(self):
+        for factory in (lambda **kw: TFMotifs.has("A", **kw),
+                        lambda **kw: TFMotifs.has_within(20, "A", "B", **kw)):
+            for bad in (0, 1, -0.1, 2, True, None, "0.01", float("nan"), float("inf")):
+                with self.subTest(fpr=bad), self.assertRaises(ValueError):
+                    factory(fpr=bad)
+            for bad in (True, "8", float("nan"), float("inf")):
+                with self.subTest(minimum=bad), self.assertRaises(ValueError):
+                    factory(min_score_threshold=bad)
+            base = factory(fpr=0.05, min_score_threshold=7)
+            for scoped in (base.in_exon(), base.in_intron(2), base.between(-10, 5)):
+                self.assertEqual(scoped.fpr, 0.05)
+                self.assertEqual(scoped.min_score_threshold, 7)
+                self.assertIn("fpr=0.05", scoped.label)
+            self.assertIsNone(factory().min_score_threshold)
+
+    def test_tf_motif_genome_batches_preserve_logs_and_isolate_failures(self):
+        self.fx.write_three_exon_gene("p1", "g1", "+")
+        self.fx.write_three_exon_gene("p2", "g2", "+")
+        self.fx.write_manifest([self.fx.manifest_row("p1", "g1"), self.fx.manifest_row("p2", "g2")])
+        proteins = [ArtifactProtein("p1", "g1", "MGP"), ArtifactProtein("p2", "g2", "MGP")]
+        # Add another protein to the first batch; its genomic locus is irrelevant to grouping.
+        p3 = ArtifactProtein("p3", "g1", "MGP")
+        p3._curated = proteins[0]._curated
+        proteins.append(p3)
+        rule = TFMotifs.has("A", fpr=0.05).between(0, 10)
+        for fail_first in (False, True):
+            seen = []
+            def scan(cmd, **kwargs):
+                genome = "g1" if cmd[cmd.index("-B") + 1] == os.path.realpath(Defaults.ncbi_genome_fna("g1")) else "g2"
+                seen.append(genome)
+                self.assertNotIn("-c", cmd)
+                self.assertNotIn("-g", cmd)
+                self.assertEqual(cmd[cmd.index("-N") + 1], "1")
+                self.assertEqual(cmd[cmd.index("-f") + 1], "0.05")
+                self.assertEqual(cmd[cmd.index("-n") + 1], "20")
+                with open(cmd[2]) as fasta:
+                    identifiers = [line.strip()[1:] for line in fasta if line.startswith(">")]
+                self.assertEqual(identifiers, ["p1_locus", "p3_locus"] if genome == "g1" else ["p2_locus"])
+                output = "".join(f"{identifier} 0 10 A 1 +\n" for identifier in identifiers)
+                return CompletedProcess(cmd, int(fail_first and genome == "g1"), stdout=output, stderr=genome)
+            with tempfile.TemporaryDirectory() as tmpd:
+                with patch("sieve.rules.subprocess.run", side_effect=scan):
+                    rows = Rules(rule).check_proteins(proteins, os.path.join(tmpd, "result.tsv"), artifacts_dir=tmpd)
+                self.assertEqual(seen, ["g1", "g2"])
+                for row in rows:
+                    expected = RULE_ERROR if fail_first and row["genome accession"] == "g1" else RULE_YES
+                    self.assertEqual(row[rule.label], expected)
+                rule_dir = next(os.path.join(tmpd, name) for name in os.listdir(tmpd) if name.startswith("TFMotifs"))
+                for genome in ("g1", "g2"):
+                    for filename in ("locus.fna", "command.txt", "stdout.txt", "stderr.txt"):
+                        self.assertTrue(os.path.isfile(os.path.join(rule_dir, genome, filename)))
+                    with open(os.path.join(rule_dir, genome, "stderr.txt")) as output:
+                        self.assertEqual(output.read(), genome)
+
+    def test_tf_motif_missing_background_does_not_block_other_genomes(self):
+        self.fx.write_three_exon_gene("p1", "g1", "+")
+        locus = CuratedProtein("p1", "g1").genomic_locus_with_leader()
+        proteins = [ArtifactProtein("p1", "g1", "MGP"), ArtifactProtein("p2", "g2", "MGP")]
+        rule = TFMotifs.has("A").between(0, 10)
+        def background(genome):
+            if genome == "g1":
+                raise FileNotFoundError("missing genome")
+            return "/available/genomic.fna"
+        with patch.object(ArtifactProtein, "genomic_locus_window", return_value=locus), patch(
+            "sieve.rules._gimme_genome_fasta", side_effect=background
+        ), patch("sieve.rules.subprocess.run", return_value=CompletedProcess(
+            [], 0, stdout="p2_locus 0 10 A 1 +\n", stderr=""
+        )) as run:
+            with tempfile.TemporaryDirectory() as tmpd:
+                rows = Rules(rule).check_proteins(proteins, os.path.join(tmpd, "results.tsv"))
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual([row[rule.label] for row in rows], [RULE_ERROR, RULE_YES])
+
+    def test_gimme_compressed_genome_cache_is_reused_and_invalidated(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            source = os.path.join(tmpd, "genomic.fna.gz")
+            with gzip.open(source, "wt") as output:
+                output.write(">ctg\nACGT\n")
+            with patch.dict(os.environ, {"XDG_CACHE_HOME": tmpd}), patch(
+                "sieve.rules.Defaults.ncbi_genome_fna", return_value=source
+            ):
+                cached = _gimme_genome_fasta("g1")
+                with open(cached) as fasta:
+                    self.assertEqual(fasta.read(), ">ctg\nACGT\n")
+                with patch("sieve.rules.gzip.open", side_effect=AssertionError("Should reuse cache")):
+                    self.assertEqual(_gimme_genome_fasta("g1"), cached)
+                with gzip.open(source, "wt") as output:
+                    output.write(">ctg\nACGTACGTACGT\n")
+                self.assertNotEqual(_gimme_genome_fasta("g1"), cached)
+
+    def test_tf_motif_pair_uses_additional_hits_and_optional_score_filter(self):
+        self.fx.write_three_exon_gene("p1", "g1", "+")
+        locus = CuratedProtein("p1", "g1").genomic_locus_window(0, 90)
+        hits = _parse_gimme_scan_output(
+            "p1_locus 0 5 A 10 +\np1_locus 75 80 A 2 +\np1_locus 80 85 B 3 -\n"
+        )["p1_locus"]
+        self.assertEqual(TFMotifs.has_within(5, "A", "B").between(0, 90)._evaluate_locus(locus, hits), RULE_YES)
+        self.assertEqual(TFMotifs.has("A", min_score_threshold=11).between(0, 90)._evaluate_locus(locus, hits), "missing_A")
 
     def test_tf_motifs_scope_methods_can_only_be_called_once(self):
         base = TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP")
@@ -2336,6 +2490,8 @@ class TestRuleParsingHelpers(unittest.TestCase):
 
     def test_parse_gimme_scan_output(self):
         parsed = _parse_gimme_scan_output("\n".join([
+            "# Input: /path with spaces/to the input.fna",
+            "# FPR: 0.01 (/path with spaces/genome.fna)",
             "sequence start end feature score strand",
             "p1_locus 45 50 GM.5.0.Rel.0001 8.0 +",
             "p1_locus 55 60 GM.5.0.bZIP.0001 9.0 -",

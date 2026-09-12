@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "sieve"
 version = "0.1.1"
 dependencies = [
+  "numpy",
   "biopython>=1.81",
   "pyarrow==20.0.0",
   "tangle @ git+https://github.com/benjiec/tangle.git@3b8c07f",

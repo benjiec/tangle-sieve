@@ -574,6 +574,11 @@ Signals
 discovered leader accessions such as `p1_with_leader_2_M`, not just the
 original protein accession.
 
+Each candidate is evaluated independently. A missing candidate row returns
+`maybe` for that candidate, without affecting candidates present in the CSV.
+An invalid CSV (such as missing required columns or duplicate IDs) returns
+`error` rather than `maybe`.
+
 For signal rules, Sieve reads the `Signals` column:
 
 * `Mitochondrial transit peptide` is treated as `Leader.call('mTP') == 100`.
@@ -638,7 +643,7 @@ appears as `u15`.
 
 ## TF Motif Rules
 
-Use `TFMotifs.has(motif, min_score_threshold=8)` to require one qualifying
+Use `TFMotifs.has(motif, min_score_threshold=None, fpr=0.01)` to require one qualifying
 motif hit:
 
 ```python
@@ -653,7 +658,7 @@ on either strand qualify. It returns `yes` for a qualifying hit,
 Scanner or locus failures return `error`; proteins without a genome return
 `not_applicable`, following the existing TF motif behavior.
 
-`TFMotifs.has_within(distance, motif_a, motif_b, min_score_threshold=8)` scans
+`TFMotifs.has_within(distance, motif_a, motif_b, min_score_threshold=None, fpr=0.01)` scans
 genomic locus sequence with `gimme scan` and evaluates motif hits in genomic
 locus coordinates.
 
@@ -666,8 +671,61 @@ rule = Rules(
 ```
 
 Motif names are prefix-matched, so `GM.5.0.Rel` matches a hit named
-`GM.5.0.Rel.0001`. Hits below `min_score_threshold` are ignored. Strand is
+`GM.5.0.Rel.0001`. When supplied, hits below `min_score_threshold` are ignored. Strand is
 recorded by Gimme but does not prevent two hits from pairing.
+
+Each rule groups sequences by genomic accession and runs Gimme separately with
+background windows sampled by Sieve from that genome:
+
+```text
+gimme scan locus.fna -b -B /path/to/background.fna -f 0.01 -n <report-limit> -N 1
+```
+
+`fpr` must be a finite number strictly between 0 and 1. It calibrates a separate
+motif-score cutoff against sampled genomic background; it is not a false
+discovery rate for reported sites. The previous fixed `-c 0.85` cutoff is no
+longer used. `min_score_threshold=None` adds no extra score filter; an explicit
+finite numeric value applies an additional raw-score cutoff after scanning.
+Both parameters appear in result labels and are preserved by scope methods.
+
+```python
+TFMotifs.has("GM.5.0.Rel", fpr=0.01).between(-1500, 500)
+TFMotifs.has_within(20, "GM.5.0.Rel", "GM.5.0.bZIP", fpr=0.05, min_score_threshold=8)
+```
+
+The report limit is twice the longest scanned sequence length, sufficient for
+all start positions on both strands for each motif. Thus scope and pair checks
+can use additional hits, rather than only the single best hit.
+
+Sieve samples 10,000 background windows with replacement, uniformly over all
+valid start positions across the genome, using random seed zero. Window length
+is the integer median of the batch's scanned sequence lengths. A valid window
+has at most 10% Ns. Coordinates use full contig lengths, including Ns; windows
+never cross contig boundaries. Contigs with no valid windows contribute none.
+If the genome has no valid windows, the batch returns `error`.
+
+Background files are cached in `$XDG_CACHE_HOME/sieve/gimme-backgrounds/`
+(normally `~/.cache/sieve/gimme-backgrounds/`), keyed by genome path, size,
+modification time, window length, sample count, and sampler version. Gimme still
+calculates and caches motif-specific FPR thresholds under
+`$XDG_CACHE_HOME/gimmemotifs`. Different backgrounds, motifs, or FPR settings can
+require separate calibration entries. Cached files are not automatically deleted.
+
+The command uses `-B` rather than `-g` to bypass genomepy's background sampler,
+and `-N 1` to avoid concurrent worker imports involved in its cache-lock race.
+Gimme still imports genomepy as a dependency.
+
+Genome FASTAs are resolved with `Defaults.ncbi_genome_fna()`. Gzipped inputs are
+decompressed once into `$XDG_CACHE_HOME/sieve/gimme-genomes/` (normally under
+`~/.cache`), with reuse keyed by source path, size, and modification time. This
+provides an indexable FASTA and a stable path for Gimme's cache. Changing the
+compressed source produces a new cached copy; old copies are not deleted.
+
+With an artifacts directory, each genome batch writes `locus.fna`, `command.txt`,
+`stdout.txt`, and `stderr.txt` under `<rule>/<genome-accession>/`. Files are
+overwritten on rerun, not appended. A missing genome or failed scan affects only
+that genome's batch; other genomes continue. Empty windows remain `false`, and
+proteins without a genomic accession remain `not_applicable`.
 
 The rule searches for at least one qualifying hit for each motif. If both are
 present and the nearest edges of any motif pair are within `distance`, the rule

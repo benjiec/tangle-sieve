@@ -1,4 +1,9 @@
 import csv
+import gzip
+import hashlib
+import math
+import shutil
+import statistics
 import os
 import re
 import subprocess
@@ -7,6 +12,8 @@ import tempfile
 from dataclasses import dataclass
 
 from sieve.protein import CuratedProtein, LeaderSequenceCandidate, accession_with_suffix, hmm_align_sequences
+from sieve.motif_background import genomic_background
+from tangle.defaults import Defaults
 from tangle.sequence import write_fasta_from_dict
 
 
@@ -1243,6 +1250,7 @@ class LeaderRule(Rule):
         self.original_only = original_only
         self.label = self._label()
         self._predictions_by_key = {}
+        self._deeploc_results_by_candidate = {}
         self._annotation_columns = []
 
     def _label(self):
@@ -1271,6 +1279,9 @@ class LeaderRule(Rule):
         return self.source == "deeploc"
 
     def sequence_result(self, row, candidate):
+        if self.source == "deeploc":
+            key = (row["protein accession"], row["genome accession"])
+            return self._deeploc_results_by_candidate.get((key, candidate.accession), RULE_ERROR)
         if row[self.label] == RULE_ERROR:
             return RULE_ERROR
         if self._leader_call_matches(row):
@@ -1302,6 +1313,7 @@ class LeaderRule(Rule):
             for context in contexts
         }
         self._predictions_by_key = {}
+        self._deeploc_results_by_candidate = {}
         if not sequence_candidates:
             return results
         if self.source == "deeploc":
@@ -1386,18 +1398,21 @@ class LeaderRule(Rule):
             call = predictions.get(sequence_id)
             if call is None:
                 print(f"{self.label} missing DeepLoc row for {context.key}: {sequence_id}", file=sys.stderr)
-                results[context.key] = RULE_ERROR
+                self._deeploc_results_by_candidate[(context.key, sequence_id)] = RULE_MAYBE
             else:
                 candidate = sequence_candidates[sequence_id]
                 calls_by_key[context.key].append((candidate.start_label, call))
+                self._deeploc_results_by_candidate[(context.key, sequence_id)] = _rule_bool(
+                    self._call_matches_prediction(call)
+                )
 
         for context in contexts:
-            if len(calls_by_key[context.key]) != candidate_counts_by_key[context.key]:
-                continue
             self._predictions_by_key[context.key] = calls_by_key[context.key]
-            results[context.key] = _rule_bool(
-                any(self._call_matches_prediction(call) for _start, call in calls_by_key[context.key])
-            )
+            values = [_rule_bool(self._call_matches_prediction(call))
+                      for _start, call in calls_by_key[context.key]]
+            if len(values) != candidate_counts_by_key[context.key]:
+                values.append(RULE_MAYBE)
+            results[context.key] = _merge_or(values)
         return results
 
     def annotations_many(self, contexts, rule_results):
@@ -1599,7 +1614,8 @@ def _apply_sequence_annotations(row, candidate):
     calls = row.pop("_Leader.calls_by_start", None)
     if calls is None:
         return
-    row.update(calls.get(candidate.start_label, _empty_leader_call_columns()))
+    empty_columns = {column: "" for columns in calls.values() for column in columns}
+    row.update(calls.get(candidate.start_label, empty_columns))
 
 
 def _empty_leader_call_columns():
@@ -1798,15 +1814,50 @@ def _parse_targetp_output(text):
     return predictions
 
 
+def _validate_tf_thresholds(fpr, minimum):
+    if type(fpr) not in (int, float) or not math.isfinite(fpr) or not 0 < fpr < 1:
+        raise ValueError("fpr must be a finite number between 0 and 1 (exclusive)")
+    if minimum is not None and (
+        type(minimum) not in (int, float) or not math.isfinite(minimum)
+    ):
+        raise ValueError("min_score_threshold must be None or a finite number")
+
+
+def _gimme_genome_fasta(genome):
+    """Resolve a genome; cache an indexable plain FASTA for gzip inputs."""
+    source = os.path.realpath(Defaults.ncbi_genome_fna(genome))
+    if not source.endswith(".gz"):
+        return source
+    stat = os.stat(source)
+    identity = f"{source}:{stat.st_size}:{stat.st_mtime_ns}"
+    digest = hashlib.sha256(identity.encode()).hexdigest()
+    cache_root = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    directory = os.path.join(cache_root, "sieve", "gimme-genomes", digest)
+    destination = os.path.join(directory, "genomic.fna")
+    if not os.path.exists(destination):
+        os.makedirs(directory, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as output:
+                temporary = output.name
+                with gzip.open(source, "rb") as input_file:
+                    shutil.copyfileobj(input_file, output)
+            os.replace(temporary, destination)
+        finally:
+            if temporary is not None and os.path.exists(temporary):
+                os.unlink(temporary)
+    return destination
+
+
 class TFMotifs(object):
 
     @staticmethod
-    def has(motif, min_score_threshold=8):
-        return TFMotifHasRule(motif, min_score_threshold)
+    def has(motif, min_score_threshold=None, fpr=0.01):
+        return TFMotifHasRule(motif, min_score_threshold, fpr=fpr)
 
     @staticmethod
-    def has_within(distance, motif_a, motif_b, min_score_threshold=8):
-        return TFMotifWithinRule(distance, motif_a, motif_b, min_score_threshold)
+    def has_within(distance, motif_a, motif_b, min_score_threshold=None, fpr=0.01):
+        return TFMotifWithinRule(distance, motif_a, motif_b, min_score_threshold, fpr=fpr)
 
 
 class _TFMotifRule(Rule):
@@ -1852,86 +1903,88 @@ class _TFMotifRule(Rule):
             raise ValueError("TFMotifs rules can only be scoped once")
 
     def evaluate_many(self, contexts, artifacts_dir=None, **kwargs):
-        sequence_ids = {
-            _locus_sequence_id(context): context
-            for context in contexts
-            if context.protein.genome_accession
-        }
         results = {
             context.key: RULE_ERROR if context.protein.genome_accession else RULE_NOT_APPLICABLE
             for context in contexts
         }
-        loci = {}
-        for sequence_id, context in sequence_ids.items():
-            try:
-                if self.scope is not None and self.scope[0] == "between":
-                    locus = context.protein.genomic_locus_window(*self.scope[1:])
-                    if locus is None:
+        batches = {}
+        for context in contexts:
+            if context.protein.genome_accession:
+                batches.setdefault(context.protein.genome_accession, []).append(context)
+        for genome, batch in batches.items():
+            loci = {}
+            sequence_ids = {}
+            for context in batch:
+                try:
+                    if self.scope is not None and self.scope[0] == "between":
+                        locus = context.protein.genomic_locus_window(*self.scope[1:])
+                    else:
+                        locus = context.protein.genomic_locus_with_leader()
+                    if locus is None or not locus.sequence():
                         results[context.key] = RULE_FALSE
                         continue
-                else:
-                    locus = context.protein.genomic_locus_with_leader()
-                loci[sequence_id] = locus
-            except Exception as e:
-                print(f"{self.label} failed for {context.key}: {e}", file=sys.stderr)
-        if not loci:
-            return results
-        try:
-            with tempfile.TemporaryDirectory() as tmpd:
-                working_dir = artifacts_dir if artifacts_dir is not None else tmpd
-                if artifacts_dir is not None:
-                    os.makedirs(artifacts_dir, exist_ok=True)
-                fasta_path = os.path.join(working_dir, "locus.fna")
-                fasta = {
-                    sequence_id: locus.sequence()
-                    for sequence_id, locus in loci.items()
-                }
-                write_fasta_from_dict(fasta, fasta_path)
-                cmd = ["gimme", "scan", fasta_path, "-b", "-c", "0.85"]
-                completed = _run_command(cmd, artifacts_dir)
-                if completed.returncode != 0:
-                    raise subprocess.CalledProcessError(
-                        completed.returncode,
-                        cmd,
-                        output=completed.stdout,
-                        stderr=completed.stderr,
-                    )
-                hits_by_sequence = _parse_gimme_scan_output(completed.stdout)
-        except Exception as e:
-            print(f"{self.label} batch failed: {e}", file=sys.stderr)
-            return results
-
-        for sequence_id, locus in loci.items():
-            context = sequence_ids[sequence_id]
+                    sequence_id = _locus_sequence_id(context)
+                    loci[sequence_id] = locus
+                    sequence_ids[sequence_id] = context
+                except Exception as e:
+                    print(f"{self.label} failed for {context.key}: {e}", file=sys.stderr)
+            if not loci:
+                continue
             try:
-                hits = hits_by_sequence.get(sequence_id, [])
-                results[context.key] = self._evaluate_locus(locus, hits)
+                genome_path = _gimme_genome_fasta(genome)
+                with tempfile.TemporaryDirectory() as tmpd:
+                    batch_dir = os.path.join(artifacts_dir, _safe_filename(genome)) if artifacts_dir else None
+                    working_dir = batch_dir or tmpd
+                    os.makedirs(working_dir, exist_ok=True)
+                    fasta_path = os.path.join(working_dir, "locus.fna")
+                    fasta = {sequence_id: locus.sequence() for sequence_id, locus in loci.items()}
+                    write_fasta_from_dict(fasta, fasta_path)
+                    # At most one hit per start position per strand, per motif.
+                    nreport = 2 * max(map(len, fasta.values()))
+                    background = genomic_background(genome_path, int(statistics.median(map(len, fasta.values()))))
+                    cmd = ["gimme", "scan", fasta_path, "-b", "-B", background,
+                           "-f", str(self.fpr), "-n", str(nreport), "-N", "1"]
+                    completed = _run_command(cmd, batch_dir)
+                    if completed.returncode != 0:
+                        raise subprocess.CalledProcessError(
+                            completed.returncode, cmd, output=completed.stdout, stderr=completed.stderr,
+                        )
+                    hits_by_sequence = _parse_gimme_scan_output(completed.stdout)
             except Exception as e:
-                print(f"{self.label} failed for {context.key}: {e}", file=sys.stderr)
-                results[context.key] = RULE_ERROR
+                print(f"{self.label} batch failed for genome {genome}: {e}", file=sys.stderr)
+                continue
+            for sequence_id, locus in loci.items():
+                context = sequence_ids[sequence_id]
+                try:
+                    results[context.key] = self._evaluate_locus(locus, hits_by_sequence.get(sequence_id, []))
+                except Exception as e:
+                    print(f"{self.label} failed for {context.key}: {e}", file=sys.stderr)
+                    results[context.key] = RULE_ERROR
         return results
 
 
 class TFMotifHasRule(_TFMotifRule):
 
-    def __init__(self, motif, min_score_threshold, scope=None):
+    def __init__(self, motif, min_score_threshold=None, scope=None, fpr=0.01):
+        _validate_tf_thresholds(fpr, min_score_threshold)
+        self.fpr = fpr
         self.motif = motif
         self.min_score_threshold = min_score_threshold
         self.scope = scope
         self.label = self._label()
 
     def _base_label(self):
-        return f"TFMotifs.has('{self.motif}', min_score_threshold={self.min_score_threshold})"
+        return f"TFMotifs.has('{self.motif}', min_score_threshold={self.min_score_threshold}, fpr={self.fpr})"
 
     def _with_scope(self, scope):
-        return TFMotifHasRule(self.motif, self.min_score_threshold, scope=scope)
+        return TFMotifHasRule(self.motif, self.min_score_threshold, scope=scope, fpr=self.fpr)
 
     def _evaluate_locus(self, locus, hits):
         intervals = _scope_intervals(locus, self.scope)
         if not intervals:
             return RULE_FALSE
         for hit in hits:
-            if hit.score < self.min_score_threshold:
+            if self.min_score_threshold is not None and hit.score < self.min_score_threshold:
                 continue
             if _motif_matches(hit.feature, self.motif) and _hit_in_any_interval(
                 *hit.normalized_interval(), intervals
@@ -1942,7 +1995,9 @@ class TFMotifHasRule(_TFMotifRule):
 
 class TFMotifWithinRule(_TFMotifRule):
 
-    def __init__(self, distance, motif_a, motif_b, min_score_threshold, scope=None):
+    def __init__(self, distance, motif_a, motif_b, min_score_threshold=None, scope=None, fpr=0.01):
+        _validate_tf_thresholds(fpr, min_score_threshold)
+        self.fpr = fpr
         self.distance = distance
         self.motif_a = motif_a
         self.motif_b = motif_b
@@ -1953,12 +2008,12 @@ class TFMotifWithinRule(_TFMotifRule):
     def _base_label(self):
         return (
             f"TFMotifs.has_within({self.distance}, '{self.motif_a}', '{self.motif_b}', "
-            f"min_score_threshold={self.min_score_threshold})"
+            f"min_score_threshold={self.min_score_threshold}, fpr={self.fpr})"
         )
 
     def _with_scope(self, scope):
         return TFMotifWithinRule(
-            self.distance, self.motif_a, self.motif_b, self.min_score_threshold, scope=scope
+            self.distance, self.motif_a, self.motif_b, self.min_score_threshold, scope=scope, fpr=self.fpr
         )
 
     def _evaluate_locus(self, locus, hits):
@@ -1969,7 +2024,7 @@ class TFMotifWithinRule(_TFMotifRule):
         motif_b_hits = []
         for hit in hits:
             hit_start, hit_end = hit.normalized_interval()
-            if hit.score < self.min_score_threshold:
+            if self.min_score_threshold is not None and hit.score < self.min_score_threshold:
                 continue
             if not _hit_in_any_interval(hit_start, hit_end, intervals):
                 continue
@@ -2064,7 +2119,7 @@ def _parse_gimme_scan_output(text):
     hits_by_sequence = {}
     for line in text.splitlines():
         line = line.strip()
-        if not line:
+        if not line or line.startswith("#"):
             continue
         parts = line.split()
         if parts[0] == "sequence":
