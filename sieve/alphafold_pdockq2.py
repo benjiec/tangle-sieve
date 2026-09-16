@@ -141,6 +141,12 @@ def validate_regions(regions, residues):
 def score_pair(chain1, chain2, residues, pae, regions, cutoff=8.0):
     selected1 = [r for r in residues[chain1] if _selected(r.number, regions.get(chain1))]
     selected2 = [r for r in residues[chain2] if _selected(r.number, regions.get(chain2))]
+    return score_selections(chain1, chain2, selected1, selected2, pae,
+                            regions.get(chain1), regions.get(chain2), cutoff)
+
+
+def score_selections(chain1, chain2, selected1, selected2, pae, ranges1, ranges2, cutoff=8.0):
+    """Score independent selections, preserving original PAE indices even on one chain."""
     contacts = [(r1, r2) for r1 in selected1 for r2 in selected2 if _distance(r1.ca, r2.ca) <= cutoff]
     interface1 = {r1.number: r1 for r1, _ in contacts}
     interface2 = {r2.number: r2 for _, r2 in contacts}
@@ -153,8 +159,8 @@ def score_pair(chain1, chain2, residues, pae, regions, cutoff=8.0):
     return {
         "chain 1": chain1,
         "chain 2": chain2,
-        "region 1": region_label(regions.get(chain1)),
-        "region 2": region_label(regions.get(chain2)),
+        "region 1": region_label(ranges1),
+        "region 2": region_label(ranges2),
         "contact count": len(contacts),
         "interface residues 1": ",".join(str(number) for number in sorted(interface1)),
         "interface residues 2": ",".join(str(number) for number in sorted(interface2)),
@@ -168,12 +174,29 @@ def score_pair(chain1, chain2, residues, pae, regions, cutoff=8.0):
     }
 
 
-def score_model(cif_text, full_data, regions=None, cutoff=8.0):
+def score_model(cif_text, full_data, regions=None, cutoff=8.0, *, comparisons=None, expected_chains=None):
     if cutoff <= 0:
         raise ValueError("distance cutoff must be greater than zero")
     regions = regions or {}
     residues, pae = parse_model(cif_text, full_data)
+    if expected_chains is not None and set(residues) != set(expected_chains):
+        raise ValueError(f"expected chains {sorted(expected_chains)}, got {sorted(residues)}")
     validate_regions(regions, residues)
+    if comparisons is not None:
+        rows = []
+        for chain1, ranges1, chain2, ranges2 in comparisons:
+            validate_regions({chain1: ranges1}, residues)
+            validate_regions({chain2: ranges2}, residues)
+            selected1 = [r for r in residues[chain1] if _selected(r.number, ranges1)]
+            selected2 = [r for r in residues[chain2] if _selected(r.number, ranges2)]
+            if not selected1 or not selected2:
+                raise ValueError("comparison has an empty residue selection")
+            if chain1 == chain2 and {r.number for r in selected1} & {r.number for r in selected2}:
+                raise ValueError("same-chain comparison selections overlap")
+            row = score_selections(chain1, chain2, selected1, selected2, pae, ranges1, ranges2, cutoff)
+            row["scope"] = "regional"
+            rows.append(row)
+        return rows
     return score_pairs(residues, pae, regions, cutoff)
 
 
@@ -196,11 +219,15 @@ def model_number(name):
     return int(match.group(1)) if match else None
 
 
-def score_zip(path, regions=None, cutoff=8.0):
+def score_zip(path, regions=None, cutoff=8.0, *, comparisons=None, expected_chains=None, expected_models=None):
     rows = []
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
         models = {model_number(name): name for name in names if model_number(name) is not None}
+        if len(models) != sum(model_number(name) is not None for name in names):
+            raise ValueError(f"archive contains duplicate model numbers: {path}")
+        if expected_models is not None and len(models) != expected_models:
+            raise ValueError(f"expected {expected_models} models, got {len(models)}: {path}")
         if not models:
             raise ValueError(f"archive contains no *_model_N.cif files: {path}")
         for number, cif_name in sorted(models.items()):
@@ -210,7 +237,8 @@ def score_zip(path, regions=None, cutoff=8.0):
                 raise ValueError(f"model {number} lacks matching {data_name}")
             cif_text = archive.read(cif_name).decode("utf-8")
             full_data = json.loads(archive.read(data_name))
-            for row in score_model(cif_text, full_data, regions, cutoff):
+            for row in score_model(cif_text, full_data, regions, cutoff,
+                                   comparisons=comparisons, expected_chains=expected_chains):
                 row["source"] = os.path.basename(path)
                 row["model"] = number
                 rows.append(row)
