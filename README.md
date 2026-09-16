@@ -26,6 +26,29 @@ alias sieve-py='venv-sieve/bin/python3'
 ```
 
 
+## Random Tools
+
+Use this to look at the composition of a NCBI protein accession in terms of exons
+
+```
+sieve-py sieve/scripts/protein-exons.py <accession>
+```
+
+Use this to convert HMMer domtbl format to a TSV
+
+```
+python3 sieve/scripts/domtbl-tsv.py
+```
+
+Use this to create FASTA with unique entries
+
+```
+python3 sieve/scripts/fasta-unique-sequences.py
+```
+
+Various AlphaFold pDockQ2 calculation scripts are in `sieve/scripts/alphafold-pdockq2*`
+
+
 ## Workflows
 
 Define rules for proteins using abstractions in `sieve/rules.py`.
