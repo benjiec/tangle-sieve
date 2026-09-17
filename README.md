@@ -49,7 +49,31 @@ python3 sieve/scripts/fasta-unique-sequences.py
 Various AlphaFold pDockQ2 calculation scripts are in `sieve/scripts/alphafold-pdockq2*`
 
 
-## Workflows
+## HMM scan on genome
+
+Use the following to run HMM detection on a genome, add `--target-accession` to limit to a contig
+
+```
+needle-py needle/scripts/hmmsearch-genome.py \
+  nfkb_ikb.hmm \
+  ncbi/ncbi_dataset/data/GCF_002042975.1/genomic.fna \
+  output.search.tsv
+
+needle-py needle/scripts/export-protein-results.py \
+  --query-database-name GCF_002042975.1 \
+  ncbi/ncbi_dataset/data/GCF_002042975.1/genomic.fna output.search.tsv \
+  output.fragments.tsv output.proteins.faa
+
+heap-py heap/scripts/hmmscan.py \
+  --query-database-name GCF_002042975.1 \
+  --target-database-name nfkb_ikb \
+  output.proteins.faa output.hmm.tsv
+```
+
+The `output.hmm.tsv` file contains final HMM scores on detected proteins.
+
+
+## Artifacts/Filtering based workflows
 
 Define rules for proteins using abstractions in `sieve/rules.py`.
 
