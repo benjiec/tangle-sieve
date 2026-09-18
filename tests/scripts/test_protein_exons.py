@@ -130,6 +130,56 @@ class TestProteinExons(unittest.TestCase):
             self.script.main(["P1"])
         self.assertEqual(output.getvalue(), "")
 
+    def test_dna_gc_flag_combinations_both_strands(self):
+        self.manifest(["G1", "G2"])
+        for genome, strand, first, second in [
+            ("G1", "+", "atggcta", "aactgact"),
+            ("G2", "-", "tagccat", "agtcagtt"),
+        ]:
+            self.write_genome(genome, strand)
+            contig = list("N" * 1000)
+            for row, dna in zip(self.rows([7, 8], strand), [first, second]):
+                contig[row["start"] - 1:row["end"]] = dna
+            self.fixture.write_genomic_fasta(genome, {"NC_1": "".join(contig)})
+        for flags, suffixes in [
+            ([], ["", ""]),
+            (["--dna"], [", ATGGCTA", ", AACTGACT"]),
+            (["--gc"], [", 42.86%", ", 37.50%"]),
+            (["--dna", "--gc"], [", ATGGCTA, 42.86%", ", AACTGACT, 37.50%"]),
+        ]:
+            with self.subTest(flags=flags):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.script.main(["P1", *flags])
+                lines = output.getvalue().splitlines()
+                for offset in (0, 3):
+                    self.assertTrue(lines[offset + 1].endswith(": MA(K)" + suffixes[0]))
+                    self.assertTrue(lines[offset + 2].endswith(": (K)LT" + suffixes[1]))
+
+    def test_gc_ambiguous_bases_and_extremes(self):
+        self.manifest(["G1"])
+        self.write_genome("G1")
+        for dna, expected in [("gcnnnnn", "28.57%"), ("AAAAAAA", "0.00%"), ("GCGCGCG", "100.00%")]:
+            self.fixture.write_genomic_fasta("G1", {"NC_1": "N" * 9 + dna + "N" * 20})
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.script.main(["P1", "--gc"])
+            self.assertTrue(output.getvalue().splitlines()[1].endswith(", " + expected))
+
+    def test_dna_gc_require_genomic_file_contig_and_valid_bounds(self):
+        self.manifest(["G1"])
+        self.write_genome("G1")
+        for flag in ("--dna", "--gc"):
+            with self.subTest(flag=flag), self.assertRaises(FileNotFoundError):
+                self.script.main(["P1", flag])
+        for sequences, message in [({"OTHER": "N" * 40}, "contig sequence"), ({"NC_1": "N" * 15}, "exceed")]:
+            self.fixture.write_genomic_fasta("G1", sequences)
+            for flag in ("--dna", "--gc"):
+                output = io.StringIO()
+                with redirect_stdout(output), self.assertRaisesRegex(ValueError, message):
+                    self.script.main(["P1", flag])
+                self.assertEqual(output.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
