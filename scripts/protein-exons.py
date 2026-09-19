@@ -96,38 +96,53 @@ def exon_portions(rows, sequence):
     return result
 
 
+def exon_dna(protein, row, genomic_sequences):
+    contig = genomic_sequences.get(row["seqid"])
+    if contig is None:
+        raise ValueError(f"Cannot find contig sequence {row['seqid']}")
+    if row["end"] > len(contig):
+        raise ValueError(f"CDS coordinates exceed contig sequence {row['seqid']}")
+    dna = contig[row["start"] - 1:row["end"]].upper()
+    if row["strand"] == "-":
+        dna = str(Seq(dna).reverse_complement())
+    return dna
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("protein_accession")
+    parser.add_argument("protein_accessions", nargs="+")
     parser.add_argument("--dna", action="store_true", help="append the full CDS exon DNA in translation direction")
     parser.add_argument("--gc", action="store_true", help="append GC percentage (G+C divided by all exon bases, including ambiguous bases)")
+    parser.add_argument("--fasta", action="store_true", help="print FASTA instead of enumerating CDS exons")
     args = parser.parse_args(argv)
     lines = []
     try:
-        for genome in find_genomes(args.protein_accession):
-            protein = CuratedProtein(args.protein_accession, genome)
-            rows = read_cds(protein)
-            portions = exon_portions(rows, protein.sequence())
-            genomic_sequences = protein._genomic_sequences() if args.dna or args.gc else None
-            lines.append(f"genome {genome}")
-            for number, (row, portion) in enumerate(portions, 1):
-                if genomic_sequences is not None:
-                    contig = genomic_sequences.get(row["seqid"])
-                    if contig is None:
-                        raise ValueError(f"Cannot find contig sequence {row['seqid']}")
-                    if row["end"] > len(contig):
-                        raise ValueError(f"CDS coordinates exceed contig sequence {row['seqid']}")
-                    dna = contig[row["start"] - 1:row["end"]].upper()
-                    if row["strand"] == "-":
-                        dna = str(Seq(dna).reverse_complement())
+        for protein_accession in args.protein_accessions:
+            for genome in find_genomes(protein_accession):
+                protein = CuratedProtein(protein_accession, genome)
+                rows = read_cds(protein)
+                protein_sequence = protein.sequence()
+                portions = exon_portions(rows, protein_sequence)
+                genomic_sequences = protein._genomic_sequences() if args.dna or (args.gc and not args.fasta) else None
+                if args.fasta:
                     if args.dna:
-                        portion += f", {dna}"
-                    if args.gc:
-                        gc = 100 * (dna.count("G") + dna.count("C")) / len(dna)
-                        portion += f", {gc:.2f}%"
-                lines.append(
-                    f"exon {number}, {row['seqid']}, {row['start']}, {row['end']}: {portion}"
-                )
+                        sequence = "".join(exon_dna(protein, row, genomic_sequences) for row, _ in portions)
+                        lines.extend((f">{protein_accession}_cds", sequence))
+                    else:
+                        lines.extend((f">{protein_accession}", protein_sequence))
+                    continue
+                lines.append(f"genome {genome}")
+                for number, (row, portion) in enumerate(portions, 1):
+                    if genomic_sequences is not None:
+                        dna = exon_dna(protein, row, genomic_sequences)
+                        if args.dna:
+                            portion += f", {dna}"
+                        if args.gc:
+                            gc = 100 * (dna.count("G") + dna.count("C")) / len(dna)
+                            portion += f", {gc:.2f}%"
+                    lines.append(
+                        f"exon {number}, {row['seqid']}, {row['start']}, {row['end']}: {portion}"
+                    )
     finally:
         CuratedProtein.clear_cache()
     print("\n".join(lines))

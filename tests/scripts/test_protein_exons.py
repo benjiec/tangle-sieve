@@ -180,6 +180,105 @@ class TestProteinExons(unittest.TestCase):
                     self.script.main(["P1", flag])
                 self.assertEqual(output.getvalue(), "")
 
+    def test_fasta_protein_suppresses_exons_and_ignores_gc(self):
+        self.manifest(["G2", "G1"])
+        self.write_genome("G1")
+        self.write_genome("G2", "-")
+        for flags in (["--fasta"], ["--fasta", "--gc"]):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.script.main(["P1", *flags])
+            self.assertEqual(output.getvalue(), ">P1\nMAKLT\n>P1\nMAKLT\n")
+
+    def test_fasta_dna_splices_exons_in_translation_order(self):
+        self.manifest(["G1", "G2"])
+        for genome, strand, first, second in [
+            ("G1", "+", "atggcta", "aactgact"),
+            ("G2", "-", "tagccat", "agtcagtt"),
+        ]:
+            self.write_genome(genome, strand)
+            contig = list("N" * 1000)
+            for row, dna in zip(self.rows([7, 8], strand), [first, second]):
+                contig[row["start"] - 1:row["end"]] = dna
+            self.fixture.write_genomic_fasta(genome, {"NC_1": "".join(contig)})
+        for flags in (["--fasta", "--dna"], ["--fasta", "--dna", "--gc"]):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.script.main(["P1", *flags])
+            self.assertEqual(
+                output.getvalue(),
+                ">P1_cds\nATGGCTAAACTGACT\n>P1_cds\nATGGCTAAACTGACT\n",
+            )
+
+    def test_fasta_dna_validates_genomic_input_before_stdout(self):
+        self.manifest(["G1", "G2"])
+        self.write_genome("G1")
+        self.write_genome("G2")
+        self.fixture.write_genomic_fasta("G1", {"NC_1": "N" * 1000})
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(FileNotFoundError):
+            self.script.main(["P1", "--fasta", "--dna"])
+        self.assertEqual(output.getvalue(), "")
+
+    def write_single_cds_genome(self, genome, accession, protein_sequence, dna):
+        self.fixture.write_ncbi_proteins(genome, {accession: protein_sequence})
+        self.fixture.write_gff(
+            genome,
+            f"##gff-version 3\nNC_1\tNCBI\tCDS\t1\t{len(dna)}\t.\t+\t0\t"
+            f"ID=cds-{accession};protein_id={accession}\n",
+        )
+        self.fixture.write_genomic_fasta(genome, {"NC_1": dna})
+
+    def test_multiple_accessions_preserve_order_in_all_output_modes(self):
+        self.fixture.write_manifest([
+            dict(sequence_accession="P1", sequence_database="G1", sequence_type="protein",
+                 sequence_source="ncbi", sequence_length=2),
+            dict(sequence_accession="P2", sequence_database="G2", sequence_type="protein",
+                 sequence_source="ncbi", sequence_length=2),
+        ])
+        self.write_single_cds_genome("G1", "P1", "MA", "ATGGCT")
+        self.write_single_cds_genome("G2", "P2", "GP", "GGTCCT")
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.script.main(["P2", "P1"])
+        self.assertEqual(
+            output.getvalue(),
+            "genome G2\nexon 1, NC_1, 1, 6: GP\n"
+            "genome G1\nexon 1, NC_1, 1, 6: MA\n",
+        )
+
+        for flags, expected in [
+            (["--fasta"], ">P2\nGP\n>P1\nMA\n"),
+            (["--fasta", "--dna"], ">P2_cds\nGGTCCT\n>P1_cds\nATGGCT\n"),
+        ]:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.script.main(["P2", "P1", *flags])
+            self.assertEqual(output.getvalue(), expected)
+
+    def test_multiple_accessions_repeat_duplicates(self):
+        self.fixture.write_manifest([
+            dict(sequence_accession="P1", sequence_database="G1", sequence_type="protein",
+                 sequence_source="ncbi", sequence_length=2),
+        ])
+        self.write_single_cds_genome("G1", "P1", "MA", "ATGGCT")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.script.main(["P1", "P1", "--fasta"])
+        self.assertEqual(output.getvalue(), ">P1\nMA\n>P1\nMA\n")
+
+    def test_multiple_accessions_have_no_partial_output_on_failure(self):
+        self.fixture.write_manifest([
+            dict(sequence_accession="P1", sequence_database="G1", sequence_type="protein",
+                 sequence_source="ncbi", sequence_length=2),
+        ])
+        self.write_single_cds_genome("G1", "P1", "MA", "ATGGCT")
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaisesRegex(ValueError, "OTHER.*manifest"):
+            self.script.main(["P1", "OTHER", "--fasta"])
+        self.assertEqual(output.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
