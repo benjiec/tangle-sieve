@@ -295,6 +295,53 @@ that refer to their basenames. Additional alignment profiles can be supplied
 through repeatable, non-recursive `--hmm-dir` options.
 
 
+## Align transcripts to locus CDS sequences
+
+Align every nucleotide transcript against every exon-only locus CDS, testing
+both the transcript and its reverse complement:
+
+```sh
+python scripts/align-transcripts-to-loci.py loci.fasta transcripts.fasta scores.tsv
+```
+
+Stdout also reports `transcript_accession: locus_accession, score`, one result
+per line with no header. The score is normalized. Every rank-1 locus is printed, including ties
+and zero-score results when no positive alignment exists.
+
+Defaults are `--match 2 --mismatch -3 --gap-open -5 --gap-extend -1`.
+A gap of length k scores `gap_open + (k - 1) * gap_extend`. All four parameters
+are configurable; match must be positive and other scores nonpositive and finite.
+The primary `score` is `100 * raw_score / (match * transcript_length)`.
+It ranges from 0 to 100: 100 means an exact, uninterrupted full-transcript match
+under the default penalties. This is a similarity score, not a probability.
+Unaligned locus flanks are free. Local alignment can select just one region if
+joining multiple regions would reduce the score; it never reports negative scores.
+
+The TSV contains every pair, grouped in transcript input order and ranked by
+descending raw score, then descending transcript coverage, then fewer gap bases.
+Exact ties on these three values share a competition rank (1, 1, 3) and preserve
+locus input order. Both orientations use the same selection criteria; a remaining
+orientation tie favors `+`. Only Biopython's first optimal alignment per orientation
+is inspected, so secondary metrics are not optimized across equivalent tracebacks.
+
+`transcript_coverage` is the fraction of transcript bases paired with locus bases
+(including mismatches, excluding insertions). `identity` is the fraction of paired
+bases that are identical A/C/G/T bases. Both are fractions from 0 to 1. Gap counts
+and gap bases include internal insertions and deletions. Coordinates are zero-based,
+end-exclusive, and refer to the original input sequences even on the `-` strand.
+No positive alignment produces score 0, strand `.`, and blank coordinates.
+
+FASTA IDs must be unique within each file. Empty files, empty sequences, and
+invalid nucleotide characters are rejected. Lowercase is accepted and U becomes T.
+IUPAC ambiguity symbols are accepted but always receive the mismatch score, even
+when identical; ambiguous bases therefore cannot inflate exact-match scores.
+The script loads both FASTAs and computes alignments sequentially.
+
+These defaults need calibration against your biological examples. In particular,
+legitimate exon omissions may incur the same penalties as an undesired scattered
+match. Compare known locus assignments while varying gap-open and gap-extension
+scores before treating the ranking as evidence of transcript origin.
+
 ## Calling External Tools
 
 Some of the above scripts call the following tools.
