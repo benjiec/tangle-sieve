@@ -4,6 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 
 from sieve.protein import CuratedProtein
+from tangle.detected import DetectedTable
 from tests.fixtures import DefaultsFixture
 from tests.scripts.helpers import load_script
 
@@ -278,6 +279,83 @@ class TestProteinExons(unittest.TestCase):
         with redirect_stdout(output), self.assertRaisesRegex(ValueError, "OTHER.*manifest"):
             self.script.main(["P1", "OTHER", "--fasta"])
         self.assertEqual(output.getvalue(), "")
+
+    def fragment_row(self, accession, genome, query_start, query_end, target_start, target_end):
+        return dict(
+            detection_type="model", detection_method="hmm", batch="batch1",
+            query_accession="NC_1", query_database=genome, query_type="contig",
+            target_accession=accession, target_database=genome, target_type="protein",
+            target_model="model1", query_start=query_start, query_end=query_end,
+            target_start=target_start, target_end=target_end, evalue=1e-10, bitscore=50,
+        )
+
+    def write_fragments(self, rows):
+        path = self.fixture.root / "fragments.tsv"
+        DetectedTable.write_tsv(str(path), rows)
+        return str(path)
+
+    def test_fragments_tsv_replaces_gff_on_both_strands(self):
+        self.fixture.write_manifest([
+            dict(sequence_accession="P1", sequence_database=genome, sequence_type="protein",
+                 sequence_source="hmm-detected", sequence_length=4)
+            for genome in ("G1", "G2")
+        ])
+        rows = [
+            self.fragment_row("P1", "G1", 10, 15, 1, 2),
+            self.fragment_row("P1", "G1", 30, 35, 3, 4),
+            self.fragment_row("P1", "G2", 90, 85, 1, 2),
+            self.fragment_row("P1", "G2", 60, 55, 3, 4),
+        ]
+        fragments = self.write_fragments(reversed(rows))
+        for genome in ("G1", "G2"):
+            self.fixture.write_detected_proteins(genome, {"P1": "MAKL"})
+        g1 = list("N" * 100)
+        g1[9:15], g1[29:35] = "ATGGCT", "AAACTG"
+        g2 = list("N" * 100)
+        g2[84:90], g2[54:60] = "AGCCAT", "CAGTTT"
+        self.fixture.write_genomic_fasta("G1", {"NC_1": "".join(g1)})
+        self.fixture.write_genomic_fasta("G2", {"NC_1": "".join(g2)})
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.script.main(["P1", "--fragments-tsv", fragments, "--dna", "--gc"])
+        self.assertEqual(
+            output.getvalue(),
+            "genome G1\nexon 1, NC_1, 10, 15: MA, ATGGCT, 50.00%\n"
+            "exon 2, NC_1, 30, 35: KL, AAACTG, 33.33%\n"
+            "genome G2\nexon 1, NC_1, 85, 90: MA, ATGGCT, 50.00%\n"
+            "exon 2, NC_1, 55, 60: KL, AAACTG, 33.33%\n",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.script.main(["P1", "--fragments-tsv", fragments, "--fasta", "--dna"])
+        self.assertEqual(output.getvalue(), ">P1_cds\nATGGCTAAACTG\n>P1_cds\nATGGCTAAACTG\n")
+
+    def test_fragments_tsv_supports_multiple_accessions_without_manifest(self):
+        rows = [self.fragment_row("P1", "G1", 1, 6, 1, 2),
+                self.fragment_row("P2", "G2", 1, 6, 1, 2)]
+        fragments = self.write_fragments(rows)
+        self.fixture.write_genomic_fasta("G1", {"NC_1": "ATGGCT"})
+        self.fixture.write_genomic_fasta("G2", {"NC_1": "GGTCCT"})
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.script.main(["P2", "P1", "--fragments-tsv", fragments, "--fasta"])
+        self.assertEqual(output.getvalue(), ">P2\nGP\n>P1\nMA\n")
+
+    def test_fragments_tsv_rejects_missing_and_inconsistent_rows_without_output(self):
+        cases = [
+            ([], "fragments TSV"),
+            ([self.fragment_row("P1", "G1", 1, 5, 1, 2)], "divisible"),
+            ([self.fragment_row("P1", "G1", 1, 3, 1, 2),
+              self.fragment_row("P1", "G1", 4, 6, 2, 3)], "overlapping"),
+        ]
+        for rows, message in cases:
+            fragments = self.write_fragments(rows or [self.fragment_row("OTHER", "G1", 1, 6, 1, 2)])
+            self.fixture.write_genomic_fasta("G1", {"NC_1": "ATGGCT"})
+            output = io.StringIO()
+            with self.subTest(message=message), redirect_stdout(output), self.assertRaisesRegex(ValueError, message):
+                self.script.main(["P1", "--fragments-tsv", fragments])
+            self.assertEqual(output.getvalue(), "")
 
 
 if __name__ == "__main__":

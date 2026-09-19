@@ -12,6 +12,7 @@ from urllib.parse import unquote
 
 from Bio.Seq import Seq
 from tangle.defaults import Defaults
+from tangle.detected import DetectedTable
 from tangle.manifest import ManifestTable
 from sieve.protein import (
     CuratedProtein, _existing_path, _parse_gff_line, _rows_from_table, _sql_string,
@@ -50,6 +51,65 @@ def read_cds(protein):
     if not rows:
         raise ValueError(f"Cannot find CDS rows for protein {protein.protein_accession}")
     return rows
+
+
+def read_fragment_groups(accession, path):
+    path = _existing_path(path)
+    rows = _rows_from_table(DetectedTable, path, column_filters=[
+        f"target_accession = {_sql_string(accession)}",
+        "target_type = 'protein'",
+    ])
+    if not rows:
+        raise ValueError(f"Cannot find protein {accession} in fragments TSV")
+    groups = {}
+    for row in rows:
+        genome = row.get("target_database")
+        if not genome:
+            raise ValueError(f"Fragment for {accession} has no target_database")
+        if row.get("query_database") != genome:
+            raise ValueError(f"Fragment databases disagree for {accession}")
+        groups.setdefault(genome, []).append(row)
+    return [(genome, groups[genome]) for genome in sorted(groups)]
+
+
+def fragment_portions(rows, genomic_sequences, accession):
+    for row in rows:
+        if row.get("target_start") is None or row.get("target_end") is None:
+            raise ValueError(f"Fragment for {accession} has no target coordinates")
+    rows = sorted(rows, key=lambda row: (row["target_start"], row["target_end"]))
+    contigs = {row["query_accession"] for row in rows}
+    strands = {1 if row["query_start"] <= row["query_end"] else -1 for row in rows}
+    if len(contigs) != 1:
+        raise ValueError(f"Fragments for {accession} span multiple contigs")
+    if len(strands) != 1:
+        raise ValueError(f"Fragments for {accession} span multiple strands")
+    result = []
+    previous_end = None
+    for row in rows:
+        target_start, target_end = row["target_start"], row["target_end"]
+        if target_start < 1 or target_end < target_start or (previous_end is not None and target_start <= previous_end):
+            raise ValueError(f"Fragments for {accession} have overlapping or invalid model coordinates")
+        cds = {
+            "seqid": row["query_accession"],
+            "start": min(row["query_start"], row["query_end"]),
+            "end": max(row["query_start"], row["query_end"]),
+            "strand": "+" if row["query_start"] <= row["query_end"] else "-",
+        }
+        dna = exon_dna(cds, genomic_sequences)
+        if len(dna) % 3:
+            raise ValueError(f"Genomic fragment length is not divisible by three for {accession}")
+        result.append((cds, str(Seq(dna).translate(table="Standard", to_stop=False))))
+        previous_end = target_end
+    return result
+
+
+def collate_fragment_protein(fragment_rows, portions):
+    rows = sorted(fragment_rows, key=lambda row: (row["target_start"], row["target_end"]))
+    sequence = portions[0][1]
+    for previous, row, (_cds, portion) in zip(rows, rows[1:], portions[1:]):
+        sequence += "X" * max(0, row["target_start"] - previous["target_end"] - 1)
+        sequence += portion
+    return sequence
 
 
 def exon_portions(rows, sequence):
@@ -96,7 +156,7 @@ def exon_portions(rows, sequence):
     return result
 
 
-def exon_dna(protein, row, genomic_sequences):
+def exon_dna(row, genomic_sequences):
     contig = genomic_sequences.get(row["seqid"])
     if contig is None:
         raise ValueError(f"Cannot find contig sequence {row['seqid']}")
@@ -114,19 +174,31 @@ def main(argv=None):
     parser.add_argument("--dna", action="store_true", help="append the full CDS exon DNA in translation direction")
     parser.add_argument("--gc", action="store_true", help="append GC percentage (G+C divided by all exon bases, including ambiguous bases)")
     parser.add_argument("--fasta", action="store_true", help="print FASTA instead of enumerating CDS exons")
+    parser.add_argument("--fragments-tsv", help="derive CDS fragments from this detected-fragments TSV instead of GFF")
     args = parser.parse_args(argv)
     lines = []
     try:
         for protein_accession in args.protein_accessions:
-            for genome in find_genomes(protein_accession):
+            if args.fragments_tsv:
+                genome_rows = read_fragment_groups(protein_accession, args.fragments_tsv)
+            else:
+                genome_rows = [(genome, None) for genome in find_genomes(protein_accession)]
+            for genome, fragment_rows in genome_rows:
                 protein = CuratedProtein(protein_accession, genome)
-                rows = read_cds(protein)
-                protein_sequence = protein.sequence()
-                portions = exon_portions(rows, protein_sequence)
-                genomic_sequences = protein._genomic_sequences() if args.dna or (args.gc and not args.fasta) else None
+                if fragment_rows is None:
+                    protein.manifest_entry
+                    rows = read_cds(protein)
+                    protein_sequence = protein.sequence()
+                    portions = exon_portions(rows, protein_sequence)
+                else:
+                    genomic_sequences = protein._genomic_sequences()
+                    portions = fragment_portions(fragment_rows, genomic_sequences, protein_accession)
+                    protein_sequence = collate_fragment_protein(fragment_rows, portions)
+                if fragment_rows is None:
+                    genomic_sequences = protein._genomic_sequences() if args.dna or (args.gc and not args.fasta) else None
                 if args.fasta:
                     if args.dna:
-                        sequence = "".join(exon_dna(protein, row, genomic_sequences) for row, _ in portions)
+                        sequence = "".join(exon_dna(row, genomic_sequences) for row, _ in portions)
                         lines.extend((f">{protein_accession}_cds", sequence))
                     else:
                         lines.extend((f">{protein_accession}", protein_sequence))
@@ -134,7 +206,7 @@ def main(argv=None):
                 lines.append(f"genome {genome}")
                 for number, (row, portion) in enumerate(portions, 1):
                     if genomic_sequences is not None:
-                        dna = exon_dna(protein, row, genomic_sequences)
+                        dna = exon_dna(row, genomic_sequences)
                         if args.dna:
                             portion += f", {dna}"
                         if args.gc:
