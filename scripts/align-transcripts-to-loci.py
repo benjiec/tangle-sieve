@@ -4,6 +4,7 @@
 import argparse
 import csv
 import math
+import os
 import sys
 
 from Bio import Align, SeqIO
@@ -116,9 +117,14 @@ def main(argv=None):
         transcripts = read_fasta(args.transcripts_fasta)
     except ValueError as error:
         parser.error(str(error))
-    with open_file_to_write(args.output_tsv, "wt") as stream:
+    write_header = True
+    if os.path.exists(args.output_tsv):
+        with open_file_to_read(args.output_tsv) as existing:
+            write_header = not existing.read(1)
+    with open_file_to_write(args.output_tsv, "at") as stream:
         writer = csv.DictWriter(stream, fieldnames=FIELDS, delimiter="\t", lineterminator="\n")
-        writer.writeheader()
+        if write_header:
+            writer.writeheader()
         for transcript_id, transcript in transcripts:
             rows = []
             for locus_id, locus in loci:

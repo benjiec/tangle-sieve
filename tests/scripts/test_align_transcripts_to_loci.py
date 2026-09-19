@@ -1,4 +1,5 @@
 import csv
+import gzip
 import io
 import os
 import tempfile
@@ -91,6 +92,33 @@ class TestAlignTranscriptsToLoci(unittest.TestCase):
                 path.write_text(text)
                 with self.subTest(text=text), self.assertRaises(ValueError):
                     self.script.read_fasta(str(path))
+
+    def test_appends_with_one_header_including_empty_and_gzip_files(self):
+        for suffix in (".tsv", ".tsv.gz"):
+            for preexisting in (False, True):
+                with self.subTest(suffix=suffix, preexisting=preexisting), tempfile.TemporaryDirectory() as directory:
+                    loci = Path(directory) / "l.fa"
+                    transcripts = Path(directory) / "t.fa"
+                    output = Path(directory) / ("out" + suffix)
+                    opener = gzip.open if suffix.endswith(".gz") else open
+                    if preexisting:
+                        with opener(output, "wt"):
+                            pass
+                    loci.write_text(">locus\nACGT\n")
+                    transcripts.write_text(">first\nACGT\n")
+                    with redirect_stdout(io.StringIO()):
+                        self.script.main([str(loci), str(transcripts), str(output)])
+                    with opener(output, "rt") as stream:
+                        original = stream.read()
+                    transcripts.write_text(">second\nACGT\n")
+                    with redirect_stdout(io.StringIO()):
+                        self.script.main([str(loci), str(transcripts), str(output)])
+                    with opener(output, "rt") as stream:
+                        result = stream.read()
+                    self.assertTrue(result.startswith(original))
+                    self.assertEqual(result.count("transcript_id\t"), 1)
+                    rows = list(csv.DictReader(io.StringIO(result), delimiter="\t"))
+                    self.assertEqual([row["transcript_id"] for row in rows], ["first", "second"])
 
     def test_cli_all_pairs_order_ties_and_custom_parameters(self):
         with tempfile.TemporaryDirectory() as directory:

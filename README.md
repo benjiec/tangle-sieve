@@ -304,6 +304,9 @@ both the transcript and its reverse complement:
 python scripts/align-transcripts-to-loci.py loci.fasta transcripts.fasta scores.tsv
 ```
 
+Existing output TSV files are appended to; the header is written only for new
+or empty files. Repeated runs append repeated results without deduplication.
+
 Stdout also reports `transcript_accession: locus_accession, score`, one result
 per line with no header. The score is normalized. Every rank-1 locus is printed, including ties
 and zero-score results when no positive alignment exists.
