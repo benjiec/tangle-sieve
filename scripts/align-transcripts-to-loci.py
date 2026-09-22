@@ -46,7 +46,7 @@ def read_fasta(path):
     with open_file_to_read(path) as stream:
         for record in SeqIO.parse(stream, "fasta"):
             if record.id in seen:
-                raise ValueError(f"duplicate FASTA ID in {path}: {record.id}")
+                continue
             seen.add(record.id)
             sequence = str(record.seq).upper().replace("U", "T")
             if not sequence:
