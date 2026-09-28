@@ -140,6 +140,87 @@ class TestPfamExtractRegionScript(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Duplicate FASTA accession: p1"):
                 self.script.read_unique_fasta(fasta)
 
+    def test_indices_and_offsets(self):
+        cases = [
+            ({}, "BCDEFGHI"),
+            ({"left_index": 2}, "FGHI"),
+            ({"right_index": 2}, "BCDEFG"),
+            ({"left_index": 2, "right_index": 2}, "FG"),
+            ({"left_offset": -1, "right_offset": 1}, "ABCDEFGHIJ"),
+            ({"left_offset": 1, "right_offset": -1}, "CDEFGH"),
+            ({"left_index": 2, "right_index": 2,
+              "left_offset": -1, "right_offset": 1}, "EFGH"),
+            ({"left_index": 2, "right_index": 2, "right_offset": -1}, "F"),
+        ]
+        for options, expected in cases:
+            with self.subTest(options=options):
+                reports = []
+                self.assertEqual(self.script.extract_regions(
+                    {"p1": "ABCDEFGHIJ"}, {"p1": [(8, 9), (2, 3), (6, 7)]},
+                    "PF00023", 3, 3, report=reports.append, **options,
+                ), {"p1_PF00023_3_3": expected})
+                self.assertEqual(reports, [])
+
+    def test_invalid_indices_and_adjusted_boundaries_are_skipped(self):
+        cases = [
+            ({side: value}, "domain indices")
+            for side in ("left_index", "right_index") for value in (-1, 0, 4)
+        ] + [
+            ({"left_offset": -2}, "outside sequence length"),
+            ({"left_offset": 9}, "outside sequence length"),
+            ({"right_offset": 2}, "outside sequence length"),
+            ({"right_offset": -9}, "outside sequence length"),
+            ({"left_index": 3, "right_index": 1}, "exceeds end"),
+            ({"left_offset": 4, "right_offset": -4}, "exceeds end"),
+        ]
+        for options, diagnostic in cases:
+            with self.subTest(options=options):
+                reports = []
+                self.assertEqual(self.script.extract_regions(
+                    {"p1": "ABCDEFGHIJ"}, {"p1": [(2, 3), (6, 7), (8, 9)]},
+                    "PF00023", 3, 3, report=reports.append, **options,
+                ), {})
+                self.assertEqual(len(reports), 1)
+                self.assertIn(diagnostic, reports[0])
+
+    def test_nested_and_tied_domains_preserve_default_span(self):
+        for options, expected in [({}, "BCDEFGHI"),
+                                  ({"right_index": 3}, "BCDEF"),
+                                  ({"right_index": 1}, "BCD")]:
+            with self.subTest(options=options):
+                self.assertEqual(self.script.extract_regions(
+                    {"p1": "ABCDEFGHIJ"}, {"p1": [(5, 6), (2, 9), (2, 4)]},
+                    "PF00023", 3, 3, **options,
+                ), {"p1_PF00023_3_3": expected})
+
+    def test_main_passes_indices_and_signed_offsets(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "input.faa")
+            tsv = os.path.join(tmpd, "matches.tsv")
+            output = os.path.join(tmpd, "output.faa")
+            with open(fasta, "w", encoding="utf-8") as stream:
+                stream.write(">p1\nABCDEFGHIJ\n")
+            DetectedTable.write_tsv(tsv, [
+                self.detected_row("p1", "PF00023", 8, 9),
+                self.detected_row("p1", "PF00023", 2, 3),
+                self.detected_row("p1", "PF00023", 7, 6),
+            ])
+            self.assertEqual(self.script.main([
+                fasta, tsv, "PF00023", "3", "3", output,
+                "--left-index", "2", "--right-index", "2",
+                "--left-offset", "-1", "--right-offset", "+1",
+            ]), 0)
+            with open(output, encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), ">p1_PF00023_3_3\nEFGH\n")
+
+    def test_cli_requires_integer_options(self):
+        for option in ("--left-index", "--right-index", "--left-offset", "--right-offset"):
+            with self.subTest(option=option), self.assertRaises(SystemExit):
+                self.script.main([
+                    "in.faa", "in.tsv", "PF00023", "1", "3", "out.faa",
+                    option, "1.5",
+                ])
+
     def test_rejects_invalid_limits(self):
         with self.assertRaises(ValueError):
             self.script.extract_regions({}, {}, "PF00023", 0, 9)

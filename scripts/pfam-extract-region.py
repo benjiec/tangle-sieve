@@ -80,7 +80,10 @@ def find_match_regions(tsv, pfam_accession):
     return regions
 
 
-def extract_regions(sequences, matches, pfam_accession, minimum, maximum, report=None):
+def extract_regions(
+    sequences, matches, pfam_accession, minimum, maximum, report=None,
+    *, left_index=None, right_index=None, left_offset=0, right_offset=0,
+):
     if minimum < 1 or maximum < 1:
         raise ValueError("match counts must be at least 1")
     if minimum > maximum:
@@ -89,7 +92,7 @@ def extract_regions(sequences, matches, pfam_accession, minimum, maximum, report
     extracted = {}
 
     for accession, sequence in sequences.items():
-        sequence_matches = matches.get(accession, [])
+        sequence_matches = sorted(matches.get(accession, []))
         count = len(sequence_matches)
         if not minimum <= count <= maximum:
             report(
@@ -98,13 +101,26 @@ def extract_regions(sequences, matches, pfam_accession, minimum, maximum, report
             )
             continue
 
-        start = min(region[0] for region in sequence_matches)
-        end = max(region[1] for region in sequence_matches)
-        if start < 1 or end > len(sequence):
+        if any(index is not None and not 1 <= index <= count
+               for index in (left_index, right_index)):
+            report(
+                f"Ignoring {accession}: domain indices {left_index}, {right_index} "
+                f"must be between 1 and {count}"
+            )
+            continue
+
+        start = (sequence_matches[left_index - 1][0] if left_index is not None
+                 else min(region[0] for region in sequence_matches)) + left_offset
+        end = (sequence_matches[right_index - 1][1] if right_index is not None
+               else max(region[1] for region in sequence_matches)) + right_offset
+        if not (1 <= start <= len(sequence) and 1 <= end <= len(sequence)):
             report(
                 f"Ignoring {accession}: match boundaries {start}-{end} are outside "
                 f"sequence length {len(sequence)}"
             )
+            continue
+        if start > end:
+            report(f"Ignoring {accession}: start {start} exceeds end {end}")
             continue
 
         output_accession = f"{accession}_{pfam_accession}_{minimum}_{maximum}"
@@ -129,6 +145,22 @@ def main(argv=None):
     parser.add_argument("minimum", type=positive_int, help="minimum match count (inclusive)")
     parser.add_argument("maximum", type=positive_int, help="maximum match count (inclusive)")
     parser.add_argument("output", help="output FASTA")
+    parser.add_argument(
+        "--left-index", type=int,
+        help="1-based domain index in sequence order for the start (default: earliest start)",
+    )
+    parser.add_argument(
+        "--right-index", type=int,
+        help="1-based domain index in sequence order for the end (default: latest end)",
+    )
+    parser.add_argument(
+        "--left-offset", type=int, default=0,
+        help="signed residue offset added to the selected start (default: 0)",
+    )
+    parser.add_argument(
+        "--right-offset", type=int, default=0,
+        help="signed residue offset added to the selected inclusive end (default: 0)",
+    )
     args = parser.parse_args(argv)
 
     if args.minimum > args.maximum:
@@ -142,6 +174,10 @@ def main(argv=None):
         args.pfam_accession,
         args.minimum,
         args.maximum,
+        left_index=args.left_index,
+        right_index=args.right_index,
+        left_offset=args.left_offset,
+        right_offset=args.right_offset,
     )
     write_fasta(extracted, args.output)
     return 0
