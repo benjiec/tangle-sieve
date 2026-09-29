@@ -341,3 +341,16 @@ and count how many per-residue minima are ≤ each candidate cutoff. This comman
 still reports each run's detected patches; it does not freeze a baseline across
 runs or run a cutoff sweep. Recomputed patches can lose residues and partners,
 so their medians are not directly comparable as fixed-set coverage measurements.
+
+### Full-interface results before the patch summary
+
+For each input source, stdout first reports every analyzed chain pair in every
+model, before any patch splitting. Each entry includes both directional pDockQ2
+scores and their maximum on the first line, and contact-pair and contacting-
+residue counts on the second. Distance statistics are omitted from this full-
+interface stdout section; they remain in the TSV and top-five patch summary.
+Models are ordered numerically, then chain pairs lexically. These are pairwise full-interface scores, not a single
+aggregate score for the entire multimer and not chain-versus-all-other-chains
+scores. By default all chain pairs are analyzed; `--chains` still restricts
+which pairs are computed. The subsequent top-five summary retains its
+last-chain and ≤10% overlap filters. TSV contents and scoring are unchanged.

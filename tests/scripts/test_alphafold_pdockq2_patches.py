@@ -45,6 +45,7 @@ class SummaryTests(unittest.TestCase):
     def row(self, model, a, b, score, scope='patch'):
         return {'source': 'example.zip', 'model': model, 'scope': scope,
                 'chain 1': a, 'chain 2': b, 'pDockQ2 max': score,
+                'pDockQ2 1 to 2': score, 'pDockQ2 2 to 1': score,
                 'contact distance min': 5.0, 'contact distance max': 7.0,
                 'contact distance mean': 6.0, 'contact distance median': 6.0,
                 'residue count 1': 1, 'residue count 2': 1,
@@ -62,7 +63,7 @@ class SummaryTests(unittest.TestCase):
         targets = {('example.zip', m): 'C' for m in range(7)}
         output = io.StringIO()
         SCRIPT.write_summary(rows, targets, output)
-        text = output.getvalue()
+        text = output.getvalue().split('Top 5 patches', 1)[1]
         self.assertEqual(text.count('Region 1'), 5)
         self.assertIn('1. Model 6', text)
         self.assertIn('min 5.000 | max 7.000 | median 6.000 | average 6.000', text)
@@ -112,3 +113,29 @@ class SummaryTests(unittest.TestCase):
                                              '--min-residues-per-chain', '1', '--min-contacts', '1']), 0)
             self.assertIn('Model unnumbered', output.getvalue())
             self.assertEqual(set(root.iterdir()), {cif, data})
+
+    def test_full_pairs_precede_last_chain_patches(self):
+        rows = [self.row(0, 'A', 'B', 0.9, 'full'),
+                self.row(0, 'A', 'C', 0.6, 'full'), self.row(0, 'A', 'C', 0.8)]
+        output = io.StringIO()
+        SCRIPT.write_summary(rows, {('example.zip', 0): 'C'}, output)
+        full, patches = output.getvalue().split('Top 5 patches', 1)
+        self.assertIn('A–B', full)
+        self.assertIn('A→B 0.900000', full)
+        self.assertIn('A–C', full)
+        self.assertNotIn('All interchain contact pairs', full)
+        self.assertNotIn('Nearest contact', full)
+        self.assertIn('Contacts: 10', full)
+        self.assertNotIn('A–B', patches)
+        self.assertIn('max pDockQ2 0.800000', patches)
+
+    def test_full_no_contacts_prints_zero_counts(self):
+        row = self.row(0, 'A', 'B', 0, 'full')
+        for key in row:
+            if key.startswith(('contact distance', 'nearest contact distance')):
+                row[key] = ''
+        row.update({'contact count': 0, 'residue count 1': 0, 'residue count 2': 0})
+        output = io.StringIO()
+        SCRIPT.write_summary([row], {('example.zip', 0): 'B'}, output)
+        self.assertIn('Contacts: 0 | residues A: 0, B: 0', output.getvalue())
+        self.assertIn('No qualifying patches', output.getvalue())

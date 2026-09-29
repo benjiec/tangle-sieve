@@ -240,10 +240,26 @@ def distinct_patches(candidates, limit=5):
 
 
 def write_summary(rows, targets, stream):
-    """Top five patches per input source, across models, involving its last CIF chain."""
+    """Full pairwise interfaces, then top five distinct last-chain patches."""
     for source in sorted({source for source, _ in targets}):
         last_chains = sorted({chain for (s, _), chain in targets.items() if s == source and chain is not None})
         print(f'\n{source}', file=stream)
+        print('Full-interface pDockQ2 (all analyzed chain pairs, before patch splitting):', file=stream)
+        references = sorted((r for r in rows if r['source'] == source and r['scope'] == 'full'),
+                            key=lambda r: (int(r['model']) if r['model'] != '' else -1,
+                                           r['chain 1'], r['chain 2']))
+        if not references:
+            print('  No chain-pair results.', file=stream)
+        for row in references:
+            model = row['model'] if row['model'] != '' else 'unnumbered'
+            a, b = row['chain 1'], row['chain 2']
+            print(f"  Model {model} | {a}–{b} | "
+                  f"{a}→{b} {row['pDockQ2 1 to 2']:.6f} | "
+                  f"{b}→{a} {row['pDockQ2 2 to 1']:.6f} | "
+                  f"max pDockQ2 {row['pDockQ2 max']:.6f}", file=stream)
+            print(f"     Contacts: {row['contact count']} | residues {a}: {row['residue count 1']}, "
+                  f"{b}: {row['residue count 2']}", file=stream)
+        print(file=stream)
         print(f'Top 5 patches involving the last CIF chain ({", ".join(last_chains)}), across models (at most 10% residue overlap):', file=stream)
         candidates = [r for r in rows if r['source'] == source and r['scope'] == 'patch'
                       and targets.get((source, r['model'])) in (r['chain 1'], r['chain 2'])]
