@@ -239,6 +239,14 @@ def distinct_patches(candidates, limit=5):
     return selected
 
 
+def pae_confidence_text(row):
+    if not row['contact count']:
+        return 'PAE-only confidence: n/a (no contacts)'
+    return (f"PAE-only confidence (0–1, higher better): "
+            f"{row['chain 1']}→{row['chain 2']} {row['normalized PAE 1 to 2']:.6f} | "
+            f"{row['chain 2']}→{row['chain 1']} {row['normalized PAE 2 to 1']:.6f}")
+
+
 def write_summary(rows, targets, stream):
     """Full pairwise interfaces, then top five distinct last-chain patches."""
     for source in sorted({source for source, _ in targets}):
@@ -258,7 +266,7 @@ def write_summary(rows, targets, stream):
                   f"{b}→{a} {row['pDockQ2 2 to 1']:.6f} | "
                   f"max pDockQ2 {row['pDockQ2 max']:.6f}", file=stream)
             print(f"     Contacts: {row['contact count']} | residues {a}: {row['residue count 1']}, "
-                  f"{b}: {row['residue count 2']}", file=stream)
+                  f"{b}: {row['residue count 2']} | {pae_confidence_text(row)}", file=stream)
         print(file=stream)
         print(f'Top 5 patches involving the last CIF chain ({", ".join(last_chains)}), across models (at most 10% residue overlap):', file=stream)
         candidates = [r for r in rows if r['source'] == source and r['scope'] == 'patch'
@@ -273,6 +281,7 @@ def write_summary(rows, targets, stream):
                   f"{row['chain 1']}–{row['chain 2']} | max pDockQ2 {row['pDockQ2 max']:.6f}", file=stream)
             print(f"     Region 1 ({row['chain 1']}): {row['region 1']}", file=stream)
             print(f"     Region 2 ({row['chain 2']}): {row['region 2']}", file=stream)
+            print(f'     {pae_confidence_text(row)}', file=stream)
             target = targets[(source, row['model'])]
             side = 1 if row['chain 1'] == target else 2
             print(f'     Nearest contact per {target} residue (Å; n={row[f"residue count {side}"]}): ' + ' | '.join(

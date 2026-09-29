@@ -354,3 +354,22 @@ aggregate score for the entire multimer and not chain-versus-all-other-chains
 scores. By default all chain pairs are analyzed; `--chains` still restricts
 which pairs are computed. The subsequent top-five summary retains its
 last-chain and ≤10% overlap filters. TSV contents and scoring are unchanged.
+
+### PAE-only confidence in stdout
+
+Both full-interface and patch summaries now show the two directional PAE-only
+confidence values, using the existing TSV `normalized PAE 1 to 2` and
+`normalized PAE 2 to 1` columns without changing their calculations. Each is
+`mean(1 / (1 + (PAE / 10 Å)^2))` over the row's interchain contact pairs. The
+transformation is applied to each pair before averaging; it is not a transform
+of the mean PAE. It includes neither pLDDT nor the fitted pDockQ2 sigmoid.
+Values are dimensionless, with higher values indicating lower predicted error:
+PAE 0, 5, 10, and 20 Å map respectively to 1, 0.8, 0.5, and 0.2 for one pair.
+This is an inverse-like transformation, not the reciprocal 1/PAE, and not a
+calibrated probability of binding. No-contact rows display `n/a` in stdout
+(the existing TSV convention of zero normalized PAE is retained).
+
+Full-interface output retains two lines per model/pair, appending PAE-only
+confidence to the contact-count line. Patch output uses a separate confidence
+line. Ranking and non-overlap selection still use regular pDockQ2, not PAE-only
+confidence. The arrow labels retain the matrix-index conventions defined above.

@@ -46,6 +46,7 @@ class SummaryTests(unittest.TestCase):
         return {'source': 'example.zip', 'model': model, 'scope': scope,
                 'chain 1': a, 'chain 2': b, 'pDockQ2 max': score,
                 'pDockQ2 1 to 2': score, 'pDockQ2 2 to 1': score,
+                'normalized PAE 1 to 2': 0.8, 'normalized PAE 2 to 1': 0.5,
                 'contact distance min': 5.0, 'contact distance max': 7.0,
                 'contact distance mean': 6.0, 'contact distance median': 6.0,
                 'residue count 1': 1, 'residue count 2': 1,
@@ -122,12 +123,14 @@ class SummaryTests(unittest.TestCase):
         full, patches = output.getvalue().split('Top 5 patches', 1)
         self.assertIn('A–B', full)
         self.assertIn('A→B 0.900000', full)
+        self.assertIn('A→B 0.800000 | B→A 0.500000', full)
         self.assertIn('A–C', full)
         self.assertNotIn('All interchain contact pairs', full)
         self.assertNotIn('Nearest contact', full)
         self.assertIn('Contacts: 10', full)
         self.assertNotIn('A–B', patches)
         self.assertIn('max pDockQ2 0.800000', patches)
+        self.assertIn('A→C 0.800000 | C→A 0.500000', patches)
 
     def test_full_no_contacts_prints_zero_counts(self):
         row = self.row(0, 'A', 'B', 0, 'full')
@@ -139,3 +142,4 @@ class SummaryTests(unittest.TestCase):
         SCRIPT.write_summary([row], {('example.zip', 0): 'B'}, output)
         self.assertIn('Contacts: 0 | residues A: 0, B: 0', output.getvalue())
         self.assertIn('No qualifying patches', output.getvalue())
+        self.assertIn('PAE-only confidence: n/a (no contacts)', output.getvalue())
