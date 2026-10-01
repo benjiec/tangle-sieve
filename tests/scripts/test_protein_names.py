@@ -69,6 +69,26 @@ class TestProteinNames(unittest.TestCase):
     def test_empty_input(self):
         self.assertEqual(self.run_script("\n  \n"), (0, "accession_id\tprotein_name\n", ""))
 
+    def test_stdin(self):
+        self.manifest([("P1", "G1", "protein")])
+        self.fasta("G1", ["P1 kinase [Species]"])
+        for content, status, rows in [
+            (" P1\n\nP1\n", 0, "P1\tkinase\nP1\tkinase\n"),
+            ("", 0, ""),
+            ("UNKNOWN\n", 1, ""),
+        ]:
+            with self.subTest(content=content):
+                source, output, errors = io.StringIO(content), io.StringIO(), io.StringIO()
+                with patch("sys.stdin", source), redirect_stdout(output), redirect_stderr(errors):
+                    self.assertEqual(self.script.main(["-"]), status)
+                self.assertFalse(source.closed)
+                self.assertEqual(output.getvalue(),
+                                 "accession_id\tprotein_name\n" + rows if status == 0 else "")
+                if status:
+                    self.assertIn("manifest", errors.getvalue())
+                else:
+                    self.assertEqual(errors.getvalue(), "")
+
     def test_gzipped_fasta(self):
         self.manifest([("P1", "G1", "protein")])
         path = self.fixture.genome_dir("G1") / "protein.faa.gz"

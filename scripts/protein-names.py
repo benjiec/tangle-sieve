@@ -12,6 +12,7 @@ import gzip
 import re
 import sys
 
+from tangle import open_file_to_read
 from tangle.defaults import Defaults
 from tangle.manifest import ManifestTable
 from sieve.protein import CuratedProtein, _existing_path, _rows_from_table, _sql_string
@@ -73,10 +74,10 @@ def protein_names(accessions):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("accessions_file", help="text file with one accession per line")
+    parser.add_argument("accessions_file", help="text file with one accession per line, or '-' for stdin")
     args = parser.parse_args(argv)
     try:
-        with open(args.accessions_file, encoding="utf-8") as source:
+        with open_file_to_read(args.accessions_file) as source:
             accessions = [line.strip() for line in source if line.strip()]
         names = protein_names(accessions)
     except (OSError, ValueError) as error:

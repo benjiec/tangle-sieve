@@ -1,6 +1,7 @@
 import io
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stdout
 
 from sieve.protein import CuratedProtein
@@ -100,6 +101,38 @@ class TestProteinExons(unittest.TestCase):
                          "exon 2, NC_1, 27, 34: (K)LT\n"
                          "genome G2\nexon 1, NC_1, 984, 990: MA(K)\n"
                          "exon 2, NC_1, 966, 973: (K)LT\n")
+
+    def test_stdin_matches_positional_accessions(self):
+        self.manifest(["G1"])
+        self.write_genome("G1")
+        self.fixture.write_genomic_fasta("G1", {"NC_1": "A" * 100})
+        for flags in ([], ["--fasta"], ["--dna"], ["--gc"]):
+            with self.subTest(flags=flags):
+                expected, output = io.StringIO(), io.StringIO()
+                with redirect_stdout(expected):
+                    self.assertEqual(self.script.main(["P1", "P1", *flags]), 0)
+                source = io.StringIO(" P1 \n\nP1\n")
+                with patch("sys.stdin", source), redirect_stdout(output):
+                    self.assertEqual(self.script.main(["-", *flags]), 0)
+                self.assertEqual(output.getvalue(), expected.getvalue())
+                self.assertFalse(source.closed)
+
+    def test_stdin_expansion_order_and_empty_input(self):
+        for content, expected in [(" B\n\nC \n", ["A", "B", "C", "D"]),
+                                  ("\n ", ["A", "D"])]:
+            with self.subTest(content=content), patch("sys.stdin", io.StringIO(content)) as source:
+                self.assertEqual(list(self.script.read_accessions(["A", "-", "D"])), expected)
+                self.assertFalse(source.closed)
+
+    def test_stdin_failure_has_no_partial_output(self):
+        self.manifest(["G1"])
+        self.write_genome("G1")
+        source, output = io.StringIO("P1\nUNKNOWN\n"), io.StringIO()
+        with patch("sys.stdin", source), redirect_stdout(output):
+            with self.assertRaisesRegex(ValueError, "manifest"):
+                self.script.main(["-"])
+        self.assertEqual(output.getvalue(), "")
+        self.assertFalse(source.closed)
 
     def test_missing_manifest_entry_and_file(self):
         with self.assertRaises(FileNotFoundError):

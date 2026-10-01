@@ -11,6 +11,7 @@ import sys
 from urllib.parse import unquote
 
 from Bio.Seq import Seq
+from tangle import open_file_to_read
 from tangle.defaults import Defaults
 from tangle.detected import DetectedTable
 from tangle.manifest import ManifestTable
@@ -168,9 +169,21 @@ def exon_dna(row, genomic_sequences):
     return dna
 
 
+def read_accessions(arguments):
+    for accession in arguments:
+        if accession == "-":
+            with open_file_to_read(accession) as source:
+                for line in source:
+                    if line.strip():
+                        yield line.strip()
+        else:
+            yield accession
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("protein_accessions", nargs="+")
+    parser.add_argument("protein_accessions", nargs="+",
+                        help="protein accession IDs, or '-' to read one accession per line from stdin")
     parser.add_argument("--dna", action="store_true", help="append the full CDS exon DNA in translation direction")
     parser.add_argument("--gc", action="store_true", help="append GC percentage (G+C divided by all exon bases, including ambiguous bases)")
     parser.add_argument("--fasta", action="store_true", help="print FASTA instead of enumerating CDS exons")
@@ -178,7 +191,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     lines = []
     try:
-        for protein_accession in args.protein_accessions:
+        for protein_accession in read_accessions(args.protein_accessions):
             if args.fragments_tsv:
                 genome_rows = read_fragment_groups(protein_accession, args.fragments_tsv)
             else:
