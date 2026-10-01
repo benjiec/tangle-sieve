@@ -7,11 +7,11 @@ from tangle.detected import DetectedTable
 from tests.scripts.helpers import load_script
 
 
-class TestPfamExtractRegionScript(unittest.TestCase):
+class TestDetectedExtractRegionScript(unittest.TestCase):
 
     def setUp(self):
         repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        self.script = load_script(os.path.join(repo, "scripts", "pfam-extract-region.py"))
+        self.script = load_script(os.path.join(repo, "scripts", "detected-extract-region.py"))
 
     def detected_row(self, accession, pfam, start, end):
         return dict(
