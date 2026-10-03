@@ -121,3 +121,62 @@ class TestPfamFindMatchesScript(unittest.TestCase):
     def test_match_only_requires_output(self):
         with self.assertRaises(SystemExit):
             self.script.main(["PF00504", "--match-only"])
+
+    def test_multiple_targets_require_all_passing_hits_in_same_database(self):
+        hits = [
+            ("complete", "g1", "PF07714.3", 1e-20),
+            ("complete", "g1", "PF00069", 1e-20),
+            ("complete", "g1", "PF00531.1", 1e-20),
+            ("complete", "g1", "PF99999", 1e-20),
+            ("complete", "g1", "PF07714.3", 1e-20),
+            ("partial", "g1", "PF07714", 1e-20),
+            ("partial", "g1", "PF00069", 1e-20),
+            ("partial", "g1", "PF00531", 1e-2),
+            ("split", "g1", "PF07714", 1e-20),
+            ("split", "g2", "PF00069", 1e-20),
+            ("split", "g2", "PF00531", 1e-20),
+        ]
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [
+            self.detected_row(*hit) for hit in hits
+        ])
+        targets = ["PF07714.9", "PF00069", "PF00531", "PF07714"]
+        self.assertEqual(self.script.find_matches(targets, max_evalue=1e-10), [("complete", "g1")])
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            self.script.main([*targets, "--max-evalue", "1e-10"])
+        self.assertEqual(stdout.getvalue(), "complete\tg1\n")
+        self.assertEqual(self.script.find_matches([*targets, "PF12345"]), [])
+
+    def test_exact_match_and_version_normalization(self):
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [
+            self.detected_row("p1", "g1", "PF00504", 1e-20),
+            self.detected_row("p2", "g1", "PF00504.27", 1e-20),
+            self.detected_row("p3", "g1", "PF00504.28", 1e-20),
+            self.detected_row("p3", "g1", "PF00504.27", 1e-20),
+            self.detected_row("p4", "g1", "PF005040.27", 1e-20),
+        ])
+        self.assertEqual(self.script.find_matches("PF00504.99"), [("p1", "g1"), ("p2", "g1"), ("p3", "g1")])
+        self.assertEqual(self.script.find_matches("PF00504", exact_match=True), [("p1", "g1")])
+        self.assertEqual(self.script.find_matches(["PF00504.27", "PF00504.28"], exact_match=True), [("p3", "g1")])
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            self.script.main(["PF00504.27", "--exact-match"])
+        self.assertEqual(stdout.getvalue(), "p2\tg1\np3\tg1\n")
+
+    def test_empty_table(self):
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [])
+        self.assertEqual(self.script.find_matches(["PF07714", "PF00069"]), [])
+
+    def test_invalid_arguments(self):
+        for args in ([], ["PF00504", "PF00069", "--match-only", "-o", "unused.faa"],
+                     ["PF00504", "PF00504", "--match-only"]):
+            with self.subTest(args=args), patch("sys.stderr", io.StringIO()) as stderr:
+                with self.assertRaises(SystemExit) as error:
+                    self.script.main(args)
+                self.assertEqual(error.exception.code, 2)
+                if args:
+                    self.assertIn("--match-only requires a single Pfam accession", stderr.getvalue())
+        with self.assertRaises(ValueError):
+            self.script.find_matches([])
+        with self.assertRaises(ValueError):
+            self.script.find_matches(["PF00504", "PF00069"], include_coordinates=True)

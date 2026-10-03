@@ -18,12 +18,16 @@ def _sql_string(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def find_matches(pfam_accession, max_evalue=None, taxon=None, include_coordinates=False):
-    accession = _sql_string(pfam_accession)
-    version_prefix = _sql_string(f"{pfam_accession}.")
-    filters = [
-        f"(target_accession = {accession} OR starts_with(target_accession, {version_prefix}))"
-    ]
+def find_matches(pfam_accession, max_evalue=None, taxon=None, include_coordinates=False,
+                 exact_match=False):
+    accessions = [pfam_accession] if isinstance(pfam_accession, str) else list(pfam_accession)
+    if not accessions:
+        raise ValueError("At least one Pfam accession is required")
+    if include_coordinates and len(accessions) > 1:
+        raise ValueError("Coordinates require a single Pfam accession")
+    targets = set(accessions if exact_match else [a.split(".", 1)[0] for a in accessions])
+    target_column = "target_accession" if exact_match else "split_part(target_accession, '.', 1)"
+    filters = [f"{target_column} IN ({', '.join(_sql_string(a) for a in sorted(targets))})"]
     if max_evalue is not None:
         filters.append(f"evalue <= {float(max_evalue)}")
 
@@ -37,9 +41,14 @@ def find_matches(pfam_accession, max_evalue=None, taxon=None, include_coordinate
     schema.duckdb_load()
     try:
         coordinate_columns = ", query_start, query_end" if include_coordinates else ""
+        grouping = "" if include_coordinates else (
+            f"GROUP BY query_accession, query_database "
+            f"HAVING COUNT(DISTINCT {target_column}) = {len(targets)}"
+        )
         query = f"""
             SELECT DISTINCT query_accession, query_database{coordinate_columns}
               FROM {schema.name}.{DetectedTable.name}
+             {grouping}
              ORDER BY query_database, query_accession{coordinate_columns}
         """
         rows = duckdb.execute(query).fetchdf().to_dict("records")
@@ -105,17 +114,20 @@ def write_matches_fasta(matches, output, target_accession=None, match_only=False
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("pfam_accession")
+    parser.add_argument("pfam_accession", nargs="+", help="Pfam accessions that must all match")
+    parser.add_argument("--exact-match", action="store_true", help="Match accession versions exactly")
     parser.add_argument("--max-evalue", type=float)
     parser.add_argument("--taxon")
     parser.add_argument("--match-only", action="store_true")
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
 
+    if args.match_only and len(args.pfam_accession) > 1:
+        parser.error("--match-only requires a single Pfam accession")
     if args.match_only and args.output is None:
         parser.error("--match-only requires --output")
 
-    find_kwargs = {"taxon": args.taxon}
+    find_kwargs = {"taxon": args.taxon, "exact_match": args.exact_match}
     if args.match_only:
         find_kwargs["include_coordinates"] = True
     matches = find_matches(args.pfam_accession, args.max_evalue, **find_kwargs)
@@ -123,7 +135,7 @@ def main(argv=None):
         write_matches_fasta(
             matches,
             args.output,
-            target_accession=args.pfam_accession,
+            target_accession=args.pfam_accession[0],
             match_only=args.match_only,
         )
         return 0
