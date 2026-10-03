@@ -8,6 +8,7 @@ import duckdb
 from tangle import open_file_to_write, unique_batch
 from tangle.defaults import Defaults
 from tangle.detected import DetectedTable
+from tangle.manifest import ManifestTable
 from tangle.models import CSVSource, Schema
 
 from sieve.protein import CuratedProtein
@@ -19,7 +20,7 @@ def _sql_string(value):
 
 
 def find_matches(pfam_accession, max_evalue=None, taxon=None, include_coordinates=False,
-                 exact_match=False):
+                 exact_match=False, sequence_source=None):
     accessions = [pfam_accession] if isinstance(pfam_accession, str) else list(pfam_accession)
     if not accessions:
         raise ValueError("At least one Pfam accession is required")
@@ -67,6 +68,20 @@ def find_matches(pfam_accession, max_evalue=None, taxon=None, include_coordinate
                 (row["query_accession"], row["query_database"])
                 for row in rows
             ]
+        if sequence_source is not None:
+            manifest_rows = CSVSource(
+                ManifestTable,
+                Defaults.area_sequence_manifest_tsv(),
+                load_filters=[
+                    "sequence_type = 'protein'",
+                    f"sequence_source = {_sql_string(sequence_source)}",
+                ],
+            ).values()
+            eligible = {
+                (row["sequence_accession"], row["sequence_database"])
+                for row in manifest_rows
+            }
+            matches = [match for match in matches if match[:2] in eligible]
         if taxon is None:
             return matches
         taxonomy_by_genome = read_taxonomy_rows()
@@ -118,6 +133,7 @@ def main(argv=None):
     parser.add_argument("--exact-match", action="store_true", help="Match accession versions exactly")
     parser.add_argument("--max-evalue", type=float)
     parser.add_argument("--taxon")
+    parser.add_argument("--sequence-source", help="Require an exact sequence_source match in the protein manifest")
     parser.add_argument("--match-only", action="store_true")
     parser.add_argument("-o", "--output")
     args = parser.parse_args(argv)
@@ -127,7 +143,11 @@ def main(argv=None):
     if args.match_only and args.output is None:
         parser.error("--match-only requires --output")
 
-    find_kwargs = {"taxon": args.taxon, "exact_match": args.exact_match}
+    find_kwargs = {
+        "taxon": args.taxon,
+        "exact_match": args.exact_match,
+        "sequence_source": args.sequence_source,
+    }
     if args.match_only:
         find_kwargs["include_coordinates"] = True
     matches = find_matches(args.pfam_accession, args.max_evalue, **find_kwargs)

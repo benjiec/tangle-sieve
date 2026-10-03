@@ -167,6 +167,60 @@ class TestPfamFindMatchesScript(unittest.TestCase):
         DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [])
         self.assertEqual(self.script.find_matches(["PF07714", "PF00069"]), [])
 
+    def test_sequence_source_filters_manifest_by_accession_database_and_type(self):
+        proteins = [("p1", "g1"), ("p1", "g2"), ("missing", "g1"),
+                    ("blank", "g1"), ("gene", "g1")]
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [
+            self.detected_row(p, g, "PF00504", 1e-20) for p, g in proteins
+        ])
+        self.fx.write_manifest([
+            dict(sequence_accession=p, sequence_database=g, sequence_type=t, sequence_source=s)
+            for p, g, t, s in [
+                ("p1", "g1", "protein", "custom's source"),
+                ("p1", "g2", "protein", "other"),
+                ("blank", "g1", "protein", None),
+                ("gene", "g1", "gene", "custom's source"),
+            ]
+        ])
+        self.assertEqual(self.script.find_matches("PF00504", sequence_source="custom's source"), [("p1", "g1")])
+        self.assertEqual(self.script.find_matches("PF00504", sequence_source="CUSTOM'S SOURCE"), [])
+        with patch.object(self.script.Defaults, "area_sequence_manifest_tsv", side_effect=AssertionError("Unexpected manifest read")):
+            self.assertEqual(len(self.script.find_matches("PF00504")), len(proteins))
+        self.fx.write_manifest([])
+        self.assertEqual(self.script.find_matches("PF00504", sequence_source="other"), [])
+
+    def test_sequence_source_combines_with_filters_and_output_modes(self):
+        DetectedTable.write_tsv(str(self.fx.area_genomics / "protein_pfam.tsv"), [
+            self.detected_row(p, g, target, evalue)
+            for p, g, evalue in [("keep", "g1", 1e-20), ("weak", "g1", 1),
+                                 ("taxon", "g2", 1e-20), ("source", "g1", 1e-20)]
+            for target in ["PF00504.27", "PF00069"]
+        ])
+        self.fx.write_manifest([
+            dict(sequence_accession=p, sequence_database=g, sequence_type="protein", sequence_source=s)
+            for p, g, s in [("keep", "g1", SEQUENCE_SOURCE_NCBI), ("weak", "g1", SEQUENCE_SOURCE_NCBI),
+                            ("taxon", "g2", SEQUENCE_SOURCE_NCBI), ("source", "g1", "other")]
+        ])
+        self.fx.write_taxonomy_rows([
+            {"Genome Accession": "g1", "Phylum": "Cnidaria"},
+            {"Genome Accession": "g2", "Phylum": "Alveolata"},
+        ])
+        self.fx.write_ncbi_proteins("g1", {"keep": "ABCDEFGHIJKLM"})
+        options = ["--sequence-source", SEQUENCE_SOURCE_NCBI, "--taxon", "cnidaria",
+                   "--max-evalue", "1e-10", "--exact-match"]
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            self.script.main(["PF00504.27", "PF00069", *options])
+        self.assertEqual(stdout.getvalue(), "keep\tg1\n")
+        with tempfile.TemporaryDirectory() as tmpd:
+            output = os.path.join(tmpd, "matches.faa")
+            self.script.main(["PF00504.27", "PF00069", *options, "-o", output])
+            with open(output) as f:
+                self.assertEqual(f.read(), ">keep\nABCDEFGHIJKLM\n")
+            self.script.main(["PF00504.27", *options, "--match-only", "-o", output])
+            with open(output) as f:
+                self.assertEqual(f.read(), ">keep_PF00504.27_1_10\nABCDEFGHIJ\n")
+
     def test_invalid_arguments(self):
         for args in ([], ["PF00504", "PF00069", "--match-only", "-o", "unused.faa"],
                      ["PF00504", "PF00504", "--match-only"]):
