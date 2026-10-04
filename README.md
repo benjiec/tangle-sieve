@@ -26,6 +26,100 @@ alias sieve-py='venv-sieve/bin/python3'
 ```
 
 
+## Finding proteins with Pfam domains
+
+`pfam-find-matches.py` searches the configured curated Pfam detection table
+(`Defaults.area_protein_pfam_tsv()`); it does not take an input filename.
+Provide one or more accession expressions:
+
+```bash
+sieve-py sieve/scripts/pfam-find-matches.py PF07714 PF00069 PF00531
+sieve-py sieve/scripts/pfam-find-matches.py 'PF00069?' PF00531 --ordered
+sieve-py sieve/scripts/pfam-find-matches.py 'PF00069{3,5}' PF00531 --ordered --allow-overlap
+```
+
+By default, output is headerless TSV containing protein accession and genome
+(database) accession, sorted by database then protein. Hits from different
+query databases are never combined. Additional domains not named in the
+request are ignored, including for overlap checking.
+
+### Counts and architecture
+
+Quote expressions containing quantifiers so the shell passes them literally.
+These operators repeat whole domain hits, not characters in accession names;
+this is not a general regular-expression interface.
+
+| Expression | Required number of hits |
+| --- | --- |
+| `PF00069` | At least one |
+| `'PF00069+'` | At least one |
+| `'PF00069?'` | Zero or one |
+| `'PF00069*'` | Zero or more |
+| `'PF00069{3,5}'` | Three through five, inclusive |
+| `'PF00069{3}'` | Exactly three |
+| `'PF00069{0}'` | None |
+
+Bounds apply to **all** distinct hits for requested domains after E-value
+filtering. A protein with six copies fails `{3,5}`; two copies fail `?`, with
+or without `--ordered`. Versions are removed before counting unless
+`--exact-match` is used. Duplicate rows with the same normalized accession and
+coordinate interval count once.
+
+Without `--ordered`, domain order is unrestricted. Repeating an identical
+expression is redundant; different expressions for the same normalized
+accession contribute summed count bounds.
+
+With `--ordered`, hits are sorted by their lower query coordinate and must
+match the entire requested architecture after unrequested domains are removed.
+Each expression consumes a consecutive block of matching hits, subject to its
+bounds. For example, `A B` accepts `A A X B B`, but rejects `A B A` and `B A`;
+`A B A` explicitly requests separate A blocks. Here A, B, and X stand for
+Pfam accessions. Optional blocks may consume no hits. Different requested
+domains with identical start coordinates fail ordered matching because their
+order is unresolved, even with `--allow-overlap`.
+
+By default, requested-domain hits must not overlap: each interval must end
+strictly before the next starts (coordinates are inclusive). Sharing an
+endpoint counts as overlap. `--allow-overlap` permits overlaps in either mode;
+ordering still uses interval starts. Reversed coordinate pairs are normalized
+to their lower and upper endpoints.
+
+If every expression permits zero hits, proteins represented in the detection
+table after E-value filtering can match even without any requested domain.
+Proteins absent from that table are not candidates.
+
+### Arguments and options
+
+| Argument | Behavior |
+| --- | --- |
+| `pfam_accession [pfam_accession ...]` | One or more accession expressions, with optional repetition bounds. Plain accessions mean at least one in either mode. |
+| `--ordered` | Require the architecture in argument order; default is unordered. |
+| `--allow-overlap` | Permit overlapping requested-domain hits; default is false. This is a flag, not an option taking `True` or `False`. |
+| `--exact-match` | Compare full accessions, including versions. By default, both requested and detected accessions are truncated at the first dot. |
+| `--max-evalue FLOAT` | Only count detections with E-value less than or equal to this threshold. No threshold is applied by default. |
+| `--taxon VALUE` | Require an exact, case-insensitive match to a taxonomy value from domain/superkingdom through species in the configured genome taxonomy table. Missing taxonomy does not match. |
+| `--sequence-source VALUE` | Require an exact, case-sensitive `sequence_source` value in the configured sequence manifest, matching protein accession, database, and protein type. Missing entries or source values are excluded. |
+| `-o PATH`, `--output PATH` | Write full protein FASTA instead of TSV, using `CuratedProtein.sequence()`. Proteins missing from the manifest are skipped with a message on stderr. |
+| `--match-only` | With `--output`, write each matching domain region instead of the full protein. Requires exactly one accession expression; multiple expressions raise an argument error. Architecture/count filters are applied before regions are emitted. Headers contain protein accession, requested expression, start, and end. A zero-hit match emits no region. |
+| `-h`, `--help` | Show command-line help. |
+
+Filters combine: a protein must satisfy domain counts, ordering/overlap rules,
+and any taxonomy/source restrictions. TSV matching consults the sequence
+manifest only when `--sequence-source` is supplied; FASTA retrieval also uses
+it.
+
+```bash
+# Exact versions, source and taxonomy filters, full-length FASTA
+sieve-py sieve/scripts/pfam-find-matches.py PF00069.27 PF00531.19 \
+  --exact-match --taxon cnidaria --sequence-source ncbi \
+  --max-evalue 1e-10 --output matches.faa
+
+# Individual regions for one domain expression
+sieve-py sieve/scripts/pfam-find-matches.py 'PF00069+' \
+  --match-only --output regions.faa
+```
+
+
 ## Random Tools
 
 Use this to look at the composition of a NCBI protein accession in terms of exons
