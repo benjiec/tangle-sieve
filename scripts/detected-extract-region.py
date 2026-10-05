@@ -29,9 +29,8 @@ def read_unique_fasta(path):
     def store():
         if accession is None:
             return
-        if accession in sequences:
-            raise ValueError(f"Duplicate FASTA accession: {accession}")
-        sequences[accession] = "".join(parts)
+        if accession not in sequences:
+            sequences[accession] = "".join(parts)
 
     with open_file_to_read(path) as stream:
         for raw_line in stream:

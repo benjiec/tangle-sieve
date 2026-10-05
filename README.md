@@ -218,6 +218,17 @@ If using DeepLoc to classify leaders, then submit the FASTA in
 `res-mt_MnSOD_cnidaria/sequences.faa` to DeepLoc and download results to
 `deeploc.csv`.
 
+`ko-find-matches.py --sequence-source VALUE` keeps only matches with that
+exact, case-sensitive `sequence_source` in the configured sequence manifest.
+The lookup requires matching protein accession, database, and protein type;
+missing entries or source values are excluded. This filter combines with all
+existing filters and applies to TSV, full FASTA, and `--match-only` output.
+Without this option, TSV matching does not consult the manifest.
+
+```bash
+sieve-py sieve/scripts/ko-find-matches.py K04564 --sequence-source ncbi
+```
+
 `ko-find-matches.py --taxon` filters KO matches by an exact,
 case-insensitive taxonomy value at any supported rank before candidate
 discovery and rule evaluation. Genomes without a matching taxonomy row are
