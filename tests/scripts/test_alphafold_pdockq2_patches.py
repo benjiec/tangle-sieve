@@ -64,7 +64,7 @@ class SummaryTests(unittest.TestCase):
         targets = {('example.zip', m): 'C' for m in range(7)}
         output = io.StringIO()
         SCRIPT.write_summary(rows, targets, output)
-        text = output.getvalue().split('Top 5 patches', 1)[1]
+        text = output.getvalue().split('Top 5 distinct sites', 1)[1]
         self.assertEqual(text.count('Region 1'), 5)
         self.assertIn('1. Model 6', text)
         self.assertIn('min 5.000 | max 7.000 | median 6.000 | average 6.000', text)
@@ -88,19 +88,30 @@ class SummaryTests(unittest.TestCase):
         SCRIPT.write_summary([], {('first.zip', 0): 'C', ('second.zip', 0): 'Z'}, output)
         self.assertEqual(output.getvalue().count('No qualifying patches'), 2)
 
-    def test_overlap_threshold_containment_and_chain_identity(self):
+    def test_last_chain_overlap_threshold_and_containment(self):
         from sieve.alphafold_pdockq2_patches import distinct_patches
-        def patch(a, b):
+        def patch(b):
             row = self.row(0, 'A', 'B', 0.5)
-            row.update({'interface residues 1': ','.join(map(str, a)),
+            row.update({'interface residues 1': '132,133,134,135,136',
                         'interface residues 2': ','.join(map(str, b))})
             return row
-        first = patch(range(1, 6), range(1, 6))
-        exactly_ten = patch([1, 10, 11, 12, 13], range(10, 15))
-        twenty = patch([1, 2, 20, 21, 22], range(20, 25))
-        contained = patch([1], [1])
-        self.assertEqual(distinct_patches([first, first, contained, twenty, exactly_ten]), [first, exactly_ten])
-        self.assertEqual(len(distinct_patches([patch([1], [2]), patch([2], [1])])), 2)
+        targets = {('example.zip', 0): 'B'}
+        first = patch(range(1, 11))
+        exactly_ten = patch([1, *range(20, 29)])
+        twenty = patch([1, 2, *range(30, 38)])
+        contained = patch([1])
+        self.assertEqual(distinct_patches([first, first, contained, twenty, exactly_ten], targets),
+                         [first, exactly_ten])
+        self.assertEqual(len(distinct_patches([patch([34, 37, 38]), patch([188, 191, 192])], targets)), 2)
+
+    def test_overlap_targets_chain_one_when_cif_order_differs(self):
+        from sieve.alphafold_pdockq2_patches import distinct_patches
+        first = self.row(0, 'A', 'Z', 0.9)
+        second = dict(first, **{'interface residues 2': '99'})
+        targets = {('example.zip', 0): 'A'}
+        self.assertEqual(distinct_patches([first, second], targets), [first])
+        second['interface residues 1'] = '100'
+        self.assertEqual(distinct_patches([first, second], targets), [first, second])
 
     def test_stdout_only_creates_no_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -120,7 +131,7 @@ class SummaryTests(unittest.TestCase):
                 self.row(0, 'A', 'C', 0.6, 'full'), self.row(0, 'A', 'C', 0.8)]
         output = io.StringIO()
         SCRIPT.write_summary(rows, {('example.zip', 0): 'C'}, output)
-        full, patches = output.getvalue().split('Top 5 patches', 1)
+        full, patches = output.getvalue().split('Top 5 distinct sites', 1)
         self.assertIn('A–B', full)
         self.assertIn('A→B 0.900000', full)
         self.assertIn('A→B 0.800000 | B→A 0.500000', full)

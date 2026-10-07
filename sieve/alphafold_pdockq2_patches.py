@@ -216,17 +216,17 @@ def analyze(path, full_data=None, options=None, chains=None, summary_targets=Non
     return rows
 
 
-def summary_residues(row):
+def summary_residues(row, chain):
     return {(row[f'chain {side}'], int(number))
-            for side in (1, 2)
+            for side in (1, 2) if row[f'chain {side}'] == chain
             for number in row[f'interface residues {side}'].split(',') if number}
 
 
-def distinct_patches(candidates, limit=5):
-    """Greedy score-order selection; <=10% overlap relative to either patch."""
+def distinct_patches(candidates, targets, limit=5):
+    """Greedy score-order selection; <=10% overlap on the last CIF chain only."""
     selected, residue_sets = [], []
     for row in candidates:
-        residues = summary_residues(row)
+        residues = summary_residues(row, targets[(row['source'], row['model'])])
         if not residues:
             continue
         if any(10 * len(residues & previous) > min(len(residues), len(previous))
@@ -268,14 +268,14 @@ def write_summary(rows, targets, stream):
             print(f"     Contacts: {row['contact count']} | residues {a}: {row['residue count 1']}, "
                   f"{b}: {row['residue count 2']} | {pae_confidence_text(row)}", file=stream)
         print(file=stream)
-        print(f'Top 5 patches involving the last CIF chain ({", ".join(last_chains)}), across models (at most 10% residue overlap):', file=stream)
+        print(f'Top 5 distinct sites on the last CIF chain ({", ".join(last_chains)}), across models (at most 10% last-chain residue overlap):', file=stream)
         candidates = [r for r in rows if r['source'] == source and r['scope'] == 'patch'
                       and targets.get((source, r['model'])) in (r['chain 1'], r['chain 2'])]
         candidates.sort(key=lambda r: (-r['pDockQ2 max'], -r['contact count'],
                                       str(r['model']), r['chain 1'], r['chain 2'], r['graph residues'], r['patch id']))
         if not candidates:
             print('  No qualifying patches for the last chain under these settings.', file=stream)
-        for rank, row in enumerate(distinct_patches(candidates), 1):
+        for rank, row in enumerate(distinct_patches(candidates, targets), 1):
             model = row['model'] if row['model'] != '' else 'unnumbered'
             print(f"  {rank}. Model {model} | patch {row['patch id']} ({row['status']}) | "
                   f"{row['chain 1']}–{row['chain 2']} | max pDockQ2 {row['pDockQ2 max']:.6f}", file=stream)

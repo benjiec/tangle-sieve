@@ -376,19 +376,23 @@ an explicit message. Ranking uses descending score, descending contact count,
 then model identifier as text, chain IDs, graph residue text, and patch ID for
 stable ties. A directory gets a separate summary for every ZIP.
 
-### Residue-overlap filtering
+### Last-chain residue-overlap filtering
 
 Summary candidates are visited in score order. Retain a candidate only when
 its overlap with every previously retained patch is at most 10%, stopping at
 five retained candidates or exhaustion. Overlap is
 `|R1 intersection R2| / min(|R1|, |R2|)`, where R contains the actual contacting
-(chain ID, residue number) pairs from both chains. Thus overlap cannot exceed
+(chain ID, residue number) pairs from the **last CIF chain only**. Thus overlap cannot exceed
 10% of either patch, exact 10% is allowed, and containment counts as 100%.
 Graph-only residues are excluded. This filtering compares models within the
 same input source, assuming consistent chain and residue identities across
 models. Separate ZIPs are summarized independently. The TSV retains all rows.
 This is greedy ranking, not optimization of the combined score of five patches;
-a high-scoring parent can suppress its descendants. Fewer than five distinct
+a high-scoring parent can suppress its descendants. Shared partner-chain
+residues do not suppress distinct last-chain sites: two B sites contacting
+the same A surface remain eligible. This identifies sites on the target
+chain, not distinct partner-specific interactions; overlapping target sites
+can suppress each other even when their partner chains differ. Fewer than five distinct
 patches is a valid result.
 
 ### Full-interface results before the patch summary
@@ -402,7 +406,7 @@ Models are ordered numerically, then chain pairs lexically. These are pairwise f
 aggregate score for the entire multimer and not chain-versus-all-other-chains
 scores. By default all chain pairs are analyzed; `--chains` still restricts
 which pairs are computed. The subsequent top-five summary retains its
-last-chain and ≤10% overlap filters. TSV contents and scoring are unchanged.
+last-chain and ≤10% last-chain residue-overlap filters. TSV contents and scoring are unchanged.
 
 ### PAE-only confidence in stdout
 
