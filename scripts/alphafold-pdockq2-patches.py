@@ -2,7 +2,7 @@
 """Detect spatial contact patches and recursively split narrow residue bridges.
 
 Algorithm, equations, input mapping, limitations, and output specification:
-../docs/alphafold-pdockq2-patches.md (relative to this script).
+../docs/pDockQ2.md (relative to this script).
 """
 import argparse
 from pathlib import Path

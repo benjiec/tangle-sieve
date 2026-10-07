@@ -38,7 +38,7 @@ class PatchCommandTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as error:
             SCRIPT.main(['--help'])
         self.assertEqual(error.exception.code, 0)
-        self.assertIn('alphafold-pdockq2-patches.md', output.getvalue())
+        self.assertIn('pDockQ2.md', output.getvalue())
 
 
 class SummaryTests(unittest.TestCase):

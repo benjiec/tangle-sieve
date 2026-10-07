@@ -1,4 +1,4 @@
-"""Spatial interface patches; algorithm specification: docs/alphafold-pdockq2-patches.md."""
+"""Spatial interface patches; algorithm specification: docs/pDockQ2.md."""
 import csv
 import json
 import math

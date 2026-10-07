@@ -143,7 +143,7 @@ python3 sieve/scripts/fasta-unique-sequences.py
 Various AlphaFold pDockQ2 calculation scripts are in `sieve/scripts/alphafold-pdockq2*`
 
 For automatic spatial contact-patch detection and recursive bridge splitting,
-use `alphafold-pdockq2-patches.py`. See the [algorithm specification and usage](docs/alphafold-pdockq2-patches.md)
+use `alphafold-pdockq2-patches.py`. See the [algorithm specification and usage](docs/pDockQ2.md)
 for input mapping, equations, parameters, output columns, and a reusable Methods paragraph.
 
 
