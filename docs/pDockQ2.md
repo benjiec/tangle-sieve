@@ -557,3 +557,11 @@ not just structural-confidence calibration.
 
 Adapt this paragraph to the actual cutoff, bridge/size filters, selection method, and analyses
 performed; do not claim validation steps that were not carried out.
+
+## Additional interface descriptors and comparison
+
+The separate [interface comparison pipeline](interface-comparison.md) adds DSSP,
+hydropathy/charge context, geometric interaction candidates, buried surface area,
+and sequence-mapped contact overlap across two AF ensembles. It reuses this patch
+and confidence implementation without changing the pDockQ2 formula. Structural
+similarity and prediction confidence remain separate outputs.
