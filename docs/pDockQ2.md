@@ -609,12 +609,17 @@ reported patches sharing a model/chain pair.
 Additional options:
 
 ```text
---dssp PATH          mkdssp executable (otherwise PATH, then tmp/dssp/bin/mkdssp)
+--dssp PATH          mkdssp executable (otherwise SIEVE_DSSP, then PATH)
 --no-dssp            Explicitly omit secondary structure; retain other descriptors
 --sequence-flank 5   Upstream/downstream residues around each contacting residue
 --spatial-radius 8   Same-chain heavy-atom neighborhood radius in Å
 --sasa-points 240    Surface sample points per atom
 ```
+
+Set `export SIEVE_DSSP="/path/to/dssp/bin/mkdssp"` to configure the executable.
+`--dssp` overrides this variable; `--no-dssp` bypasses discovery. An invalid or
+empty explicit setting is an error. There is no repository-local fallback.
+See [executable configuration](../README.md#external-executable-configuration).
 
 If DSSP cannot be located, secondary structure is explicitly reported as
 unassigned; other descriptors remain available. If a located DSSP fails, the run

@@ -140,11 +140,33 @@ Use this to create FASTA with unique entries
 python3 sieve/scripts/fasta-unique-sequences.py
 ```
 
-Various AlphaFold pDockQ2 calculation scripts are in `sieve/scripts/alphafold-pdockq2*`
+The AlphaFold patch-analysis command is `scripts/alphafold-pdockq2-patches.py`.
 
 For automatic spatial contact-patch detection and recursive bridge splitting,
 use `alphafold-pdockq2-patches.py`. See the [algorithm specification and usage](docs/pDockQ2.md)
 for input mapping, equations, parameters, output columns, and a reusable Methods paragraph.
+
+
+### External executable configuration
+
+DSSP (`mkdssp`) is the only external executable used by the AlphaFold patch-analysis
+pipeline. Configure its installed location in your shell (for persistence, add to
+`~/.zshrc`):
+
+```sh
+export SIEVE_DSSP="/path/to/dssp/bin/mkdssp"
+```
+
+Discovery order is `--dssp PATH`, then `$SIEVE_DSSP`, then `mkdssp` on `$PATH`.
+Paths containing spaces are supported; the value names an executable, not a
+shell command with arguments. Invalid or empty explicit settings cause an error
+instead of falling back. `--no-dssp` overrides all discovery and retains the other
+descriptors. If no executable is configured or found, secondary structure is
+reported as unassigned. There is no repository-local installation fallback.
+
+Install DSSP with its required runtime dictionaries; pointing to the executable
+alone does not configure or relocate those dictionaries. Sieve does not install,
+move, or delete DSSP when this variable is set.
 
 
 ## HMM scan on genome

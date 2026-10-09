@@ -2,7 +2,7 @@
 from collections import Counter, defaultdict
 import io
 import math
-from pathlib import Path
+import os
 import shutil
 
 from Bio.PDB import MMCIFParser
@@ -15,8 +15,14 @@ from sieve.alphafold_pdockq2_patches import ranges
 
 
 def find_dssp(explicit=None):
-    local = Path(__file__).resolve().parents[1] / 'tmp/dssp/bin/mkdssp'
-    return explicit or shutil.which('mkdssp') or (str(local) if local.is_file() else None)
+    configured = explicit if explicit is not None else os.environ.get('SIEVE_DSSP')
+    if configured is not None:
+        executable = shutil.which(os.path.expanduser(configured)) if configured else None
+        if executable is None:
+            source = '--dssp' if explicit is not None else 'SIEVE_DSSP'
+            raise ValueError(f'{source} does not identify an executable: {configured!r}')
+        return executable
+    return shutil.which('mkdssp')
 
 
 def number(value):

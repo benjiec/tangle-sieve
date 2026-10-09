@@ -30,7 +30,7 @@ def main(argv=None):
     parser.add_argument('--spatial-radius', type=float, default=8)
     parser.add_argument('--sasa-points', type=int, default=240)
     dssp_group = parser.add_mutually_exclusive_group()
-    dssp_group.add_argument('--dssp', help='mkdssp executable for secondary structure')
+    dssp_group.add_argument('--dssp', help='mkdssp executable; overrides SIEVE_DSSP, then PATH discovery')
     dssp_group.add_argument('--no-dssp', action='store_true', help='omit secondary structure; retain other descriptors')
     args = parser.parse_args(argv)
     try:

@@ -53,3 +53,36 @@ class DescriptionSummaryTests(unittest.TestCase):
         self.assertIn('/OD2 3.00 Å',text)
 
 if __name__=='__main__': unittest.main()
+
+class ExecutableDiscoveryTests(unittest.TestCase):
+    def test_precedence_and_missing(self):
+        from sieve.patch_description_summary import find_dssp
+        with patch.dict('os.environ', {'SIEVE_DSSP':'/env/mkdssp'}, clear=True), patch('sieve.patch_description_summary.shutil.which', side_effect=lambda value: value) as which:
+            self.assertEqual(find_dssp('/explicit/mkdssp'),'/explicit/mkdssp')
+            which.assert_called_once_with('/explicit/mkdssp')
+            self.assertEqual(find_dssp(),'/env/mkdssp')
+        with patch.dict('os.environ', {}, clear=True), patch('sieve.patch_description_summary.shutil.which', return_value=None) as which:
+            self.assertIsNone(find_dssp())
+            which.assert_called_once_with('mkdssp')
+
+    def test_invalid_and_empty_configuration_do_not_fall_back(self):
+        from sieve.patch_description_summary import find_dssp
+        for value in ('', '/missing/mkdssp'):
+            with patch.dict('os.environ', {'SIEVE_DSSP':value}, clear=True), patch('sieve.patch_description_summary.shutil.which', return_value=None):
+                with self.assertRaisesRegex(ValueError,'SIEVE_DSSP'):
+                    find_dssp()
+                with self.assertRaisesRegex(ValueError,'--dssp'):
+                    find_dssp(value)
+
+    def test_executable_path_with_spaces(self):
+        import tempfile
+        from pathlib import Path
+        from sieve.patch_description_summary import find_dssp
+        with tempfile.TemporaryDirectory() as directory:
+            executable=Path(directory)/'my dssp'
+            executable.write_text('#!/bin/sh\nexit 0\n')
+            executable.chmod(0o755)
+            self.assertEqual(find_dssp(str(executable)),str(executable))
+            executable.chmod(0o644)
+            with self.assertRaises(ValueError):
+                find_dssp(str(executable))

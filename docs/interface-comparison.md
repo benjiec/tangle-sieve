@@ -10,7 +10,7 @@ sieve-py scripts/alphafold-pdockq2-patches.py predictions.zip
 
 CIF input with `--full-data` and directories of ZIPs are also supported. Summaries go to stdout; `--output patches.tsv` optionally writes the existing patch TSV. See [pDockQ2.md](pDockQ2.md#structural-descriptors-in-the-patch-stdout-summary) for arguments and output definitions.
 
-DSSP is found on PATH or at `tmp/dssp/bin/mkdssp`; use `--dssp PATH` to override or `--no-dssp` to omit secondary structure. Missing DSSP is explicitly reported as unassigned; a located executable that fails stops the run. Context defaults are `--sequence-flank 5`, `--spatial-radius 8`, and `--sasa-points 240`.
+DSSP discovery uses `--dssp PATH`, then `$SIEVE_DSSP`, then `mkdssp` on `$PATH`. Use `--no-dssp` to omit secondary structure. Invalid or empty explicit settings are errors; there is no repository-local fallback. Missing DSSP is explicitly reported as unassigned; a located executable that fails stops the run. Context defaults are `--sequence-flank 5`, `--spatial-radius 8`, and `--sasa-points 240`.
 
 Other numerical thresholds are defined by `DescriptionOptions`: salt 4 Å, nonpolar 4.5 Å, van der Waals overlap 0.6 Å. These are exploratory geometric conventions, not learned cutoffs or validated binding classifiers.
 
@@ -40,8 +40,12 @@ Atom-level features are calculated for the selected chain pair. Patch features r
 
 The weakest links in contact chemistry are atom completeness, side-chain geometry, and protonation. These are geometric candidates, not confirmed bonds. Check their consistency across predicted models and, when available, against experimental structures. Nominal charge is not electrostatic potential, and hydropathy is not binding energy.
 
-## Local DSSP installation used for the example
+## DSSP installation
 
-DSSP 4.6.1 was built from the official PDB-REDO/dssp source with CMake, FastFloat 8.0.2, and fetched libcifpp/Eigen dependencies. The executable is `tmp/dssp/bin/mkdssp`; this ignored local installation is not bundled with the project. The runtime dictionary directory contains the installed PDBx and DSSP dictionaries, the official ModelCIF dictionary, and libcifpp's `ccd-subset.cif` copied as `components.cif` (canonical amino acids sufficient for these inputs). Install a complete supported DSSP distribution for broader chemical-component coverage. Every residue in all ten supplied models received a DSSP assignment in the example run.
+Configure a complete DSSP installation using `SIEVE_DSSP`; see the
+[Sieve executable configuration](../README.md#external-executable-configuration).
+The executable needs its runtime dictionaries, including support for ModelCIF
+when processing AlphaFold CIFs. Setting the executable location does not relocate
+or configure dictionary files. The example analysis used DSSP 4.6.1.
 
 For single-input analysis, use the expanded stdout summary in `alphafold-pdockq2-patches.py`; see [pDockQ2.md](pDockQ2.md#structural-descriptors-in-the-patch-stdout-summary). It does not perform alignment or require a reference ensemble.
