@@ -558,10 +558,74 @@ not just structural-confidence calibration.
 Adapt this paragraph to the actual cutoff, bridge/size filters, selection method, and analyses
 performed; do not claim validation steps that were not carried out.
 
-## Additional interface descriptors and comparison
+## Additional interface descriptors
 
-The separate [interface comparison pipeline](interface-comparison.md) adds DSSP,
-hydropathy/charge context, geometric interaction candidates, buried surface area,
-and sequence-mapped contact overlap across two AF ensembles. It reuses this patch
-and confidence implementation without changing the pDockQ2 formula. Structural
-similarity and prediction confidence remain separate outputs.
+The [interface descriptor definitions](interface-comparison.md) document DSSP,
+hydropathy/charge context, geometric interaction candidates, and buried surface
+area used by the patch stdout summary. These calculations do not change pDockQ2.
+
+### Structural descriptors in the patch stdout summary
+
+`alphafold-pdockq2-patches.py` now includes structural descriptors by default.
+The usual CIF plus `--full-data`, ZIP, and directory inputs still work. No second
+reference structure, alignment, output archive, or report directory is needed.
+The optional `--output` TSV retains its existing columns and all patch rows.
+
+Before the full-interface scores, the summary groups chains by exact modeled
+amino-acid sequence within each input. Each group lists its chain IDs and length,
+then N-to-C secondary-structure strings and DSSP-code composition percentages.
+Identical sequence **does not imply identical structure**: distinct assignments
+or residue numbering are displayed separately with their model and chain IDs.
+Identical strings/compositions share a line. Counts use all modeled Cα residues;
+missing DSSP assignments are explicitly `?`. Strand labels describe runs, not
+whole sheets. Secondary-structure labels are local to each model and chain.
+
+Each of the existing top-five distinct sites now also reports:
+
+- Mean local pLDDT over unique contacting residues on each chain.
+- Contacting-residue sequence (concatenated in residue order) and each residue
+  range's DSSP element/code; use the region list to recognize sequence gaps.
+- Patch, upstream, downstream, combined sequence-shell, and spatial-shell mean
+  Kyte–Doolittle hydropathy, nominal charge, K/R and D/E counts, and histidine count.
+- Patch buried area per chain and its carbon/sulfur contribution, in Å².
+- Unique residue-pair counts for nonpolar contacts, candidate salt bridges, and
+  candidate steric overlaps. Atom pairs are deduplicated within each type.
+- Interchain salt-bridge candidates touching the patch, with the shortest charged
+  atom pair per residue pair. Labels distinguish both endpoints inside the patch
+  from one endpoint outside the Cα-defined patch. This is not a search for
+  intrachain salt bridges or arbitrary nearby charged residues.
+- The difference between the two patches' nominal net charges (chain 1 minus
+  chain 2). The separate signed charges are the primary quantities; their
+  difference is not an electrostatic-complementarity or binding score.
+
+Descriptor equations, atom criteria, conventions, and sources are in
+[interface-comparison.md](interface-comparison.md). The patch graph, ranking,
+last-chain overlap filter, confidence calculations, and distance statistics
+are unchanged. The descriptor uses the exact selected patch row, including
+custom bridge/minimum-size settings; it does not rerun patch detection with
+other defaults. Pairwise atom interactions and surface burial are cached for
+reported patches sharing a model/chain pair.
+
+Additional options:
+
+```text
+--dssp PATH          mkdssp executable (otherwise PATH, then tmp/dssp/bin/mkdssp)
+--no-dssp            Explicitly omit secondary structure; retain other descriptors
+--sequence-flank 5   Upstream/downstream residues around each contacting residue
+--spatial-radius 8   Same-chain heavy-atom neighborhood radius in Å
+--sasa-points 240    Surface sample points per atom
+```
+
+If DSSP cannot be located, secondary structure is explicitly reported as
+unassigned; other descriptors remain available. If a located DSSP fails, the run
+fails rather than inventing assignments. A functioning installation requires
+its runtime dictionaries, not only the executable. Side chains are not rebuilt;
+missing atoms can reduce detected contacts. Hydropathy, nominal charge, and
+geometric contact candidates do not establish binding energy or confirmed bonds.
+
+Example, without writing a TSV:
+
+```sh
+sieve-py scripts/alphafold-pdockq2-patches.py \
+  data/fold_hs_myd88_dd_1x_hs_irak4_dd_1x.zip
+```

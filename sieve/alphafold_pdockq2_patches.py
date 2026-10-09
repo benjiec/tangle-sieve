@@ -198,10 +198,12 @@ def input_models(path, full_data=None):
         raise ValueError('input must be a CIF, ZIP, or directory of ZIPs')
 
 
-def analyze(path, full_data=None, options=None, chains=None, summary_targets=None):
+def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None):
     rows = []
     for source, model, cif, data in input_models(path, full_data):
         residues, pae = parse_model(cif, data)
+        if summary_inputs is not None:
+            summary_inputs[(source, '' if model is None else model)] = cif
         if summary_targets is not None:
             summary_targets[(source, '' if model is None else model)] = next(reversed(residues), None)
         for values in residues.values():
@@ -247,11 +249,13 @@ def pae_confidence_text(row):
             f"{row['chain 2']}→{row['chain 1']} {row['normalized PAE 2 to 1']:.6f}")
 
 
-def write_summary(rows, targets, stream):
+def write_summary(rows, targets, stream, descriptions=None):
     """Full pairwise interfaces, then top five distinct last-chain patches."""
     for source in sorted({source for source, _ in targets}):
         last_chains = sorted({chain for (s, _), chain in targets.items() if s == source and chain is not None})
         print(f'\n{source}', file=stream)
+        if descriptions is not None:
+            descriptions.write_chains(source, stream)
         print('Full-interface pDockQ2 (all analyzed chain pairs, before patch splitting):', file=stream)
         references = sorted((r for r in rows if r['source'] == source and r['scope'] == 'full'),
                             key=lambda r: (int(r['model']) if r['model'] != '' else -1,
@@ -282,6 +286,8 @@ def write_summary(rows, targets, stream):
             print(f"     Region 1 ({row['chain 1']}): {row['region 1']}", file=stream)
             print(f"     Region 2 ({row['chain 2']}): {row['region 2']}", file=stream)
             print(f'     {pae_confidence_text(row)}', file=stream)
+            if descriptions is not None:
+                descriptions.write_patch(row, stream)
             target = targets[(source, row['model'])]
             side = 1 if row['chain 1'] == target else 2
             print(f'     Nearest contact per {target} residue (Å; n={row[f"residue count {side}"]}): ' + ' | '.join(

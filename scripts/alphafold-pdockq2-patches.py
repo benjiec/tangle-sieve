@@ -5,11 +5,14 @@ Algorithm, equations, input mapping, limitations, and output specification:
 ../docs/pDockQ2.md (relative to this script).
 """
 import argparse
+import io
 from pathlib import Path
 import sys
 import zipfile
 
 from sieve.alphafold_pdockq2_patches import Options, analyze, write_patches, write_summary
+from sieve.patch_description_summary import PatchDescriptions, find_dssp
+from sieve.interface_description import DescriptionOptions
 
 
 def main(argv=None):
@@ -23,6 +26,12 @@ def main(argv=None):
     parser.add_argument('--min-residues-per-chain', type=int, default=3)
     parser.add_argument('--min-contacts', type=int, default=5)
     parser.add_argument('--max-separator-checks', type=int, default=1000000)
+    parser.add_argument('--sequence-flank', type=int, default=5)
+    parser.add_argument('--spatial-radius', type=float, default=8)
+    parser.add_argument('--sasa-points', type=int, default=240)
+    dssp_group = parser.add_mutually_exclusive_group()
+    dssp_group.add_argument('--dssp', help='mkdssp executable for secondary structure')
+    dssp_group.add_argument('--no-dssp', action='store_true', help='omit secondary structure; retain other descriptors')
     args = parser.parse_args(argv)
     try:
         output = Path(args.output).resolve() if args.output else None
@@ -33,11 +42,17 @@ def main(argv=None):
         options = Options(args.distance_cutoff, args.max_bridge_residues,
                           args.min_residues_per_chain, args.min_contacts, args.max_separator_checks)
         targets = {}
-        rows = analyze(args.input, args.full_data, options, args.chains, summary_targets=targets)
+        inputs = {}
+        rows = analyze(args.input, args.full_data, options, args.chains, summary_targets=targets, summary_inputs=inputs)
+        descriptions = PatchDescriptions(inputs, None if args.no_dssp else find_dssp(args.dssp),
+            DescriptionOptions(cutoff=args.distance_cutoff, flank=args.sequence_flank,
+                               radius=args.spatial_radius, sasa_points=args.sasa_points))
+        summary = io.StringIO()
+        write_summary(rows, targets, summary, descriptions)
         if output is not None:
             with output.open('w', newline='') as stream:
                 write_patches(rows, stream)
-        write_summary(rows, targets, sys.stdout)
+        sys.stdout.write(summary.getvalue())
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
         parser.error(str(error))
     return 0

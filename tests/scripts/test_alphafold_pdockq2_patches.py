@@ -20,7 +20,7 @@ class PatchCommandTests(unittest.TestCase):
             cif.write_text(CIF)
             data.write_text(json.dumps(DATA))
             args = [str(cif), '--full-data', str(data), '--output', str(output),
-                    '--min-residues-per-chain', '1', '--min-contacts', '1']
+                    '--min-residues-per-chain', '1', '--min-contacts', '1', '--no-dssp']
             self.assertEqual(SCRIPT.main(args), 0)
             before = output.read_text()
             rows = list(csv.DictReader(io.StringIO(before), delimiter='\t'))
