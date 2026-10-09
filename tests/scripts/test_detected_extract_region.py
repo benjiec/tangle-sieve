@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -229,6 +231,96 @@ class TestDetectedExtractRegionScript(unittest.TestCase):
 
         with self.assertRaises(SystemExit):
             self.script.main(["in.faa", "in.tsv", "PF00023", "9", "4", "out.faa"])
+
+    def test_domain_only_filters_counts_then_extracts_each_domain(self):
+        reports = []
+        result = self.script.extract_regions(
+            {name: "ABCDEFGHIJ" for name in ("one", "two", "three", "none")},
+            {"one": [(1, 1)], "two": [(8, 10), (2, 4)],
+             "three": [(1, 2), (4, 5), (8, 9)]},
+            "PF13676", 1, 2, domain_only=True, report=reports.append,
+        )
+        self.assertEqual(result, {
+            "one_PF13676_1_2_domain_1": "A",
+            "two_PF13676_1_2_domain_1": "BCD",
+            "two_PF13676_1_2_domain_2": "HIJ",
+        })
+        self.assertEqual(len(reports), 2)
+        self.assertIn("found 3", reports[0])
+        self.assertIn("found 0", reports[1])
+
+    def test_domain_only_offsets_and_individual_invalid_regions(self):
+        cases = [
+            (-1, 1, {1: "ABCDE", 2: "EFGHIJ"}, []),
+            (1, -1, {1: "C", 2: "GH"}, []),
+            (-2, 0, {2: "DEFGHI"}, ["domain 1", "outside sequence length"]),
+            (0, 2, {1: "BCDEF"}, ["domain 2", "outside sequence length"]),
+            (2, -1, {2: "H"}, ["domain 1", "exceeds end"]),
+            (10, 0, {}, ["outside sequence length"]),
+            (0, -10, {}, ["outside sequence length"]),
+        ]
+        for left, right, expected, diagnostics in cases:
+            with self.subTest(left=left, right=right):
+                reports = []
+                result = self.script.extract_regions(
+                    {"p": "ABCDEFGHIJ"}, {"p": [(2, 4), (6, 9)]},
+                    "PF13676", 2, 2, domain_only=True,
+                    left_offset=left, right_offset=right, report=reports.append,
+                )
+                self.assertEqual(result, {
+                    f"p_PF13676_2_2_domain_{i}": seq for i, seq in expected.items()
+                })
+                self.assertEqual(len(reports), 2 - len(expected))
+                for diagnostic in diagnostics:
+                    self.assertIn(diagnostic, "\n".join(reports))
+
+    def test_domain_only_keeps_overlapping_domains_separate(self):
+        self.assertEqual(self.script.extract_regions(
+            {"p": "ABCDEFGHIJ"}, {"p": [(5, 6), (2, 9), (2, 4)]},
+            "PF13676", 3, 3, domain_only=True,
+        ), {
+            "p_PF13676_3_3_domain_1": "BCD",
+            "p_PF13676_3_3_domain_2": "BCDEFGHI",
+            "p_PF13676_3_3_domain_3": "EF",
+        })
+
+    def test_domain_only_rejects_indices_before_reading_inputs(self):
+        for side in ("left", "right"):
+            with self.subTest(side=side):
+                with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                    self.script.extract_regions(
+                        {}, {}, "PF13676", 1, 2, domain_only=True,
+                        **{f"{side}_index": 1},
+                    )
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
+                    self.script.main([
+                        "missing.faa", "missing.tsv", "PF13676", "1", "2", "out.faa",
+                        "--domain-only", f"--{side}-index", "1",
+                    ])
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn("cannot be combined", stderr.getvalue())
+
+    def test_main_domain_only_with_offsets(self):
+        with tempfile.TemporaryDirectory() as tmpd:
+            fasta = os.path.join(tmpd, "input.faa")
+            tsv = os.path.join(tmpd, "matches.tsv")
+            output = os.path.join(tmpd, "output.faa")
+            with open(fasta, "w", encoding="utf-8") as stream:
+                stream.write(">p\nABCDEFGHIJ\n")
+            row = self.detected_row("p", "PF13676", 2, 4)
+            DetectedTable.write_tsv(tsv, [
+                self.detected_row("p", "PF13676.1", 9, 6), row, row,
+                self.detected_row("p", "PF00023", 1, 10),
+            ])
+            self.assertEqual(self.script.main([
+                fasta, tsv, "PF13676", "1", "2", output,
+                "--domain-only", "--left-offset", "-1", "--right-offset", "+1",
+            ]), 0)
+            with open(output, encoding="utf-8") as stream:
+                self.assertEqual(stream.read(),
+                    ">p_PF13676_1_2_domain_1\nABCDE\n"
+                    ">p_PF13676_1_2_domain_2\nEFGHIJ\n")
 
 
 if __name__ == "__main__":

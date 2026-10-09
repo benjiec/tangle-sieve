@@ -82,11 +82,14 @@ def find_match_regions(tsv, pfam_accession):
 def extract_regions(
     sequences, matches, pfam_accession, minimum, maximum, report=None,
     *, left_index=None, right_index=None, left_offset=0, right_offset=0,
+    domain_only=False,
 ):
     if minimum < 1 or maximum < 1:
         raise ValueError("match counts must be at least 1")
     if minimum > maximum:
         raise ValueError("minimum matches cannot exceed maximum matches")
+    if domain_only and (left_index is not None or right_index is not None):
+        raise ValueError("--domain-only cannot be combined with --left-index or --right-index")
     report = report or (lambda message: print(message, file=sys.stderr))
     extracted = {}
 
@@ -108,22 +111,33 @@ def extract_regions(
             )
             continue
 
-        start = (sequence_matches[left_index - 1][0] if left_index is not None
-                 else min(region[0] for region in sequence_matches)) + left_offset
-        end = (sequence_matches[right_index - 1][1] if right_index is not None
-               else max(region[1] for region in sequence_matches)) + right_offset
-        if not (1 <= start <= len(sequence) and 1 <= end <= len(sequence)):
-            report(
-                f"Ignoring {accession}: match boundaries {start}-{end} are outside "
-                f"sequence length {len(sequence)}"
-            )
-            continue
-        if start > end:
-            report(f"Ignoring {accession}: start {start} exceeds end {end}")
-            continue
-
         output_accession = f"{accession}_{pfam_accession}_{minimum}_{maximum}"
-        extracted[output_accession] = sequence[start - 1:end]
+        if domain_only:
+            regions = sequence_matches
+        else:
+            start = (sequence_matches[left_index - 1][0] if left_index is not None
+                     else min(region[0] for region in sequence_matches))
+            end = (sequence_matches[right_index - 1][1] if right_index is not None
+                   else max(region[1] for region in sequence_matches))
+            regions = [(start, end)]
+
+        for domain_index, (start, end) in enumerate(regions, 1):
+            start += left_offset
+            end += right_offset
+            label = f"{accession} domain {domain_index}" if domain_only else accession
+            if not (1 <= start <= len(sequence) and 1 <= end <= len(sequence)):
+                report(
+                    f"Ignoring {label}: match boundaries {start}-{end} are outside "
+                    f"sequence length {len(sequence)}"
+                )
+                continue
+            if start > end:
+                report(f"Ignoring {label}: start {start} exceeds end {end}")
+                continue
+
+            record_id = (f"{output_accession}_domain_{domain_index}"
+                         if domain_only else output_accession)
+            extracted[record_id] = sequence[start - 1:end]
 
     return extracted
 
@@ -145,6 +159,11 @@ def main(argv=None):
     parser.add_argument("maximum", type=positive_int, help="maximum match count (inclusive)")
     parser.add_argument("output", help="output FASTA")
     parser.add_argument(
+        "--domain-only", action="store_true",
+        help="extract each matching domain separately after count filtering; applies offsets "
+             "to each domain and cannot be combined with domain indices",
+    )
+    parser.add_argument(
         "--left-index", type=int,
         help="1-based domain index in sequence order for the start (default: earliest start)",
     )
@@ -164,6 +183,8 @@ def main(argv=None):
 
     if args.minimum > args.maximum:
         parser.error("minimum matches cannot exceed maximum matches")
+    if args.domain_only and (args.left_index is not None or args.right_index is not None):
+        parser.error("--domain-only cannot be combined with --left-index or --right-index")
 
     sequences = read_unique_fasta(args.fasta)
     matches = find_match_regions(args.tsv, args.pfam_accession)
@@ -177,6 +198,7 @@ def main(argv=None):
         right_index=args.right_index,
         left_offset=args.left_offset,
         right_offset=args.right_offset,
+        domain_only=args.domain_only,
     )
     write_fasta(extracted, args.output)
     return 0
