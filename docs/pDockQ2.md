@@ -629,3 +629,21 @@ Example, without writing a TSV:
 sieve-py scripts/alphafold-pdockq2-patches.py \
   data/fold_hs_myd88_dd_1x_hs_irak4_dd_1x.zip
 ```
+
+### Extracted AlphaFold directory input
+
+Pass an extracted fold directory directly:
+
+```sh
+sieve-py scripts/alphafold-pdockq2-patches.py /path/to/extracted_fold
+```
+
+The script reads immediate `*model_N.cif` files and matches each to
+`*full_data_N.json` with the same prefix. Models are ordered numerically and
+reported together under the directory's path. Duplicate model numbers or missing
+confidence files cause an error. Subdirectories are not searched.
+
+When extracted models are present, ZIP files in that directory are ignored to
+avoid analyzing the same fold twice. If no extracted models are present, the
+existing directory-of-ZIPs behavior is retained. `--full-data` is only needed
+and accepted when providing a single CIF file.

@@ -167,6 +167,26 @@ DATA = {'token_chain_ids': ['A', 'B'], 'token_res_ids': [1, 1], 'pae': [[0, 2], 
 
 
 class InputTests(unittest.TestCase):
+    def test_macos_metadata_is_not_a_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'x_model_0.cif').write_text(CIF)
+            (root/'x_full_data_0.json').write_text(json.dumps(DATA))
+            (root/'._x_model_0.cif').write_bytes(b'not a CIF')
+            (root/'._x_full_data_0.json').write_bytes(b'not JSON')
+            self.assertEqual([m[1] for m in input_models(root)], [0])
+            archive = root/'x.zip'
+            with zipfile.ZipFile(archive, 'w') as stream:
+                stream.writestr('x_model_0.cif', CIF)
+                stream.writestr('x_full_data_0.json', json.dumps(DATA))
+                stream.writestr('._x_model_0.cif', 'metadata')
+                stream.writestr('__MACOSX/._x_model_0.cif', 'metadata')
+                stream.writestr('__MACOSX/x_model_0.cif', 'metadata')
+            self.assertEqual([m[1] for m in input_models(archive)], [0])
+            (root/'x_model_0.cif').unlink()
+            (root/'._x.zip').write_bytes(b'not a ZIP')
+            self.assertEqual([m[1] for m in input_models(root)], [0])
+
     def test_model_zip_directory_and_missing_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -184,7 +204,10 @@ class InputTests(unittest.TestCase):
             self.assertEqual(single[1]['contact distance mean'], 7.0)
             zipped = analyze(archive, options=options)
             self.assertEqual(len(zipped), 4)
-            self.assertEqual(zipped, analyze(root, options=options))
+            extracted = analyze(root, options=options)
+            self.assertEqual(len(extracted), 2)
+            self.assertEqual(extracted[0]['source'], str(root.resolve()))
+            self.assertEqual(extracted[1]['pDockQ2 max'], single[1]['pDockQ2 max'])
             self.assertEqual(single[1]['pDockQ2 max'], zipped[1]['pDockQ2 max'])
             with self.assertRaises(ValueError):
                 list(input_models(cif))
@@ -198,6 +221,33 @@ class InputTests(unittest.TestCase):
             data.write_text(json.dumps(bad))
             with self.assertRaisesRegex(ValueError, 'PAE must'):
                 analyze(cif, data)
+
+    def test_extracted_directory_order_and_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ValueError, 'no model CIF'):
+                list(input_models(root))
+            for n in (10, 2):
+                (root/f'x_model_{n}.cif').write_text(CIF)
+                (root/f'x_full_data_{n}.json').write_text(json.dumps(DATA))
+            self.assertEqual([m[1] for m in input_models(root)], [2, 10])
+            with self.assertRaisesRegex(ValueError, 'only valid with CIF'):
+                list(input_models(root, 'data.json'))
+            (root/'x_full_data_2.json').unlink()
+            with self.assertRaisesRegex(ValueError, 'requires matching'):
+                list(input_models(root))
+            (root/'y_model_2.cif').write_text(CIF)
+            with self.assertRaisesRegex(ValueError, 'unique model numbers'):
+                list(input_models(root))
+
+    def test_zip_only_directory_remains_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root/'x.zip'
+            with zipfile.ZipFile(archive, 'w') as stream:
+                stream.writestr('x_model_0.cif', CIF)
+                stream.writestr('x_full_data_0.json', json.dumps(DATA))
+            self.assertEqual(list(input_models(root)), list(input_models(archive)))
 
 
 if __name__ == '__main__':

@@ -173,9 +173,20 @@ def input_models(path, full_data=None):
     if path.is_dir():
         if full_data:
             raise ValueError('--full-data is only valid with CIF input')
-        archives = sorted(path.glob('*.zip'))
+        models = sorted((model_number(p.name), p) for p in path.iterdir()
+                        if p.is_file() and model_number(p.name) is not None)
+        if models:
+            if len({n for n, _ in models}) != len(models):
+                raise ValueError('directory must contain models with unique model numbers')
+            for number, cif in models:
+                data = cif.with_name(cif.name.removesuffix(f'model_{number}.cif') + f'full_data_{number}.json')
+                if not data.is_file():
+                    raise ValueError(f'model {number} requires matching {data.name}')
+                yield str(path.resolve()), number, cif.read_text(), json.loads(data.read_text())
+            return
+        archives = sorted(p for p in path.glob('*.zip') if p.is_file() and not p.name.startswith('._'))
         if not archives:
-            raise ValueError(f'directory contains no ZIP files: {path}')
+            raise ValueError(f'directory contains no model CIF files or ZIP files: {path}')
         for archive in archives:
             yield from input_models(archive)
     elif path.suffix.lower() == '.cif':
@@ -195,7 +206,7 @@ def input_models(path, full_data=None):
                     raise ValueError(f'model {number} requires exactly one matching {data}')
                 yield str(path.resolve()), number, archive.read(name).decode(), json.loads(archive.read(data))
     else:
-        raise ValueError('input must be a CIF, ZIP, or directory of ZIPs')
+        raise ValueError('input must be a CIF, ZIP, or directory of extracted models or ZIPs')
 
 
 def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None):

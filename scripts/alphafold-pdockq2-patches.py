@@ -17,7 +17,7 @@ from sieve.interface_description import DescriptionOptions
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('input', help='CIF, ZIP, or directory of ZIPs')
+    parser.add_argument('input', help='CIF, ZIP, or directory of extracted models (or ZIPs)')
     parser.add_argument('--full-data', help='matching confidence JSON, required for CIF')
     parser.add_argument('--output', help='optional patch TSV (recomputed; no cache); summary always printed')
     parser.add_argument('--chains', nargs=2, metavar=('CHAIN1', 'CHAIN2'))

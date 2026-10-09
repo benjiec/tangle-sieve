@@ -215,6 +215,10 @@ def score_pairs(residues, pae, regions=None, cutoff=8.0):
 
 
 def model_number(name):
+    # AppleDouble sidecars and ZIP resource-fork directories are not models.
+    parts = str(name).split('/')
+    if '__MACOSX' in parts or parts[-1].startswith('._'):
+        return None
     match = re.search(r"_model_(\d+)\.cif$", name)
     return int(match.group(1)) if match else None
 
