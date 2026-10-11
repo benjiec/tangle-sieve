@@ -68,9 +68,10 @@ class ConfidenceTests(unittest.TestCase):
             for number in (0, 1):
                 (root/f'fold_model_{number}.cif').write_text(cif(('A', 'A')) + CIF[CIF.index('loop_'):])
                 (root/f'fold_full_data_{number}.json').write_text(json.dumps(DATA))
+            (root/'fold_job_request.json').write_text('[{"modelSeeds":["42"]}]')
             ids = {}
             analyze(root, fold_ids=ids)
-            self.assertEqual(ids, {str(root): fold_id(['A', 'A'])})
+            self.assertEqual(ids, {str(root): fold_id(42, ['A', 'A'])})
             (root/'fold_model_1.cif').write_text(cif(('A', 'C')) + CIF[CIF.index('loop_'):])
             with self.assertRaisesRegex(ValueError, 'composition differs'):
                 analyze(root, fold_ids={})

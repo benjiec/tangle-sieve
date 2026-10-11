@@ -687,12 +687,18 @@ The per-chain secondary structure/composition summary prints only with
 
 ## Fold header and printed patch results
 
-Each fold's stdout block starts with `Fold ID: HASH`, using the manifest's exact
-`fold_id` calculation: the last eight hex characters of SHA-1 over compact JSON
-of sorted chain sequences, with one sequence per chain copy. Sequence extraction
-is shared with the manifest. Models with different sequence-composition hashes
-are rejected. If any model lacks usable sequence metadata, the header says
-`Fold ID: n/a (sequence metadata unavailable)`.
+Each fold's stdout block starts with `Fold ID: HASH` and `Sequence ID: HASH`.
+Both use the manifest's shared calculation: the last eight hex characters of
+SHA-1 over compact JSON. `sequence_id` hashes the sorted chain sequences with
+copies; `fold_id` hashes `(seed, sorted_sequences_with_copies)`. The seed comes
+from the matching job-request JSON and is normalized to an integer. Models with
+different sequence-composition hashes or seeds are rejected.
+
+For standalone inputs with no job-request file, the fold ID is reported as
+unavailable; the sequence ID still prints when sequence metadata is available.
+Missing sequence metadata makes both unavailable. A present job request with
+invalid or multiple seeds produces an error. The manifest requires a valid seed
+and skips folds without one.
 
 The full-interface pDockQ2 section is no longer printed. Per-model ipTM/pTM,
 optional `--structure` summaries, and the top distinct patch results remain.

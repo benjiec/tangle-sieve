@@ -9,8 +9,8 @@ from itertools import combinations
 from pathlib import Path
 import zipfile
 
-from sieve.alphafold_files import open_fold, fold_locator
-from sieve.alphafold_manifest import chain_sequences, fold_id
+from sieve.alphafold_files import open_fold, fold_locator, read_seed
+from sieve.alphafold_manifest import chain_sequences, fold_id, sequence_id
 
 from sieve.alphafold_pdockq2 import (
     OUTPUT_COLUMNS, _distance, model_number, parse_model, score_selections,
@@ -185,8 +185,16 @@ def model_confidence(summary):
     return scores
 
 
-def input_models(path, full_data=None, *, model_scores=None):
+def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
     def record_scores(source, number, name, read, names):
+        if model_seeds is not None:
+            seed = None
+            if name is not None:
+                request = re.sub(r'summary_confidences_\d+\.json$', 'job_request.json', name)
+                model = re.sub(r'summary_confidences_(\d+)\.json$', r'model_\1.cif', name)
+                if request in names:
+                    seed = read_seed(read, [model], names)
+            model_seeds[(source, '' if number is None else number)] = seed
         if model_scores is None:
             return
         summary = {}
@@ -234,7 +242,7 @@ def input_models(path, full_data=None, *, model_scores=None):
         if not archives:
             raise ValueError(f'directory contains no model CIF files or ZIP files: {path}')
         for archive in archives:
-            yield from input_models(archive, model_scores=model_scores)
+            yield from input_models(archive, model_scores=model_scores, model_seeds=model_seeds)
     elif path.suffix.lower() == '.cif':
         if not full_data:
             raise ValueError('CIF input requires --full-data')
@@ -247,7 +255,7 @@ def input_models(path, full_data=None, *, model_scores=None):
                 summary = data_path.with_name(data_path.name[:match.start()] + f'summary_confidences_{match[1]}.json')
         record_scores(str(path.resolve()), number, str(summary) if summary is not None else None,
                       lambda name: Path(name).read_text(),
-                      [str(summary)] if summary is not None and summary.is_file() else [])
+                      [str(p) for p in summary.parent.iterdir()] if summary is not None else [])
         yield str(path.resolve()), number, path.read_text(), json.loads(Path(full_data).read_text())
     elif path.suffix.lower() == '.zip':
         if full_data:
@@ -267,21 +275,36 @@ def input_models(path, full_data=None, *, model_scores=None):
         raise ValueError('input must be a CIF, ZIP, or directory of extracted models or ZIPs')
 
 
-def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None, model_scores=None, fold_ids=None):
+def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None, model_scores=None, fold_ids=None, sequence_ids=None):
     rows = []
-    for source, model, cif, data in input_models(path, full_data, model_scores=model_scores):
-        if fold_ids is not None:
+    seeds = {} if fold_ids is not None else None
+    compositions = {}
+    for source, model, cif, data in input_models(path, full_data, model_scores=model_scores, model_seeds=seeds):
+        if fold_ids is not None or sequence_ids is not None:
             try:
-                identifier = fold_id(chain_sequences(cif).values())
+                sequences = list(chain_sequences(cif).values())
+                composition = sequence_id(sequences)
             except (ValueError, KeyError):
-                identifier = None
-            if source in fold_ids:
-                previous = fold_ids[source]
-                if previous is not None and identifier is not None and previous != identifier:
+                sequences, composition = [], None
+            if source in compositions:
+                previous = compositions[source]
+                if previous is not None and composition is not None and previous != composition:
                     raise ValueError(f'fold sequence composition differs across models: {source}')
                 if previous is None:
-                    identifier = None
-            fold_ids[source] = identifier
+                    composition = None
+            compositions[source] = composition
+            if sequence_ids is not None:
+                sequence_ids[source] = composition
+            if fold_ids is not None:
+                seed = seeds[(source, '' if model is None else model)]
+                identifier = fold_id(seed, sequences) if seed is not None and composition is not None else None
+                if source in fold_ids:
+                    previous = fold_ids[source]
+                    if previous is not None and identifier is not None and previous != identifier:
+                        raise ValueError(f'fold seed differs across models: {source}')
+                    if previous is None:
+                        identifier = None
+                fold_ids[source] = identifier
         residues, pae = parse_model(cif, data)
         if summary_inputs is not None:
             summary_inputs[(source, '' if model is None else model)] = cif
@@ -330,12 +353,14 @@ def pae_confidence_text(row):
             f"{row['chain 2']}→{row['chain 1']} {row['normalized PAE 2 to 1']:.6f}")
 
 
-def write_summary(rows, targets, stream, descriptions=None, *, structure=False, model_scores=None, fold_ids=None):
+def write_summary(rows, targets, stream, descriptions=None, *, structure=False, model_scores=None, fold_ids=None, sequence_ids=None):
     """Fold identity and confidence, then top five distinct last-chain patches."""
     for source in sorted({source for source, _ in targets}):
         last_chains = sorted({chain for (s, _), chain in targets.items() if s == source and chain is not None})
         identifier = (fold_ids or {}).get(source)
-        print(f"\nFold ID: {identifier or 'n/a (sequence metadata unavailable)'}", file=stream)
+        print(f"\nFold ID: {identifier or 'n/a (seed or sequence metadata unavailable)'}", file=stream)
+        sequence_identifier = (sequence_ids or {}).get(source)
+        print(f"Sequence ID: {sequence_identifier or 'n/a (sequence metadata unavailable)'}", file=stream)
         print(source, file=stream)
         print('Model confidence (whole fold):', file=stream)
         for model in sorted((m for s, m in targets if s == source), key=lambda m: int(m) if m != '' else -1):

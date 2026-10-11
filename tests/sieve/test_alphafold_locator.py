@@ -72,7 +72,7 @@ class LocatorTests(unittest.TestCase):
         script = load_script(Path(__file__).resolve().parents[2] / 'scripts' / 'alphafold-pdockq2-patches.py')
         # Entity metadata for the two alanine chains in the patch fixture.
         combined = cif(('A', 'A')) + CIF[CIF.index('loop_'):]
-        members = {'fold_model_0.cif': combined, 'fold_full_data_0.json': json.dumps(DATA)}
+        members = {'fold_job_request.json': '[{"modelSeeds":["42"]}]', 'fold_model_0.cif': combined, 'fold_full_data_0.json': json.dumps(DATA)}
         folder = self.root / 'extracted'
         folder.mkdir()
         for name, text in members.items():
@@ -91,4 +91,5 @@ class LocatorTests(unittest.TestCase):
                 self.assertEqual(script.main([locator, '--no-dssp', '--min-residues-per-chain', '1', '--min-contacts', '1']), 0)
             self.assertIn('Model 0', output.getvalue())
             self.assertEqual(output.getvalue().splitlines()[1], f"Fold ID: {rows[-1]['fold_id']}")
+            self.assertIn(f"Sequence ID: {rows[-1]['sequence_id']}", output.getvalue())
             self.assertNotIn('Full-interface pDockQ2', output.getvalue())

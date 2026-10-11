@@ -1,5 +1,6 @@
 """Fold discovery across filesystem directories and nested ZIP archives."""
 import re
+import json
 import shutil
 import struct
 import tempfile
@@ -29,6 +30,40 @@ class Fold:
     read: object
     member_names: tuple = ()
     timestamp: str = ''
+
+
+def request_name(model_name):
+    return re.sub(r'model_\d+\.cif$', 'job_request.json', str(model_name))
+
+
+def read_seed(read, models, names=None):
+    requests = {request_name(name) for name in models}
+    if len(requests) != 1:
+        raise ValueError('fold must have exactly one matching job-request file')
+    name = next(iter(requests))
+    if names is not None and list(names).count(name) != 1:
+        raise ValueError(f'expected exactly one seed job-request file: {name}')
+    try:
+        request = json.loads(read(name))
+    except (OSError, KeyError) as exc:
+        raise ValueError(f'cannot read seed job-request file: {name}') from exc
+    if isinstance(request, list):
+        if len(request) != 1:
+            raise ValueError(f'expected exactly one job in {name}')
+        request = request[0]
+    if not isinstance(request, dict):
+        raise ValueError(f'invalid job request: {name}')
+    seeds = request.get('modelSeeds')
+    if not isinstance(seeds, list) or len(seeds) != 1:
+        raise ValueError(f'expected exactly one modelSeeds value in {name}')
+    seed = seeds[0]
+    if isinstance(seed, bool) or not (isinstance(seed, int) or
+                                    isinstance(seed, str) and re.fullmatch(r'[0-9]+', seed)):
+        raise ValueError(f'invalid seed in {name}: {seed!r}')
+    seed = int(seed)
+    if seed < 0:
+        raise ValueError(f'invalid negative seed in {name}')
+    return seed
 
 
 def zip_timestamp(infos):
@@ -79,7 +114,7 @@ def discover(path, error):
             names = sorted(i.filename for i in infos)
             yield Fold(source, prefix + directory, names,
                        lambda name: archive.read(name).decode('utf-8'),
-                       timestamp=zip_timestamp(infos))
+                       member_names=tuple(archive.namelist()), timestamp=zip_timestamp(infos))
         for info in sorted(nested, key=lambda i: i.filename):
             try:
                 with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as stream:
@@ -99,6 +134,7 @@ def discover(path, error):
                 if models:
                     yield Fold(str(current), '.', [p.name for p in models],
                                lambda name: (current / name).read_text(encoding='utf-8'),
+                               member_names=tuple(p.name for p in children if p.is_file()),
                                timestamp=datetime.fromtimestamp(max(p.stat().st_mtime for p in models),
                                                                 timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'))
                 if not models and any(p.is_file() and (p.name.endswith('_job_request.json') or

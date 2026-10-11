@@ -46,12 +46,13 @@ def main(argv=None):
         inputs = {}
         model_scores = {}
         fold_ids = {}
-        rows = analyze(args.input, args.full_data, options, args.chains, summary_targets=targets, summary_inputs=inputs, model_scores=model_scores, fold_ids=fold_ids)
+        sequence_ids = {}
+        rows = analyze(args.input, args.full_data, options, args.chains, summary_targets=targets, summary_inputs=inputs, model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids)
         descriptions = PatchDescriptions(inputs, None if args.no_dssp else find_dssp(args.dssp),
             DescriptionOptions(cutoff=args.distance_cutoff, flank=args.sequence_flank,
                                radius=args.spatial_radius, sasa_points=args.sasa_points))
         summary = io.StringIO()
-        write_summary(rows, targets, summary, descriptions, structure=args.structure, model_scores=model_scores, fold_ids=fold_ids)
+        write_summary(rows, targets, summary, descriptions, structure=args.structure, model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids)
         if output is not None:
             with output.open('w', newline='') as stream:
                 write_patches(rows, stream)

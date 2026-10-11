@@ -15,6 +15,7 @@ class ManifestCLITests(unittest.TestCase):
             source = root / 'fold'
             source.mkdir()
             (source / 'fold_model_0.cif').write_text(cif())
+            (source / 'fold_job_request.json').write_text('[{"modelSeeds":["42"]}]')
             fasta = root / 'candidate.faa'
             fasta.write_text('>first full header\nAC\n>second\nDE\n')
             out = root / 'manifest.tsv'

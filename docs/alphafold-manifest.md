@@ -11,7 +11,7 @@ even when their sequence composition is identical. Symlink children are skipped.
 Nested ZIPs are spooled to temporary storage without extracting member paths.
 
 The entire FASTA is validated before scanning or changing the manifest. Errors
-include duplicate sequences, empty records/headers, sequence text before a header,
+include duplicate full FASTA headers (exact text after `>`), duplicate sequences, empty records/headers, sequence text before a header,
 and nonalphabetic sequence characters. All detected errors are reported before
 stopping. Sequence whitespace is removed and letters are uppercased; headers are
 preserved in full after `>` (excluding the line ending), without accession parsing.
@@ -31,7 +31,7 @@ errors occurred, otherwise 0. Errors and a final count go to stderr.
 
 ## TSV columns
 
-One row per fold location, with 15 columns:
+One row per fold location, with 16 columns:
 
 - `source_path`: absolute extracted fold directory, or outermost filesystem ZIP.
 - `fold_path`: directory within that source, `.` at its root. Nested archive
@@ -40,9 +40,10 @@ One row per fold location, with 15 columns:
   `alphafold-pdockq2-patches.py` (quote it in the shell). Extracted folds use their
   absolute directory path; ZIP folds use `SOURCE.zip::FOLD_PATH`.
 - `fold_id`: last eight lowercase hex characters of SHA-1 over UTF-8 compact JSON
-  of the lexically sorted sequence list, including one entry per chain copy.
-  Example hash input: `["AC","AC","DE"]`. This is a reference label, not a
-  unique identifier or cache key.
+  of `(seed, sorted_sequences_with_copies)`, e.g. `[42,["AC","AC","DE"]]`.
+- `sequence_id`: previous sequence-only fold hash: last eight lowercase hex
+  characters of SHA-1 over compact JSON of the sorted sequences with copies,
+  e.g. `["AC","AC","DE"]`. Both IDs are reference labels, not cache keys.
 - `timestamp`: latest modification time among the fold's model CIF files.
 - `input 1 description`, `input 1 copies`, through `input 5 description`,
   `input 5 copies`: all ten columns are always present. Each input represents a
@@ -68,13 +69,17 @@ one manifest simultaneously. Discovery still lists directories and opens archive
 including nested archives, but cached model contents are not read or hashed.
 Output-write failures stop the run.
 
-Older multi-row manifests are automatically combined by the two paths. Full
-headers and copy counts are preserved in existing row order. Migration does not
-parse models or rematch against FASTA. Timestamps are filled from file metadata
-as cached folds are rediscovered; historical locations outside the current scan
-retain a blank timestamp until encountered. Once set, timestamps remain cached.
-Malformed legacy rows or more than five inputs in a legacy fold abort migration
-without rewriting the old TSV.
+Manifests from before `sequence_id` was added must be removed and regenerated;
+there is no ID migration. Existing files with an old schema are rejected unchanged.
+
+## Seed validation
+
+Each fold needs its matching `*_job_request.json`, containing exactly one job and
+exactly one `modelSeeds` value. Nonnegative integer seeds and digit strings are
+accepted and normalized to integers, so `"42"` and `42` produce the same fold ID.
+Missing, invalid, or multiple seeds cause a fold error; processing continues with
+other folds. Duplicate job-request archive members are rejected. The manifest's
+sequence-only ID preserves the previous hash definition exactly.
 
 ## Timestamp meaning
 
@@ -101,8 +106,7 @@ sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py \
 Nested example: `/path/batch.zip::inner.zip!/folder/fold`; a fold at the ZIP root
 uses `/path/batch.zip::.`. Only the selected fold is loaded. Each model requires
 its matching `*_full_data_N.json`; the manifest itself does not verify those JSON
-files. Existing manifests gain the locator column on rerun without reprocessing
-cached folds. Cache identity remains the original two paths.
+files. Cache identity remains the original two paths.
 
 The separators `::` and `!/` are reserved for locator syntax; source/member names
 containing these delimiters are not supported by this representation.

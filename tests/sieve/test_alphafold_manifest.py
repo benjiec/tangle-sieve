@@ -12,7 +12,7 @@ from unittest.mock import patch
 import zipfile
 
 from sieve.alphafold_files import discover, model_number, zip_timestamp
-from sieve.alphafold_manifest import COLUMNS, chain_sequences, fold_id, read_candidates, run
+from sieve.alphafold_manifest import COLUMNS, chain_sequences, fold_id, sequence_id, read_candidates, run
 
 
 def cif(sequences=('AC', 'AC', 'DE')):
@@ -27,6 +27,11 @@ def cif(sequences=('AC', 'AC', 'DE')):
 
 
 def archive_bytes(members):
+    from sieve.alphafold_files import request_name
+    members = dict(members)
+    for name in list(members):
+        if model_number(name) is not None:
+            members.setdefault(request_name(name), json.dumps([{'modelSeeds': ['42']}]))
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w') as archive:
         for name, text in members.items():
@@ -51,6 +56,7 @@ class ManifestTests(unittest.TestCase):
         folder.mkdir(parents=True, exist_ok=True)
         for i in range(5):
             (folder / f'fold_model_{i}.cif').write_text(cif(sequences))
+        (folder / 'fold_job_request.json').write_text(json.dumps([{'modelSeeds': ['42']}]))
         return folder
 
     def run_manifest(self):
@@ -63,10 +69,13 @@ class ManifestTests(unittest.TestCase):
     def test_hash(self):
         seqs = ['DE', 'AC', 'AC']
         expected = hashlib.sha1(b'["AC","AC","DE"]').hexdigest()[-8:]
-        self.assertEqual(fold_id(seqs), expected)
-        self.assertEqual(fold_id(seqs), fold_id(reversed(seqs)))
-        self.assertNotEqual(fold_id(['A', 'CD']), fold_id(['AC', 'D']))
-        self.assertNotEqual(fold_id(['AC']), fold_id(['AC', 'AC']))
+        self.assertEqual(sequence_id(seqs), expected)
+        self.assertEqual(sequence_id(seqs), sequence_id(reversed(seqs)))
+        self.assertNotEqual(sequence_id(['A', 'CD']), sequence_id(['AC', 'D']))
+        self.assertNotEqual(sequence_id(['AC']), sequence_id(['AC', 'AC']))
+        self.assertEqual(fold_id(42, seqs), hashlib.sha1(b'[42,["AC","AC","DE"]]').hexdigest()[-8:])
+        self.assertEqual(fold_id(42, seqs), fold_id(42, reversed(seqs)))
+        self.assertNotEqual(fold_id(42, seqs), fold_id(43, seqs))
 
     def test_fasta_errors_collect_and_prevent_scan(self):
         self.fasta.write_text('stray\n>one\nac\n>two\nAC\n>\n>bad\nA*\n')
@@ -102,26 +111,20 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(self.run_manifest(), 0)
         self.assertEqual(self.rows(), rows)
 
-    def test_legacy_cache_migration(self):
-        folder = self.fold()
+    def test_old_manifest_rejected_without_changes(self):
+        self.fold()
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
-        self.assertEqual(list(rows[0]), COLUMNS)
-        for extra in ({}, {'sequence': 'AC', 'source_fingerprint': 'old'},
-                      {'sequence_sha256': 'old', 'source_fingerprint': 'old'}):
-            with self.subTest(columns=extra):
-                legacy = [dict(source_path=str(folder.resolve()), fold_path='.',
-                               fold_id=rows[0]['fold_id'], description=description,
-                               copies=copies, chain_ids=chains, **extra)
-                          for description, copies, chains in [('first full header', '2', 'A,B'),
-                                                              ('second full header', '1', 'C')]]
-                with self.output.open('w', newline='') as stream:
-                    writer = csv.DictWriter(stream, fieldnames=list(legacy[0]), delimiter='\t')
-                    writer.writeheader()
-                    writer.writerows(legacy)
-                with patch('sieve.alphafold_manifest.identify', side_effect=AssertionError):
-                    self.assertEqual(self.run_manifest(), 0)
-                self.assertEqual(self.rows(), rows)
+        for row in rows:
+            del row['sequence_id']
+        with self.output.open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]), delimiter='\t')
+            writer.writeheader()
+            writer.writerows(rows)
+        original = self.output.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'remove it and regenerate'):
+            self.run_manifest()
+        self.assertEqual(self.output.read_bytes(), original)
 
     def test_fail_continue_then_retry(self):
         self.fold('bad', ('AA',))
@@ -260,7 +263,7 @@ class ManifestTests(unittest.TestCase):
         self.fold('six', (*seqs, 'CC'))
         self.assertEqual(self.run_manifest(), 1)
         row = self.rows()[0]
-        self.assertEqual(len(row), 15)
+        self.assertEqual(len(row), 16)
         self.assertEqual(row['input 1 copies'], '2')
         self.assertTrue(row['input 5 description'])
         self.assertIn('6 distinct sequences; maximum is 5', self.log.getvalue())
@@ -293,6 +296,7 @@ class ManifestTests(unittest.TestCase):
         inner = io.BytesIO()
         with zipfile.ZipFile(inner, 'w') as archive:
             archive.writestr(zipfile.ZipInfo('fold_model_0.cif', (2020, 2, 3, 4, 5, 6)), cif())
+            archive.writestr('fold_job_request.json', json.dumps([{'modelSeeds': ['42']}]))
         (self.inputs/'outer.zip').write_bytes(archive_bytes({'inner.zip': inner.getvalue()}))
         self.assertEqual(self.run_manifest(), 0)
         self.assertEqual(self.rows()[0]['timestamp'], '2020-02-03T04:05:06')
@@ -309,30 +313,43 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.run_manifest()
 
-    def test_legacy_overflow_preserves_original(self):
-        legacy = [dict(source_path='/historical/fold', fold_path='.', fold_id='12345678',
-                       description=f'input {i}', copies='1', chain_ids=chr(65+i)) for i in range(6)]
-        with self.output.open('w', newline='') as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(legacy[0]), delimiter='\t')
-            writer.writeheader()
-            writer.writerows(legacy)
-        original = self.output.read_bytes()
-        with self.assertRaisesRegex(ValueError, 'maximum is 5'):
-            self.run_manifest()
-        self.assertEqual(self.output.read_bytes(), original)
+    def test_duplicate_full_headers_stop_before_scan(self):
+        self.fasta.write_text('>same full header\nAC\n>same full header\nDE\n>same full header\nAA\n')
+        with patch('sieve.alphafold_manifest.discover', side_effect=AssertionError):
+            self.assertEqual(self.run_manifest(), 1)
+        self.assertEqual(self.log.getvalue().count('duplicate FASTA header'), 2)
+        self.assertFalse(self.output.exists())
+        self.fasta.write_text('>same different header\nAC\n>same other header\nDE\n')
+        errors = []
+        read_candidates(self.fasta, errors.append)
+        self.assertEqual(errors, [])
 
-    def test_legacy_outside_scan_keeps_blank_timestamp(self):
-        self.fold()
-        legacy = dict(source_path='/historical/fold', fold_path='.', fold_id='12345678',
-                      description='historical input', copies='1', chain_ids='A')
-        with self.output.open('w', newline='') as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(legacy), delimiter='\t')
-            writer.writeheader()
-            writer.writerow(legacy)
+    def test_seed_validation_and_continue(self):
+        self.fold('good')
+        bad = self.fold('bad')
+        request = bad/'fold_job_request.json'
+        for data in ({}, {'modelSeeds': []}, {'modelSeeds': ['1', '2']},
+                     {'modelSeeds': [True]}, {'modelSeeds': [-1]},
+                     {'modelSeeds': ['bad']}, {'modelSeeds': [1.2]}, []):
+            with self.subTest(data=data):
+                request.write_text(json.dumps(data))
+                self.assertEqual(self.run_manifest(), 1)
+                self.assertEqual(len(self.rows()), 1)
+        request.unlink()
+        self.assertEqual(self.run_manifest(), 1)
+        request.write_text(json.dumps([{'modelSeeds': [42]}]))
         self.assertEqual(self.run_manifest(), 0)
-        old = next(r for r in self.rows() if r['source_path'] == '/historical/fold')
-        self.assertEqual(old['timestamp'], '')
-        self.assertEqual(old['input 1 description'], 'historical input')
+        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len({r['fold_id'] for r in self.rows()}), 1)
+
+    def test_seed_changes_fold_id_only(self):
+        self.fold('one')
+        other = self.fold('two')
+        (other/'fold_job_request.json').write_text(json.dumps([{'modelSeeds': ['43']}]))
+        self.assertEqual(self.run_manifest(), 0)
+        rows = self.rows()
+        self.assertEqual(rows[0]['sequence_id'], rows[1]['sequence_id'])
+        self.assertNotEqual(rows[0]['fold_id'], rows[1]['fold_id'])
 
     def test_model_filter(self):
         self.assertEqual(model_number('dir/fold_model_4.cif'), 4)
