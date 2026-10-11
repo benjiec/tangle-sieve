@@ -90,3 +90,5 @@ class LocatorTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 self.assertEqual(script.main([locator, '--no-dssp', '--min-residues-per-chain', '1', '--min-contacts', '1']), 0)
             self.assertIn('Model 0', output.getvalue())
+            self.assertEqual(output.getvalue().splitlines()[1], f"Fold ID: {rows[-1]['fold_id']}")
+            self.assertNotIn('Full-interface pDockQ2', output.getvalue())

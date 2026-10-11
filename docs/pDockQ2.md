@@ -669,3 +669,31 @@ folds and unrelated nested archives are not analyzed. The output `source` retain
 the complete locator so folds within the same archive remain distinguishable.
 Plain CIF, ZIP, and directory inputs retain their existing behavior. See the
 [manifest documentation](alphafold-manifest.md) for locator syntax and migration.
+
+## Model confidence and optional chain structure summary
+
+Every stdout summary prints whole-fold ipTM and pTM once for each analyzed model,
+including models without qualifying interfaces or patches. Values come from the
+matching `*_summary_confidences_N.json` beside each model, including inside ZIPs
+and nested fold locators. Missing files, fields, or null values print
+`n/a (unavailable)`; invalid score values or malformed JSON produce an error.
+These scores are reported as supplied, not calculated from PAE. For a renamed
+standalone CIF, a numbered `*_full_data_N.json` path can identify its adjacent
+summary file. The patch TSV schema is unchanged.
+
+The per-chain secondary structure/composition summary prints only with
+`--structure`. Patch-level descriptions still print by default. Existing
+`--dssp` and `--no-dssp` options continue to control secondary structure assignment.
+
+## Fold header and printed patch results
+
+Each fold's stdout block starts with `Fold ID: HASH`, using the manifest's exact
+`fold_id` calculation: the last eight hex characters of SHA-1 over compact JSON
+of sorted chain sequences, with one sequence per chain copy. Sequence extraction
+is shared with the manifest. Models with different sequence-composition hashes
+are rejected. If any model lacks usable sequence metadata, the header says
+`Fold ID: n/a (sequence metadata unavailable)`.
+
+The full-interface pDockQ2 section is no longer printed. Per-model ipTM/pTM,
+optional `--structure` summaries, and the top distinct patch results remain.
+Full-interface rows are still calculated and included in the optional TSV output.

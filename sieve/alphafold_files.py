@@ -1,10 +1,12 @@
 """Fold discovery across filesystem directories and nested ZIP archives."""
 import re
 import shutil
+import struct
 import tempfile
 import zipfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 
@@ -25,6 +27,31 @@ class Fold:
     fold_path: str
     models: list
     read: object
+    member_names: tuple = ()
+    timestamp: str = ''
+
+
+def zip_timestamp(infos):
+    """Latest model mtime: prefer UTC extended timestamps, else unzoned ZIP times."""
+    utc_times = []
+    for info in infos:
+        extra = info.extra
+        offset = 0
+        epoch = None
+        while offset + 4 <= len(extra):
+            tag, size = struct.unpack_from('<HH', extra, offset)
+            offset += 4
+            payload = extra[offset:offset + size]
+            offset += size
+            if tag == 0x5455 and len(payload) >= 5 and payload[0] & 1:
+                epoch = struct.unpack_from('<I', payload, 1)[0]
+                break
+        if epoch is not None:
+            utc_times.append(datetime.fromtimestamp(epoch, timezone.utc))
+    if len(utc_times) == len(infos):
+        return max(utc_times).isoformat(timespec='seconds').replace('+00:00', 'Z')
+    # DOS ZIP timestamps do not encode a timezone; never invent one.
+    return max(datetime(*info.date_time) for info in infos).isoformat(timespec='seconds')
 
 
 def discover(path, error):
@@ -51,7 +78,8 @@ def discover(path, error):
         for directory, infos in sorted(groups.items()):
             names = sorted(i.filename for i in infos)
             yield Fold(source, prefix + directory, names,
-                       lambda name: archive.read(name).decode('utf-8'))
+                       lambda name: archive.read(name).decode('utf-8'),
+                       timestamp=zip_timestamp(infos))
         for info in sorted(nested, key=lambda i: i.filename):
             try:
                 with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as stream:
@@ -70,7 +98,9 @@ def discover(path, error):
                 models = [p for p in children if p.is_file() and model_number(p.name) is not None]
                 if models:
                     yield Fold(str(current), '.', [p.name for p in models],
-                               lambda name: (current / name).read_text(encoding='utf-8'))
+                               lambda name: (current / name).read_text(encoding='utf-8'),
+                               timestamp=datetime.fromtimestamp(max(p.stat().st_mtime for p in models),
+                                                                timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'))
                 if not models and any(p.is_file() and (p.name.endswith('_job_request.json') or
                         (p.suffix == '.cif' and 'templates' not in current.parts)) for p in children):
                     error(f'{current}: fold candidate has no recognized model CIF files')
@@ -128,4 +158,4 @@ def open_fold(locator):
         if not names:
             raise ValueError(f'no model CIF files at fold locator: {locator}')
         yield Fold(str(Path(source).resolve()), member_path, sorted(names),
-                   lambda name: read_unique(name).decode('utf-8'))
+                   lambda name: read_unique(name).decode('utf-8'), tuple(archive.namelist()))

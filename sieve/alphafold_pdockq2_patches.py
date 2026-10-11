@@ -2,6 +2,7 @@
 import csv
 import json
 import math
+import re
 import statistics
 from dataclasses import dataclass
 from itertools import combinations
@@ -9,6 +10,7 @@ from pathlib import Path
 import zipfile
 
 from sieve.alphafold_files import open_fold, fold_locator
+from sieve.alphafold_manifest import chain_sequences, fold_id
 
 from sieve.alphafold_pdockq2 import (
     OUTPUT_COLUMNS, _distance, model_number, parse_model, score_selections,
@@ -170,7 +172,33 @@ def detect_patches(residues, pae, options=None, chains=None):
     return rows
 
 
-def input_models(path, full_data=None):
+def model_confidence(summary):
+    if not isinstance(summary, dict):
+        raise ValueError('summary confidence JSON must be an object')
+    scores = {}
+    for field in ('iptm', 'ptm'):
+        value = summary.get(field)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                  or not math.isfinite(value) or not 0 <= value <= 1):
+            raise ValueError(f'summary confidence {field} must be a finite number in [0, 1] or null')
+        scores[field] = value
+    return scores
+
+
+def input_models(path, full_data=None, *, model_scores=None):
+    def record_scores(source, number, name, read, names):
+        if model_scores is None:
+            return
+        summary = {}
+        if name is not None and name in names:
+            if names.count(name) != 1:
+                raise ValueError(f'expected exactly one summary confidence file: {name}')
+            summary = json.loads(read(name))
+        model_scores[(source, '' if number is None else number)] = model_confidence(summary)
+
+    def summary_name(name, number):
+        return str(name).removesuffix(f'model_{number}.cif') + f'summary_confidences_{number}.json'
+
     if '::' in str(path):
         if full_data:
             raise ValueError('--full-data is only valid with CIF input')
@@ -180,7 +208,9 @@ def input_models(path, full_data=None):
                 raise ValueError('fold must contain models with unique model numbers')
             for number, name in models:
                 data = name.removesuffix(f'model_{number}.cif') + f'full_data_{number}.json'
-                yield (fold_locator(fold.source_path, fold.fold_path), number,
+                source = fold_locator(fold.source_path, fold.fold_path)
+                record_scores(source, number, summary_name(name, number), fold.read, fold.member_names)
+                yield (source, number,
                        fold.read(name), json.loads(fold.read(data)))
         return
     path = Path(path)
@@ -196,17 +226,29 @@ def input_models(path, full_data=None):
                 data = cif.with_name(cif.name.removesuffix(f'model_{number}.cif') + f'full_data_{number}.json')
                 if not data.is_file():
                     raise ValueError(f'model {number} requires matching {data.name}')
+                record_scores(str(path.resolve()), number, summary_name(cif.name, number),
+                              lambda name: (path / name).read_text(), [p.name for p in path.iterdir()])
                 yield str(path.resolve()), number, cif.read_text(), json.loads(data.read_text())
             return
         archives = sorted(p for p in path.glob('*.zip') if p.is_file() and not p.name.startswith('._'))
         if not archives:
             raise ValueError(f'directory contains no model CIF files or ZIP files: {path}')
         for archive in archives:
-            yield from input_models(archive)
+            yield from input_models(archive, model_scores=model_scores)
     elif path.suffix.lower() == '.cif':
         if not full_data:
             raise ValueError('CIF input requires --full-data')
-        yield str(path.resolve()), model_number(path.name), path.read_text(), json.loads(Path(full_data).read_text())
+        number = model_number(path.name)
+        summary = path.with_name(summary_name(path.name, number)) if number is not None else None
+        if summary is None:
+            data_path = Path(full_data)
+            match = re.search(r'full_data_(\d+)\.json$', data_path.name)
+            if match:
+                summary = data_path.with_name(data_path.name[:match.start()] + f'summary_confidences_{match[1]}.json')
+        record_scores(str(path.resolve()), number, str(summary) if summary is not None else None,
+                      lambda name: Path(name).read_text(),
+                      [str(summary)] if summary is not None and summary.is_file() else [])
+        yield str(path.resolve()), number, path.read_text(), json.loads(Path(full_data).read_text())
     elif path.suffix.lower() == '.zip':
         if full_data:
             raise ValueError('--full-data is only valid with CIF input')
@@ -218,14 +260,28 @@ def input_models(path, full_data=None):
                 data = name.removesuffix(f'model_{number}.cif') + f'full_data_{number}.json'
                 if archive.namelist().count(data) != 1:
                     raise ValueError(f'model {number} requires exactly one matching {data}')
+                record_scores(str(path.resolve()), number, summary_name(name, number),
+                              archive.read, archive.namelist())
                 yield str(path.resolve()), number, archive.read(name).decode(), json.loads(archive.read(data))
     else:
         raise ValueError('input must be a CIF, ZIP, or directory of extracted models or ZIPs')
 
 
-def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None):
+def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None, model_scores=None, fold_ids=None):
     rows = []
-    for source, model, cif, data in input_models(path, full_data):
+    for source, model, cif, data in input_models(path, full_data, model_scores=model_scores):
+        if fold_ids is not None:
+            try:
+                identifier = fold_id(chain_sequences(cif).values())
+            except (ValueError, KeyError):
+                identifier = None
+            if source in fold_ids:
+                previous = fold_ids[source]
+                if previous is not None and identifier is not None and previous != identifier:
+                    raise ValueError(f'fold sequence composition differs across models: {source}')
+                if previous is None:
+                    identifier = None
+            fold_ids[source] = identifier
         residues, pae = parse_model(cif, data)
         if summary_inputs is not None:
             summary_inputs[(source, '' if model is None else model)] = cif
@@ -274,28 +330,23 @@ def pae_confidence_text(row):
             f"{row['chain 2']}→{row['chain 1']} {row['normalized PAE 2 to 1']:.6f}")
 
 
-def write_summary(rows, targets, stream, descriptions=None):
-    """Full pairwise interfaces, then top five distinct last-chain patches."""
+def write_summary(rows, targets, stream, descriptions=None, *, structure=False, model_scores=None, fold_ids=None):
+    """Fold identity and confidence, then top five distinct last-chain patches."""
     for source in sorted({source for source, _ in targets}):
         last_chains = sorted({chain for (s, _), chain in targets.items() if s == source and chain is not None})
-        print(f'\n{source}', file=stream)
-        if descriptions is not None:
+        identifier = (fold_ids or {}).get(source)
+        print(f"\nFold ID: {identifier or 'n/a (sequence metadata unavailable)'}", file=stream)
+        print(source, file=stream)
+        print('Model confidence (whole fold):', file=stream)
+        for model in sorted((m for s, m in targets if s == source), key=lambda m: int(m) if m != '' else -1):
+            scores = (model_scores or {}).get((source, model), {})
+            def score_text(field):
+                value = scores.get(field)
+                return 'n/a (unavailable)' if value is None else f'{value:.6f}'
+            label = model if model != '' else 'unnumbered'
+            print(f"  Model {label} | ipTM {score_text('iptm')} | pTM {score_text('ptm')}", file=stream)
+        if structure and descriptions is not None:
             descriptions.write_chains(source, stream)
-        print('Full-interface pDockQ2 (all analyzed chain pairs, before patch splitting):', file=stream)
-        references = sorted((r for r in rows if r['source'] == source and r['scope'] == 'full'),
-                            key=lambda r: (int(r['model']) if r['model'] != '' else -1,
-                                           r['chain 1'], r['chain 2']))
-        if not references:
-            print('  No chain-pair results.', file=stream)
-        for row in references:
-            model = row['model'] if row['model'] != '' else 'unnumbered'
-            a, b = row['chain 1'], row['chain 2']
-            print(f"  Model {model} | {a}–{b} | "
-                  f"{a}→{b} {row['pDockQ2 1 to 2']:.6f} | "
-                  f"{b}→{a} {row['pDockQ2 2 to 1']:.6f} | "
-                  f"max pDockQ2 {row['pDockQ2 max']:.6f}", file=stream)
-            print(f"     Contacts: {row['contact count']} | residues {a}: {row['residue count 1']}, "
-                  f"{b}: {row['residue count 2']} | {pae_confidence_text(row)}", file=stream)
         print(file=stream)
         print(f'Top 5 distinct sites on the last CIF chain ({", ".join(last_chains)}), across models (at most 10% last-chain residue overlap):', file=stream)
         candidates = [r for r in rows if r['source'] == source and r['scope'] == 'patch'

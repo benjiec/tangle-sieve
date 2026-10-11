@@ -126,24 +126,20 @@ class SummaryTests(unittest.TestCase):
             self.assertIn('Model unnumbered', output.getvalue())
             self.assertEqual(set(root.iterdir()), {cif, data})
 
-    def test_full_pairs_precede_last_chain_patches(self):
+    def test_full_pairs_not_printed(self):
         rows = [self.row(0, 'A', 'B', 0.9, 'full'),
                 self.row(0, 'A', 'C', 0.6, 'full'), self.row(0, 'A', 'C', 0.8)]
         output = io.StringIO()
         SCRIPT.write_summary(rows, {('example.zip', 0): 'C'}, output)
         full, patches = output.getvalue().split('Top 5 distinct sites', 1)
-        self.assertIn('A–B', full)
-        self.assertIn('A→B 0.900000', full)
-        self.assertIn('A→B 0.800000 | B→A 0.500000', full)
-        self.assertIn('A–C', full)
-        self.assertNotIn('All interchain contact pairs', full)
-        self.assertNotIn('Nearest contact', full)
-        self.assertIn('Contacts: 10', full)
+        self.assertNotIn('Full-interface pDockQ2', full)
+        self.assertNotIn('pDockQ2', full)
+        self.assertNotIn('Contacts:', full)
         self.assertNotIn('A–B', patches)
         self.assertIn('max pDockQ2 0.800000', patches)
         self.assertIn('A→C 0.800000 | C→A 0.500000', patches)
 
-    def test_full_no_contacts_prints_zero_counts(self):
+    def test_full_no_contacts_not_printed(self):
         row = self.row(0, 'A', 'B', 0, 'full')
         for key in row:
             if key.startswith(('contact distance', 'nearest contact distance')):
@@ -151,6 +147,6 @@ class SummaryTests(unittest.TestCase):
         row.update({'contact count': 0, 'residue count 1': 0, 'residue count 2': 0})
         output = io.StringIO()
         SCRIPT.write_summary([row], {('example.zip', 0): 'B'}, output)
-        self.assertIn('Contacts: 0 | residues A: 0, B: 0', output.getvalue())
+        self.assertNotIn('Contacts:', output.getvalue())
         self.assertIn('No qualifying patches', output.getvalue())
-        self.assertIn('PAE-only confidence: n/a (no contacts)', output.getvalue())
+        self.assertNotIn('PAE-only confidence:', output.getvalue())

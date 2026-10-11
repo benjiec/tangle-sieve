@@ -2,14 +2,17 @@ import csv
 import hashlib
 import io
 import json
+import os
+import struct
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
 
-from sieve.alphafold_files import discover, model_number
-from sieve.alphafold_manifest import chain_sequences, fold_id, read_candidates, run
+from sieve.alphafold_files import discover, model_number, zip_timestamp
+from sieve.alphafold_manifest import COLUMNS, chain_sequences, fold_id, read_candidates, run
 
 
 def cif(sequences=('AC', 'AC', 'DE')):
@@ -88,9 +91,11 @@ class ManifestTests(unittest.TestCase):
         self.fold()
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
-        self.assertEqual([r['copies'] for r in rows], ['2', '1'])
-        self.assertEqual(rows[0]['chain_ids'], 'A,B')
-        self.assertEqual(rows[0]['description'], 'first full header')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['input 1 copies'], '2')
+        self.assertEqual(rows[0]['input 2 copies'], '1')
+        self.assertEqual(rows[0]['input 1 description'], 'first full header')
+        self.assertEqual(rows[0]['input 5 copies'], '')
         self.fasta.write_text('>new full header\nAC\n>second\nDE\n>added\nAA\n')
         with patch('sieve.alphafold_manifest.identify', side_effect=AssertionError):
             self.assertEqual(self.run_manifest(), 0)
@@ -98,16 +103,18 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(self.rows(), rows)
 
     def test_legacy_cache_migration(self):
-        self.fold()
+        folder = self.fold()
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
-        self.assertEqual(set(rows[0]), {'source_path', 'fold_path', 'fold_locator', 'fold_id',
-                                      'description', 'chain_ids', 'copies'})
-        for extra in ({'sequence': 'AC', 'source_fingerprint': 'old'},
+        self.assertEqual(list(rows[0]), COLUMNS)
+        for extra in ({}, {'sequence': 'AC', 'source_fingerprint': 'old'},
                       {'sequence_sha256': 'old', 'source_fingerprint': 'old'}):
             with self.subTest(columns=extra):
-                legacy = [{k: v for k, v in dict(row, **extra).items() if k != 'fold_locator'}
-                          for row in rows]
+                legacy = [dict(source_path=str(folder.resolve()), fold_path='.',
+                               fold_id=rows[0]['fold_id'], description=description,
+                               copies=copies, chain_ids=chains, **extra)
+                          for description, copies, chains in [('first full header', '2', 'A,B'),
+                                                              ('second full header', '1', 'C')]]
                 with self.output.open('w', newline='') as stream:
                     writer = csv.DictWriter(stream, fieldnames=list(legacy[0]), delimiter='\t')
                     writer.writeheader()
@@ -121,10 +128,10 @@ class ManifestTests(unittest.TestCase):
         self.fold('good')
         self.assertEqual(self.run_manifest(), 1)
         self.assertIn('ERROR: AA not found in ', self.log.getvalue())
-        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(self.rows()), 1)
         self.fasta.write_text(self.fasta.read_text()+'>missing\nAA\n')
         self.assertEqual(self.run_manifest(), 0)
-        self.assertEqual(len(self.rows()), 3)
+        self.assertEqual(len(self.rows()), 2)
         self.assertIn('cached: 1', self.log.getvalue())
 
     def test_missing_sequences_each_start_error_line(self):
@@ -177,7 +184,7 @@ class ManifestTests(unittest.TestCase):
         (self.inputs / '._junk.zip').write_text('ignored')
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
-        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(rows), 3)
         self.assertEqual(len({r['fold_id'] for r in rows}), 1)
         self.assertEqual({r['fold_path'] for r in rows}, {'.', 'inside.zip!/deep', 'other'})
 
@@ -186,7 +193,7 @@ class ManifestTests(unittest.TestCase):
         (self.inputs / 'bad.zip').write_text('bad')
         (self.inputs / 'nested.zip').write_bytes(archive_bytes({'bad.zip': b'bad', 'ok/fold_model_0.cif': cif()}))
         self.assertEqual(self.run_manifest(), 1)
-        self.assertEqual(len(self.rows()), 4)
+        self.assertEqual(len(self.rows()), 2)
 
     def test_duplicate_model_number(self):
         folder = self.fold()
@@ -217,7 +224,7 @@ class ManifestTests(unittest.TestCase):
         (bad / 'fold_job_request.json').write_text('{}')
         self.assertEqual(self.run_manifest(), 1)
         self.assertIn('no recognized model CIF', self.log.getvalue())
-        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(self.rows()), 1)
 
     def test_checkpoint_survives_later_interruption(self):
         from sieve.alphafold_manifest import identify
@@ -232,9 +239,9 @@ class ManifestTests(unittest.TestCase):
         with patch('sieve.alphafold_manifest.identify', side_effect=interrupted):
             with self.assertRaises(KeyboardInterrupt):
                 self.run_manifest()
-        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(self.rows()), 1)
         self.assertEqual(self.run_manifest(), 0)
-        self.assertEqual(len(self.rows()), 4)
+        self.assertEqual(len(self.rows()), 2)
 
     def test_failed_atomic_replace_keeps_previous_manifest(self):
         self.fold('a')
@@ -245,6 +252,87 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 self.run_manifest()
         self.assertEqual(self.output.read_bytes(), original)
+
+    def test_five_inputs_and_overflow(self):
+        seqs = ('A', 'C', 'D', 'E', 'AA')
+        self.fasta.write_text(''.join(f'>description {seq}\n{seq}\n' for seq in (*seqs, 'CC')))
+        self.fold('five', (*seqs, 'A'))
+        self.fold('six', (*seqs, 'CC'))
+        self.assertEqual(self.run_manifest(), 1)
+        row = self.rows()[0]
+        self.assertEqual(len(row), 15)
+        self.assertEqual(row['input 1 copies'], '2')
+        self.assertTrue(row['input 5 description'])
+        self.assertIn('6 distinct sequences; maximum is 5', self.log.getvalue())
+
+    def test_directory_timestamp_latest_model_and_cache_frozen(self):
+        folder = self.fold()
+        for index, model in enumerate(sorted(folder.glob('*.cif'))):
+            os.utime(model, (1700000000 + index, 1700000000 + index))
+        self.assertEqual(self.run_manifest(), 0)
+        expected = datetime.fromtimestamp(1700000004, timezone.utc).isoformat().replace('+00:00', 'Z')
+        self.assertEqual(self.rows()[0]['timestamp'], expected)
+        os.utime(folder/'fold_model_0.cif', (1800000000, 1800000000))
+        self.assertEqual(self.run_manifest(), 0)
+        self.assertEqual(self.rows()[0]['timestamp'], expected)
+
+    def test_zip_timestamp_utc_and_unzoned_fallback(self):
+        first = zipfile.ZipInfo('fold_model_0.cif', (2020, 1, 1, 1, 2, 4))
+        second = zipfile.ZipInfo('fold_model_1.cif', (2020, 1, 2, 1, 2, 6))
+        self.assertEqual(zip_timestamp([first, second]), '2020-01-02T01:02:06')
+        for index, info in enumerate((first, second)):
+            info.extra = struct.pack('<HHBI', 0x5455, 5, 1, 1700000000 + index)
+        expected = datetime.fromtimestamp(1700000001, timezone.utc).isoformat().replace('+00:00', 'Z')
+        self.assertEqual(zip_timestamp([first, second]), expected)
+        second.extra = b''
+        self.assertEqual(zip_timestamp([first, second]), '2020-01-02T01:02:06')
+        second.extra = b'\x55\x54\x05\x00\x01'
+        self.assertEqual(zip_timestamp([first, second]), '2020-01-02T01:02:06')
+
+    def test_nested_zip_timestamp_uses_model_not_outer_archive(self):
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, 'w') as archive:
+            archive.writestr(zipfile.ZipInfo('fold_model_0.cif', (2020, 2, 3, 4, 5, 6)), cif())
+        (self.inputs/'outer.zip').write_bytes(archive_bytes({'inner.zip': inner.getvalue()}))
+        self.assertEqual(self.run_manifest(), 0)
+        self.assertEqual(self.rows()[0]['timestamp'], '2020-02-03T04:05:06')
+
+    def test_rejects_duplicate_or_incomplete_wide_cache(self):
+        self.fold()
+        self.assertEqual(self.run_manifest(), 0)
+        rows = self.rows()
+        for bad_rows in ([rows[0], rows[0]], [dict(rows[0], **{'input 2 copies': ''})]):
+            with self.output.open('w', newline='') as stream:
+                writer = csv.DictWriter(stream, fieldnames=COLUMNS, delimiter='\t')
+                writer.writeheader()
+                writer.writerows(bad_rows)
+            with self.assertRaises(ValueError):
+                self.run_manifest()
+
+    def test_legacy_overflow_preserves_original(self):
+        legacy = [dict(source_path='/historical/fold', fold_path='.', fold_id='12345678',
+                       description=f'input {i}', copies='1', chain_ids=chr(65+i)) for i in range(6)]
+        with self.output.open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(legacy[0]), delimiter='\t')
+            writer.writeheader()
+            writer.writerows(legacy)
+        original = self.output.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'maximum is 5'):
+            self.run_manifest()
+        self.assertEqual(self.output.read_bytes(), original)
+
+    def test_legacy_outside_scan_keeps_blank_timestamp(self):
+        self.fold()
+        legacy = dict(source_path='/historical/fold', fold_path='.', fold_id='12345678',
+                      description='historical input', copies='1', chain_ids='A')
+        with self.output.open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(legacy), delimiter='\t')
+            writer.writeheader()
+            writer.writerow(legacy)
+        self.assertEqual(self.run_manifest(), 0)
+        old = next(r for r in self.rows() if r['source_path'] == '/historical/fold')
+        self.assertEqual(old['timestamp'], '')
+        self.assertEqual(old['input 1 description'], 'historical input')
 
     def test_model_filter(self):
         self.assertEqual(model_number('dir/fold_model_4.cif'), 4)
