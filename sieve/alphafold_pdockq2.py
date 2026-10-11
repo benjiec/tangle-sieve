@@ -10,6 +10,8 @@ from itertools import combinations
 
 from Bio.PDB import MMCIFParser
 
+from sieve.alphafold_files import model_number
+
 
 PDOCKQ2_PARAMETERS = (1.31034849, 84.7326239, 0.0747157696, 0.00501886443)
 OUTPUT_COLUMNS = [
@@ -212,15 +214,6 @@ def score_pairs(residues, pae, regions=None, cutoff=8.0):
             regional_row["scope"] = "regional"
             rows.append(regional_row)
     return rows
-
-
-def model_number(name):
-    # AppleDouble sidecars and ZIP resource-fork directories are not models.
-    parts = str(name).split('/')
-    if '__MACOSX' in parts or parts[-1].startswith('._'):
-        return None
-    match = re.search(r"_model_(\d+)\.cif$", name)
-    return int(match.group(1)) if match else None
 
 
 def score_zip(path, regions=None, cutoff=8.0, *, comparisons=None, expected_chains=None, expected_models=None):

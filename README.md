@@ -491,3 +491,10 @@ Use gimmemotifs to detect TF motifs
 ```
 gimme scan locus.fna -b -c 0.85
 ```
+
+## AlphaFold sequence manifest
+
+Use `scripts/alphafold-manifest.py INPUT_DIRECTORY candidates.faa manifest.tsv`
+with `sieve-py` to inventory chain identities and copy counts across directories
+and nested ZIPs. Successful folds are checkpointed in the TSV for later runs.
+See [manifest format and cache behavior](docs/alphafold-manifest.md).
