@@ -36,6 +36,9 @@ One row per distinct sequence within a fold location:
 - `source_path`: absolute extracted fold directory, or outermost filesystem ZIP.
 - `fold_path`: directory within that source, `.` at its root. Nested archive
   boundaries use `!/`, for example `inner.zip!/batch/fold`.
+- `fold_locator`: value to pass directly as the positional input to
+  `alphafold-pdockq2-patches.py` (quote it in the shell). Extracted folds use their
+  absolute directory path; ZIP folds use `SOURCE.zip::FOLD_PATH`.
 - `fold_id`: last eight lowercase hex characters of SHA-1 over UTF-8 compact JSON
   of the lexically sorted sequence list, including one entry per chain copy.
   Example hash input: `["AC","AC","DE"]`. This is a reference label, not a
@@ -61,5 +64,23 @@ including nested archives, but cached model contents are not read or hashed.
 Output-write failures stop the run.
 
 Older manifests containing `sequence`, `sequence_sha256`, or `source_fingerprint`
-are automatically rewritten to the six columns above after FASTA and cache
+are automatically rewritten to the seven columns above after FASTA and cache
 validation, preserving cached locations.
+
+## Load one fold into the patch script
+
+Copy a `fold_locator` value from the TSV and pass it as one quoted argument:
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py \
+  '/path/batch.zip::folder/fold'
+```
+
+Nested example: `/path/batch.zip::inner.zip!/folder/fold`; a fold at the ZIP root
+uses `/path/batch.zip::.`. Only the selected fold is loaded. Each model requires
+its matching `*_full_data_N.json`; the manifest itself does not verify those JSON
+files. Existing manifests gain the locator column on rerun without reprocessing
+cached folds. Cache identity remains the original two paths.
+
+The separators `::` and `!/` are reserved for locator syntax; source/member names
+containing these delimiters are not supported by this representation.

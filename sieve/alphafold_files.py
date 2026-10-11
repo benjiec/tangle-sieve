@@ -3,6 +3,7 @@ import re
 import shutil
 import tempfile
 import zipfile
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -85,3 +86,46 @@ def discover(path, error):
             error(f'{current}: {exc}')
 
     yield from walk(path)
+
+
+def fold_locator(source_path, fold_path):
+    """Serialize the filesystem source and optional archive member location."""
+    if fold_path == '.' and Path(source_path).suffix.lower() != '.zip':
+        return source_path
+    return f'{source_path}::{fold_path}'
+
+
+
+
+@contextmanager
+def open_fold(locator):
+    """Open exactly one archive fold, without visiting unrelated nested archives."""
+    source, separator, member_path = str(locator).partition('::')
+    if not separator or not source or not member_path:
+        raise ValueError('fold locator requires SOURCE.zip::FOLD_PATH')
+    parts = member_path.split('!/')
+    if any(not part for part in parts):
+        raise ValueError('fold locator has an empty archive or directory component')
+    with ExitStack() as stack:
+        archive = stack.enter_context(zipfile.ZipFile(source))
+
+        def read_unique(name):
+            if archive.namelist().count(name) != 1:
+                raise ValueError(f'expected exactly one archive member: {name}')
+            return archive.read(name)
+
+        for member in parts[:-1]:
+            if archive.namelist().count(member) != 1:
+                raise ValueError(f'expected exactly one nested archive: {member}')
+            stream = stack.enter_context(tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024))
+            with archive.open(member) as inner:
+                shutil.copyfileobj(inner, stream)
+            stream.seek(0)
+            archive = stack.enter_context(zipfile.ZipFile(stream))
+        directory = parts[-1]
+        names = [name for name in archive.namelist()
+                 if str(PurePosixPath(name).parent) == directory and model_number(name) is not None]
+        if not names:
+            raise ValueError(f'no model CIF files at fold locator: {locator}')
+        yield Fold(str(Path(source).resolve()), member_path, sorted(names),
+                   lambda name: read_unique(name).decode('utf-8'))

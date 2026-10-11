@@ -652,3 +652,20 @@ When extracted models are present, ZIP files in that directory are ignored to
 avoid analyzing the same fold twice. If no extracted models are present, the
 existing directory-of-ZIPs behavior is retained. `--full-data` is only needed
 and accepted when providing a single CIF file.
+
+## Manifest fold locators
+
+The patch script accepts the `fold_locator` column from `alphafold-manifest.py`
+as its positional input. For example:
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py \
+  '/path/batch.zip::inner.zip!/folder/fold'
+```
+
+The locator selects exactly one directory within an archive, including nested
+ZIPs, and pairs its model CIFs with their matching full-data JSON files. Other
+folds and unrelated nested archives are not analyzed. The output `source` retains
+the complete locator so folds within the same archive remain distinguishable.
+Plain CIF, ZIP, and directory inputs retain their existing behavior. See the
+[manifest documentation](alphafold-manifest.md) for locator syntax and migration.

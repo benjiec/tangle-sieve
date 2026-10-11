@@ -101,12 +101,13 @@ class ManifestTests(unittest.TestCase):
         self.fold()
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
-        self.assertEqual(set(rows[0]), {'source_path', 'fold_path', 'fold_id',
+        self.assertEqual(set(rows[0]), {'source_path', 'fold_path', 'fold_locator', 'fold_id',
                                       'description', 'chain_ids', 'copies'})
         for extra in ({'sequence': 'AC', 'source_fingerprint': 'old'},
                       {'sequence_sha256': 'old', 'source_fingerprint': 'old'}):
             with self.subTest(columns=extra):
-                legacy = [dict(row, **extra) for row in rows]
+                legacy = [{k: v for k, v in dict(row, **extra).items() if k != 'fold_locator'}
+                          for row in rows]
                 with self.output.open('w', newline='') as stream:
                     writer = csv.DictWriter(stream, fieldnames=list(legacy[0]), delimiter='\t')
                     writer.writeheader()

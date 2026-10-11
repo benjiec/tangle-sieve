@@ -17,7 +17,7 @@ from sieve.interface_description import DescriptionOptions
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('input', help='CIF, ZIP, or directory of extracted models (or ZIPs)')
+    parser.add_argument('input', help='manifest fold_locator, CIF, ZIP, or directory of extracted models (or ZIPs)')
     parser.add_argument('--full-data', help='matching confidence JSON, required for CIF')
     parser.add_argument('--output', help='optional patch TSV (recomputed; no cache); summary always printed')
     parser.add_argument('--chains', nargs=2, metavar=('CHAIN1', 'CHAIN2'))
@@ -35,7 +35,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         output = Path(args.output).resolve() if args.output else None
-        if output is not None and (output == Path(args.input).resolve() or (args.full_data and output == Path(args.full_data).resolve())):
+        if output is not None and (output == Path(args.input.split('::', 1)[0]).resolve() or (args.full_data and output == Path(args.full_data).resolve())):
             raise ValueError('output must not overwrite an input')
         if output is not None and output.suffix.lower() in ('.zip', '.cif', '.json'):
             raise ValueError('output must not use an input-file extension')

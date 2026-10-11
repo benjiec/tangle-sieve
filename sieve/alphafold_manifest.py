@@ -12,9 +12,9 @@ from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 from Bio.Data.PDBData import protein_letters_3to1
 
 from sieve.alphafold_cache import read_cache, write_cache
-from sieve.alphafold_files import discover, model_number
+from sieve.alphafold_files import discover, fold_locator, model_number
 
-COLUMNS = ['source_path', 'fold_path', 'fold_id', 'description', 'chain_ids',
+COLUMNS = ['source_path', 'fold_path', 'fold_locator', 'fold_id', 'description', 'chain_ids',
            'copies']
 
 
@@ -127,6 +127,7 @@ def identify(fold, candidates):
         grouped[sequence].append(chain)
     identifier = fold_id(chains.values())
     return [dict(source_path=fold.source_path, fold_path=fold.fold_path,
+                 fold_locator=fold_locator(fold.source_path, fold.fold_path),
                  fold_id=identifier, description=candidates[sequence],
                  chain_ids=','.join(sorted(ids)), copies=str(len(ids)))
             for sequence, ids in sorted(grouped.items())]
@@ -168,7 +169,9 @@ def run(input_path, fasta_path, output_path, stderr=None):
     candidates = read_candidates(fasta_path, error)
     if errors:
         return 1
-    columns, rows = read_cache(output, COLUMNS)
+    columns, rows = read_cache(output, [c for c in COLUMNS if c != 'fold_locator'])
+    for row in rows:
+        row['fold_locator'] = fold_locator(row['source_path'], row['fold_path'])
     rows = [{column: row[column] for column in COLUMNS} for row in rows]
     cached = validate_cache(rows)
     if columns is not None and columns != COLUMNS:

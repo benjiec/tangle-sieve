@@ -8,6 +8,8 @@ from itertools import combinations
 from pathlib import Path
 import zipfile
 
+from sieve.alphafold_files import open_fold, fold_locator
+
 from sieve.alphafold_pdockq2 import (
     OUTPUT_COLUMNS, _distance, model_number, parse_model, score_selections,
 )
@@ -169,6 +171,18 @@ def detect_patches(residues, pae, options=None, chains=None):
 
 
 def input_models(path, full_data=None):
+    if '::' in str(path):
+        if full_data:
+            raise ValueError('--full-data is only valid with CIF input')
+        with open_fold(path) as fold:
+            models = sorted((model_number(name), name) for name in fold.models)
+            if len({number for number, _ in models}) != len(models):
+                raise ValueError('fold must contain models with unique model numbers')
+            for number, name in models:
+                data = name.removesuffix(f'model_{number}.cif') + f'full_data_{number}.json'
+                yield (fold_locator(fold.source_path, fold.fold_path), number,
+                       fold.read(name), json.loads(fold.read(data)))
+        return
     path = Path(path)
     if path.is_dir():
         if full_data:
