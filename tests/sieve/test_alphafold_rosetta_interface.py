@@ -181,7 +181,7 @@ class TemporaryOutputTests(unittest.TestCase):
 
     def test_cli_output_optional(self):
         from tests.scripts.helpers import load_script
-        script = load_script('alphafold-rosetta-interface.py')
+        script = load_script('scripts/alphafold-rosetta-interface.py')
         with patch.object(script, 'run') as run:
             self.assertEqual(script.main(['locator', '--interface', 'A:B', '--model', '0']), 0)
         self.assertIsNone(run.call_args.args[2])
