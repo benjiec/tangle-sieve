@@ -498,3 +498,15 @@ Use `scripts/alphafold-manifest.py INPUT_DIRECTORY candidates.faa manifest.tsv`
 with `sieve-py` to inventory chain identities and copy counts across directories
 and nested ZIPs. Successful folds are checkpointed in the TSV for later runs.
 See [manifest format and cache behavior](docs/alphafold-manifest.md).
+
+List model confidence scores for one manifest sequence ID:
+
+```sh
+sieve-py scripts/alphafold-list-results.py manifest.tsv b911edee
+sieve-py scripts/alphafold-list-results.py manifest.tsv b911edee --highest
+```
+
+Output is headerless TSV: `fold_locator`, `fold_id`, `model_id`, `ipTM`, `pTM`.
+Omitting `--highest` lists all models. Bare `--highest` selects the highest
+`0.8*ipTM+0.2*pTM`; explicit choices are `ipTM`, `pTM`, and `ipTM8_pTM2`.
+See [selection rules and examples](docs/alphafold-manifest.md#select-the-highest-scoring-model).

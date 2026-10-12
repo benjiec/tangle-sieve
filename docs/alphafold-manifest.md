@@ -130,3 +130,45 @@ numbers/summary members, and inaccessible folds are reported to stderr. Other
 models/folds continue; any such error yields exit status 1. Invalid manifest
 headers/rows or sequence IDs fail before any results are printed. The input
 manifest is not modified.
+
+### Select the highest-scoring model
+
+Without `--highest`, all matching model rows are printed as above. With it, exactly
+one eligible row is selected across all matching fold locations and models:
+
+| Option | Selection score |
+| --- | --- |
+| `--highest` | `0.8*ipTM + 0.2*pTM` |
+| `--highest ipTM` | ipTM |
+| `--highest pTM` | pTM |
+| `--highest ipTM8_pTM2` | `0.8*ipTM + 0.2*pTM` |
+
+```sh
+# All matching models
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee
+
+# Highest combined score (bare flag defaults to ipTM8_pTM2)
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee --highest
+
+# Highest ipTM
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee --highest ipTM
+
+# Highest pTM
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee --highest pTM
+
+# Explicit combined score
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee --highest ipTM8_pTM2
+```
+
+Place a bare `--highest` after both positional arguments so the next positional
+argument is not interpreted as its optional value. Metric names are case-sensitive.
+
+A row missing a required score is ineligible: ipTM selection requires only ipTM,
+pTM selection requires only pTM, and combined selection requires both. Zero is a
+valid score. If no rows qualify, stdout is empty and the exit status is zero unless
+an input error occurred. Ties retain the first row in manifest order, then numeric
+model order. Combined scores use decimal arithmetic on the loaded score values.
+
+Output remains the original five columns without a header; the combined score
+is not added. Errors still go to stderr and yield exit status 1. If some inputs
+fail, the best row among successfully read eligible models is still printed.

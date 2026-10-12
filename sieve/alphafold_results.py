@@ -5,10 +5,13 @@ import re
 import sys
 import zipfile
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
 
 from sieve.alphafold_confidence import model_confidence
 from sieve.alphafold_files import Fold, model_number, open_fold
+
+HIGHEST_CHOICES = ('ipTM', 'pTM', 'ipTM8_pTM2')
 
 REQUIRED_COLUMNS = ('fold_locator', 'fold_id', 'sequence_id')
 
@@ -72,7 +75,17 @@ def confidence_rows(locator, error):
         error(f'{locator}: {exc}')
 
 
-def run(manifest, sequence_id, stdout=None, stderr=None):
+def selection_score(scores, metric):
+    fields = ('iptm', 'ptm') if metric == 'ipTM8_pTM2' else (metric.lower(),)
+    if any(scores[field] is None for field in fields):
+        return None
+    values = [Decimal(str(scores[field])) for field in fields]
+    if len(values) == 1:
+        return values[0]
+    return Decimal('0.8') * values[0] + Decimal('0.2') * values[1]
+
+
+def run(manifest, sequence_id, stdout=None, stderr=None, *, highest=None):
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
     failed = False
@@ -82,12 +95,23 @@ def run(manifest, sequence_id, stdout=None, stderr=None):
         failed = True
         print(f'ERROR: {message}', file=stderr)
 
+    if highest is not None and highest not in HIGHEST_CHOICES:
+        raise ValueError(f'invalid highest metric: {highest}')
+    best_row = best_score = None
     folds = selected_folds(manifest, sequence_id)
     writer = csv.writer(stdout, delimiter='\t', lineterminator='\n')
     for fold in folds:
         locator = fold['fold_locator']
         for number, scores in confidence_rows(locator, error):
-            writer.writerow([locator, fold['fold_id'], number,
-                             *('NA' if scores[field] is None else str(scores[field])
-                               for field in ('iptm', 'ptm'))])
+            row = [locator, fold['fold_id'], number,
+                   *('NA' if scores[field] is None else str(scores[field])
+                     for field in ('iptm', 'ptm'))]
+            if highest is None:
+                writer.writerow(row)
+            else:
+                score = selection_score(scores, highest)
+                if score is not None and (best_score is None or score > best_score):
+                    best_row, best_score = row, score
+    if best_row is not None:
+        writer.writerow(best_row)
     return int(failed)
