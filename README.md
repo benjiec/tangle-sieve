@@ -517,3 +517,10 @@ Use `scripts/alphafold-rosetta-interface.py` to score a locator or piped
 list-results model with Dockerized Rosetta. Requires `--interface A:B`; optionally preserve files with
 `--output DIRECTORY`. Add `--tsv` for a headered summary with one row per model.
 See [usage and protocol](docs/alphafold-rosetta-interface.md).
+
+### AlphaFold Rosetta fold integrity
+
+Pipe list-results into `scripts/alphafold-rosetta-integrity.py -` for complex and
+isolated-chain exposure, packing, buried-polar, and energy diagnostics.
+Use `--tsv` for headered rows and optional `--output DIRECTORY` to retain
+atom/residue tables and provenance. See [usage and metric definitions](docs/alphafold-rosetta-integrity.md).
