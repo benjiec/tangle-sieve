@@ -110,3 +110,23 @@ files. Cache identity remains the original two paths.
 
 The separators `::` and `!/` are reserved for locator syntax; source/member names
 containing these delimiters are not supported by this representation.
+
+## List model confidence results
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee
+```
+
+Selects rows with the exact `sequence_id` and prints headerless TSV to stdout:
+`fold_locator`, `fold_id`, `model_id`, `ipTM`, `pTM`. Folds retain manifest order;
+models are sorted numerically. IDs and locators are copied from the manifest,
+without recomputing hashes. Distinct fold locations remain separate.
+
+Only model filenames and matching `*_summary_confidences_N.json` files are needed;
+CIF contents, full-data JSON, and job requests are not read. Missing summary files,
+missing fields, and null values print `NA`. No matches produce no output and a
+successful exit status. Malformed JSON, invalid score values, duplicate model
+numbers/summary members, and inaccessible folds are reported to stderr. Other
+models/folds continue; any such error yields exit status 1. Invalid manifest
+headers/rows or sequence IDs fail before any results are printed. The input
+manifest is not modified.

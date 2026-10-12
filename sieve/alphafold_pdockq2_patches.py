@@ -9,6 +9,7 @@ from itertools import combinations
 from pathlib import Path
 import zipfile
 
+from sieve.alphafold_confidence import model_confidence
 from sieve.alphafold_files import open_fold, fold_locator, read_seed
 from sieve.alphafold_manifest import chain_sequences, fold_id, sequence_id
 
@@ -170,19 +171,6 @@ def detect_patches(residues, pae, options=None, chains=None):
             row['rank'] = rank
         rows.extend(patch_rows)
     return rows
-
-
-def model_confidence(summary):
-    if not isinstance(summary, dict):
-        raise ValueError('summary confidence JSON must be an object')
-    scores = {}
-    for field in ('iptm', 'ptm'):
-        value = summary.get(field)
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
-                                  or not math.isfinite(value) or not 0 <= value <= 1):
-            raise ValueError(f'summary confidence {field} must be a finite number in [0, 1] or null')
-        scores[field] = value
-    return scores
 
 
 def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
