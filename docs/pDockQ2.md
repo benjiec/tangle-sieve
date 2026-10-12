@@ -703,3 +703,23 @@ and skips folds without one.
 The full-interface pDockQ2 section is no longer printed. Per-model ipTM/pTM,
 optional `--structure` summaries, and the top distinct patch results remain.
 Full-interface rows are still calculated and included in the optional TSV output.
+
+## Read locators or result rows from stdin
+
+Pass `-` as the positional input to read headerless TSV from stdin. Each record
+is either a single locator/path (existing direct-input behavior), or a result
+record produced by `alphafold-list-results.py`. Result rows select exactly their
+`model_id` within their `fold_locator`, before model data is read. The shared
+`alphafold_result_format` module defines the column order and reader/writer.
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee --highest | \
+  sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py -
+```
+
+Multiple records are analyzed separately in input order. Blank records are
+ignored; empty input is a successful no-op. Existing options apply to every
+record. `--full-data` remains limited to direct CIF inputs, including one-field
+CIF records. Errors identify their stdin record and abort before stdout or the
+optional TSV is written. Model IDs must exist; a missing model never falls back
+to all models. Piped scores/IDs do not replace source metadata.

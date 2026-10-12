@@ -13,11 +13,12 @@ import zipfile
 from sieve.alphafold_pdockq2_patches import Options, analyze, write_patches, write_summary
 from sieve.patch_description_summary import PatchDescriptions, find_dssp
 from sieve.interface_description import DescriptionOptions
+from sieve.alphafold_result_format import PatchInput, read_patch_inputs
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('input', help='manifest fold_locator, CIF, ZIP, or directory of extracted models (or ZIPs)')
+    parser.add_argument('input', help='fold_locator, CIF, ZIP, directory, or - to read locators/result TSV from stdin')
     parser.add_argument('--full-data', help='matching confidence JSON, required for CIF')
     parser.add_argument('--output', help='optional patch TSV (recomputed; no cache); summary always printed')
     parser.add_argument('--chains', nargs=2, metavar=('CHAIN1', 'CHAIN2'))
@@ -35,24 +36,38 @@ def main(argv=None):
     dssp_group.add_argument('--no-dssp', action='store_true', help='omit secondary structure; retain other descriptors')
     args = parser.parse_args(argv)
     try:
+        requests = list(read_patch_inputs(sys.stdin)) if args.input == '-' else [PatchInput(args.input)]
         output = Path(args.output).resolve() if args.output else None
-        if output is not None and (output == Path(args.input.split('::', 1)[0]).resolve() or (args.full_data and output == Path(args.full_data).resolve())):
-            raise ValueError('output must not overwrite an input')
-        if output is not None and output.suffix.lower() in ('.zip', '.cif', '.json'):
-            raise ValueError('output must not use an input-file extension')
+        if output is not None:
+            sources = [Path(request.locator.split('::', 1)[0]).resolve() for request in requests]
+            if args.full_data:
+                sources.append(Path(args.full_data).resolve())
+            if output in sources:
+                raise ValueError('output must not overwrite an input')
+            if output.suffix.lower() in ('.zip', '.cif', '.json'):
+                raise ValueError('output must not use an input-file extension')
+        if not requests:
+            return 0
         options = Options(args.distance_cutoff, args.max_bridge_residues,
                           args.min_residues_per_chain, args.min_contacts, args.max_separator_checks)
-        targets = {}
-        inputs = {}
-        model_scores = {}
-        fold_ids = {}
-        sequence_ids = {}
-        rows = analyze(args.input, args.full_data, options, args.chains, summary_targets=targets, summary_inputs=inputs, model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids)
-        descriptions = PatchDescriptions(inputs, None if args.no_dssp else find_dssp(args.dssp),
-            DescriptionOptions(cutoff=args.distance_cutoff, flank=args.sequence_flank,
-                               radius=args.spatial_radius, sasa_points=args.sasa_points))
+        rows = []
         summary = io.StringIO()
-        write_summary(rows, targets, summary, descriptions, structure=args.structure, model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids)
+        for request in requests:
+            try:
+                targets, inputs, model_scores, fold_ids, sequence_ids = {}, {}, {}, {}, {}
+                current_rows = analyze(request.locator, args.full_data, options, args.chains,
+                    summary_targets=targets, summary_inputs=inputs, model_scores=model_scores,
+                    fold_ids=fold_ids, sequence_ids=sequence_ids, selected_model=request.model_id)
+                descriptions = PatchDescriptions(inputs, None if args.no_dssp else find_dssp(args.dssp),
+                    DescriptionOptions(cutoff=args.distance_cutoff, flank=args.sequence_flank,
+                                       radius=args.spatial_radius, sasa_points=args.sasa_points))
+                write_summary(current_rows, targets, summary, descriptions, structure=args.structure,
+                              model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids)
+                rows.extend(current_rows)
+            except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
+                if request.record_number is not None:
+                    raise ValueError(f'stdin record {request.record_number}: {error}') from error
+                raise
         if output is not None:
             with output.open('w', newline='') as stream:
                 write_patches(rows, stream)

@@ -173,7 +173,14 @@ def detect_patches(residues, pae, options=None, chains=None):
     return rows
 
 
-def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
+def input_models(path, full_data=None, *, model_scores=None, model_seeds=None, selected_model=None):
+    def select_models(models):
+        if selected_model is not None:
+            models = [(number, name) for number, name in models if number == selected_model]
+            if not models:
+                raise ValueError(f'model {selected_model} not found in {path}')
+        return models
+
     def record_scores(source, number, name, read, names):
         if model_seeds is not None:
             seed = None
@@ -200,6 +207,7 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
             raise ValueError('--full-data is only valid with CIF input')
         with open_fold(path) as fold:
             models = sorted((model_number(name), name) for name in fold.models)
+            models = select_models(models)
             if len({number for number, _ in models}) != len(models):
                 raise ValueError('fold must contain models with unique model numbers')
             for number, name in models:
@@ -216,6 +224,7 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
         models = sorted((model_number(p.name), p) for p in path.iterdir()
                         if p.is_file() and model_number(p.name) is not None)
         if models:
+            models = select_models(models)
             if len({n for n, _ in models}) != len(models):
                 raise ValueError('directory must contain models with unique model numbers')
             for number, cif in models:
@@ -226,6 +235,8 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
                               lambda name: (path / name).read_text(), [p.name for p in path.iterdir()])
                 yield str(path.resolve()), number, cif.read_text(), json.loads(data.read_text())
             return
+        if selected_model is not None:
+            raise ValueError(f'model {selected_model} not found in {path}')
         archives = sorted(p for p in path.glob('*.zip') if p.is_file() and not p.name.startswith('._'))
         if not archives:
             raise ValueError(f'directory contains no model CIF files or ZIP files: {path}')
@@ -235,6 +246,7 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
         if not full_data:
             raise ValueError('CIF input requires --full-data')
         number = model_number(path.name)
+        select_models([(number, path)])
         summary = path.with_name(summary_name(path.name, number)) if number is not None else None
         if summary is None:
             data_path = Path(full_data)
@@ -250,6 +262,7 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
             raise ValueError('--full-data is only valid with CIF input')
         with zipfile.ZipFile(path) as archive:
             models = sorted((model_number(n), n) for n in archive.namelist() if model_number(n) is not None)
+            models = select_models(models)
             if not models or len({n for n, _ in models}) != len(models):
                 raise ValueError('ZIP must contain models with unique model numbers')
             for number, name in models:
@@ -263,11 +276,11 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None):
         raise ValueError('input must be a CIF, ZIP, or directory of extracted models or ZIPs')
 
 
-def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None, model_scores=None, fold_ids=None, sequence_ids=None):
+def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None, model_scores=None, fold_ids=None, sequence_ids=None, selected_model=None):
     rows = []
     seeds = {} if fold_ids is not None else None
     compositions = {}
-    for source, model, cif, data in input_models(path, full_data, model_scores=model_scores, model_seeds=seeds):
+    for source, model, cif, data in input_models(path, full_data, model_scores=model_scores, model_seeds=seeds, selected_model=selected_model):
         if fold_ids is not None or sequence_ids is not None:
             try:
                 sequences = list(chain_sequences(cif).values())

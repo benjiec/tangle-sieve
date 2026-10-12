@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 
+from sieve.alphafold_result_format import ResultRecord, write_result
 from sieve.alphafold_confidence import model_confidence
 from sieve.alphafold_files import Fold, model_number, open_fold
 
@@ -103,15 +104,13 @@ def run(manifest, sequence_id, stdout=None, stderr=None, *, highest=None):
     for fold in folds:
         locator = fold['fold_locator']
         for number, scores in confidence_rows(locator, error):
-            row = [locator, fold['fold_id'], number,
-                   *('NA' if scores[field] is None else str(scores[field])
-                     for field in ('iptm', 'ptm'))]
+            row = ResultRecord(locator, fold['fold_id'], number, scores['iptm'], scores['ptm'])
             if highest is None:
-                writer.writerow(row)
+                write_result(writer, row)
             else:
                 score = selection_score(scores, highest)
                 if score is not None and (best_score is None or score > best_score):
                     best_row, best_score = row, score
     if best_row is not None:
-        writer.writerow(best_row)
+        write_result(writer, best_row)
     return int(failed)

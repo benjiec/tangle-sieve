@@ -172,3 +172,30 @@ model order. Combined scores use decimal arithmetic on the loaded score values.
 Output remains the original five columns without a header; the combined score
 is not added. Errors still go to stderr and yield exit status 1. If some inputs
 fail, the best row among successfully read eligible models is still printed.
+
+### Pipe selected results into patch analysis
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee --highest | \
+  sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py -
+```
+
+A result row selects only its `model_id` at its `fold_locator`. Other models'
+CIFs and confidence files are not loaded. Omitting `--highest` sends all result
+rows, each analyzed separately in input order. The five-column headerless TSV
+schema, serialization, and parsing are shared by both scripts.
+
+The patch script also accepts one-field locator records on stdin; these analyze
+all models exactly as a direct locator argument would. Blank records are ignored.
+Empty stdin produces no output and leaves any existing `--output` file untouched.
+TSV quoting supports tabs, quotes, and newlines within paths.
+
+Piped IDs and scores are validated as fields but do not override the fold's
+metadata: displayed IDs and confidence scores are read/computed from fold files.
+Malformed records and missing requested models cause errors, with stdin record
+context. The patch script remains fail-fast and buffers output until all requested
+analyses succeed. An optional `--output` TSV contains results from all records.
+
+For shell pipelines where an upstream failure must affect the pipeline exit
+status, enable `set -o pipefail`; the consumer cannot infer upstream errors from
+an empty or partial valid stream.
