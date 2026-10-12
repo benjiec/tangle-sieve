@@ -510,3 +510,10 @@ Output is headerless TSV: `fold_locator`, `fold_id`, `model_id`, `ipTM`, `pTM`.
 Omitting `--highest` lists all models. Bare `--highest` selects the highest
 `0.8*ipTM+0.2*pTM`; explicit choices are `ipTM`, `pTM`, and `ipTM8_pTM2`.
 See [selection rules and examples](docs/alphafold-manifest.md#select-the-highest-scoring-model).
+
+### AlphaFold Rosetta interface analysis
+
+Use `scripts/alphafold-rosetta-interface.py` to score a locator or piped
+list-results model with Dockerized Rosetta. Requires `--interface A:B`; optionally preserve files with
+`--output DIRECTORY`. Add `--tsv` for a headered summary with one row per model.
+See [usage and protocol](docs/alphafold-rosetta-interface.md).
