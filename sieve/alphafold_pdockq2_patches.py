@@ -309,15 +309,17 @@ def analyze(path, full_data=None, options=None, chains=None, summary_targets=Non
         residues, pae = parse_model(cif, data)
         if summary_inputs is not None:
             summary_inputs[(source, '' if model is None else model)] = cif
-        if summary_targets is not None:
-            summary_targets[(source, '' if model is None else model)] = next(reversed(residues), None)
         for values in residues.values():
             for r in values:
                 if not all(math.isfinite(v) for v in (*r.ca, r.plddt)) or not 0 <= r.plddt <= 100:
                     raise ValueError('coordinates must be finite and pLDDT must be in [0, 100]')
         if any(not math.isfinite(float(v)) or float(v) < 0 for row in pae for v in row):
             raise ValueError('PAE must be finite and nonnegative')
-        for row in detect_patches(residues, pae, options, chains):
+        patches = detect_patches(residues, pae, options, chains)
+        if summary_targets is not None:
+            summary_targets[(source, '' if model is None else model)] = (
+                chains[1] if chains is not None else next(reversed(residues), None))
+        for row in patches:
             row.update(source=source, model='' if model is None else model)
             rows.append(row)
     return rows
@@ -330,7 +332,7 @@ def summary_residues(row, chain):
 
 
 def distinct_patches(candidates, targets, limit=5):
-    """Greedy score-order selection; <=10% overlap on the last CIF chain only."""
+    """Greedy score-order selection; <=10% overlap on the summary target chain only."""
     selected, residue_sets = [], []
     for row in candidates:
         residues = summary_residues(row, targets[(row['source'], row['model'])])
@@ -354,8 +356,8 @@ def pae_confidence_text(row):
             f"{row['chain 2']}→{row['chain 1']} {row['normalized PAE 2 to 1']:.6f}")
 
 
-def write_summary(rows, targets, stream, descriptions=None, *, structure=False, model_scores=None, fold_ids=None, sequence_ids=None):
-    """Fold identity and confidence, then top five distinct last-chain patches."""
+def write_summary(rows, targets, stream, descriptions=None, *, structure=False, model_scores=None, fold_ids=None, sequence_ids=None, chains=None):
+    """Fold identity and confidence, then top five distinct target-chain patches."""
     for source in sorted({source for source, _ in targets}):
         last_chains = sorted({chain for (s, _), chain in targets.items() if s == source and chain is not None})
         identifier = (fold_ids or {}).get(source)
@@ -374,13 +376,19 @@ def write_summary(rows, targets, stream, descriptions=None, *, structure=False, 
         if structure and descriptions is not None:
             descriptions.write_chains(source, stream)
         print(file=stream)
-        print(f'Top 5 distinct sites on the last CIF chain ({", ".join(last_chains)}), across models (at most 10% last-chain residue overlap):', file=stream)
+        if chains is not None:
+            print(f'Top 5 distinct sites for chains {chains[0]}–{chains[1]}, across models '
+                  f'(at most 10% residue overlap on chain {chains[1]}):', file=stream)
+        else:
+            print(f'Top 5 distinct sites on the last CIF chain ({", ".join(last_chains)}), across models (at most 10% last-chain residue overlap):', file=stream)
         candidates = [r for r in rows if r['source'] == source and r['scope'] == 'patch'
-                      and targets.get((source, r['model'])) in (r['chain 1'], r['chain 2'])]
+                      and targets.get((source, r['model'])) in (r['chain 1'], r['chain 2'])
+                      and (chains is None or {r['chain 1'], r['chain 2']} == set(chains))]
         candidates.sort(key=lambda r: (-r['pDockQ2 max'], -r['contact count'],
                                       str(r['model']), r['chain 1'], r['chain 2'], r['graph residues'], r['patch id']))
         if not candidates:
-            print('  No qualifying patches for the last chain under these settings.', file=stream)
+            subject = 'the selected chains' if chains is not None else 'the last chain'
+            print(f'  No qualifying patches for {subject} under these settings.', file=stream)
         for rank, row in enumerate(distinct_patches(candidates, targets), 1):
             model = row['model'] if row['model'] != '' else 'unnumbered'
             print(f"  {rank}. Model {model} | patch {row['patch id']} ({row['status']}) | "

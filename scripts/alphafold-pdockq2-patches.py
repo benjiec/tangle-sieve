@@ -62,7 +62,7 @@ def main(argv=None):
                     DescriptionOptions(cutoff=args.distance_cutoff, flank=args.sequence_flank,
                                        radius=args.spatial_radius, sasa_points=args.sasa_points))
                 write_summary(current_rows, targets, summary, descriptions, structure=args.structure,
-                              model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids)
+                              model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids, chains=args.chains)
                 rows.extend(current_rows)
             except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
                 if request.record_number is not None:

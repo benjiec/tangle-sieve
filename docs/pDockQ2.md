@@ -54,7 +54,7 @@ processed in sorted order; subdirectories are not searched.
 | positional input | required | CIF, ZIP, or directory of ZIPs |
 | `--full-data` | none | Matching full-data JSON; required only for CIF input |
 | `--output` | optional | TSV path; recomputed and overwritten, no cache; omit for stdout summary only |
-| `--chains A B` | all pairs | Analyze one distinct pair; output chain order is lexical |
+| `--chains A B` | all pairs | Analyze one distinct pair; summarize sites on the second argument; output chain order is lexical |
 | `--distance-cutoff` | 8.0 Å | Inclusive cutoff for interchain contacts and all graph edges |
 | `--max-bridge-residues` | 1 | Maximum vertex-separator cardinality; 0 disables splitting |
 | `--min-residues-per-chain` | 3 | Minimum distinct contacting residues on each chain |
@@ -358,14 +358,14 @@ never sum their contact counts as independent sites.
 
 ## Human-readable standard-output summary
 
-After analysis (and writing the TSV if requested), the command prints full-interface
-results followed by up to five highest-scoring
+After analysis (and writing the TSV if requested), the command prints fold identity and model confidence followed by up to five highest-scoring
 patch rows per input source, ranked across its models and chain pairs involving
 the **last chain encountered in the first CIF structural model**. This is CIF
 chain order, not lexical chain-ID order. For example, with CIF chains A,B,C,
 A–C and B–C are eligible; A–B is not. If chain order varies by model, each model's
-own last chain determines eligibility. `--chains` still restricts the analysis;
-if it excludes the last chain there are no eligible summary rows.
+own last chain determines eligibility. `--chains A B` restricts analysis and summary to A–B and uses B for overlap
+filtering, even if B is not the last CIF chain. Reversing the arguments to
+`--chains B A` uses A for overlap filtering; output pair order remains lexical.
 
 All qualifying parent, intermediate, and leaf patches are eligible. The `full`
 reference is excluded from this summary only; the TSV remains unchanged. The
@@ -376,20 +376,20 @@ an explicit message. Ranking uses descending score, descending contact count,
 then model identifier as text, chain IDs, graph residue text, and patch ID for
 stable ties. A directory gets a separate summary for every ZIP.
 
-### Last-chain residue-overlap filtering
+### Target-chain residue-overlap filtering
 
 Summary candidates are visited in score order. Retain a candidate only when
 its overlap with every previously retained patch is at most 10%, stopping at
 five retained candidates or exhaustion. Overlap is
 `|R1 intersection R2| / min(|R1|, |R2|)`, where R contains the actual contacting
-(chain ID, residue number) pairs from the **last CIF chain only**. Thus overlap cannot exceed
+(chain ID, residue number) pairs from the **summary target chain only** (the second `--chains` argument, or the last CIF chain by default). Thus overlap cannot exceed
 10% of either patch, exact 10% is allowed, and containment counts as 100%.
 Graph-only residues are excluded. This filtering compares models within the
 same input source, assuming consistent chain and residue identities across
 models. Separate ZIPs are summarized independently. The TSV retains all rows.
 This is greedy ranking, not optimization of the combined score of five patches;
 a high-scoring parent can suppress its descendants. Shared partner-chain
-residues do not suppress distinct last-chain sites: two B sites contacting
+residues do not suppress distinct target-chain sites: two B sites contacting
 the same A surface remain eligible. This identifies sites on the target
 chain, not distinct partner-specific interactions; overlapping target sites
 can suppress each other even when their partner chains differ. Fewer than five distinct
@@ -406,7 +406,7 @@ Models are ordered numerically, then chain pairs lexically. These are pairwise f
 aggregate score for the entire multimer and not chain-versus-all-other-chains
 scores. By default all chain pairs are analyzed; `--chains` still restricts
 which pairs are computed. The subsequent top-five summary retains its
-last-chain and ≤10% last-chain residue-overlap filters. TSV contents and scoring are unchanged.
+selected target-chain and ≤10% target-chain residue-overlap filters. TSV contents and scoring are unchanged.
 
 ### PAE-only confidence in stdout
 
@@ -453,7 +453,7 @@ scores; it does not guarantee a higher score or a particular motif size.
 
 ### Nearest contact per residue
 
-The summary additionally reports **Nearest contact per last-chain residue**,
+The summary additionally reports **Nearest contact per target-chain residue**,
 with the residue count, minimum, maximum, median, and arithmetic average in Å.
 Each actual contacting residue on that chain contributes exactly one value:
 its shortest Cα–Cα distance to a residue on the partner chain **within this

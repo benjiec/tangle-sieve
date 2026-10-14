@@ -83,6 +83,35 @@ class SummaryTests(unittest.TestCase):
             analyze(cif, data, summary_targets=targets)
             self.assertEqual(list(targets.values()), ['B'])
 
+    def test_selected_chain_target_and_reversed_order(self):
+        from sieve.alphafold_pdockq2_patches import analyze
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cif, data = root/'model.cif', root/'data.json'
+            cif.write_text(CIF)
+            data.write_text(json.dumps(DATA))
+            for chains in [('A', 'B'), ('B', 'A')]:
+                targets = {}
+                analyze(cif, data, chains=chains, summary_targets=targets)
+                self.assertEqual(list(targets.values()), [chains[1]])
+
+    def test_selected_pair_summary_and_overlap_direction(self):
+        first = self.row(0, 'A', 'B', 0.9)
+        second = dict(first, **{'interface residues 2': '99'})
+        other = self.row(0, 'B', 'C', 1.0)
+        for chains, count in [(('A', 'B'), 2), (('B', 'A'), 1)]:
+            output = io.StringIO()
+            SCRIPT.write_summary([first, second, other],
+                                 {('example.zip', 0): chains[1]}, output, chains=chains)
+            text = output.getvalue()
+            self.assertEqual(text.count('Region 1'), count)
+            self.assertNotIn('B–C', text)
+            self.assertIn(f'residue overlap on chain {chains[1]}', text)
+            self.assertIn(f'Nearest contact per {chains[1]} residue', text)
+        output = io.StringIO()
+        SCRIPT.write_summary([other], {('example.zip', 0): 'B'}, output, chains=('A', 'B'))
+        self.assertIn('No qualifying patches for the selected chains', output.getvalue())
+
     def test_no_matches_and_separate_sources(self):
         output = io.StringIO()
         SCRIPT.write_summary([], {('first.zip', 0): 'C', ('second.zip', 0): 'Z'}, output)
