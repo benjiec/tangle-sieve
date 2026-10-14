@@ -131,7 +131,7 @@ class AnalysisTests(unittest.TestCase):
                 scorefile(root / 'success' / 'interface.sc')
                 return SimpleNamespace(returncode=0)
             with patch.object(r.subprocess, 'run', execute):
-                row = r.analyze('locator', 0, 'A:B', root / 'success', 'image')
+                row = r.analyze('locator', 0, 'A:B', root / 'success', 'image', False)
             self.assertEqual(row['dG_separated'], '1')
             settings = json.loads((root / 'success/settings.json').read_text())
             self.assertEqual(settings['status'], 'complete')
@@ -146,7 +146,7 @@ class AnalysisTests(unittest.TestCase):
                 scorefile(root / 'repacked' / 'interface.sc')
                 return SimpleNamespace(returncode=0)
             with patch.object(r.subprocess, 'run', repacked):
-                row = r.analyze('locator', 0, 'A:B', root / 'repacked', 'image', True)
+                row = r.analyze('locator', 0, 'A:B', root / 'repacked', 'image')
             self.assertTrue(row['pack_input'])
             self.assertTrue(row['pack_separated'])
             saved = json.loads((root / 'repacked/settings.json').read_text())
@@ -204,11 +204,27 @@ class RepackTests(unittest.TestCase):
     def test_cli_and_forwarding(self):
         from tests.scripts.helpers import load_script
         script = load_script('scripts/alphafold-rosetta-interface.py')
-        for enabled in (False, True):
-            with self.subTest(enabled=enabled), patch.object(script, 'run') as mocked:
-                script.main(['-', '--interface', 'A:B'] + (['--repack'] if enabled else []))
+        for flags, enabled in (([], True), (['--repack'], True), (['--no-repack'], False)):
+            with self.subTest(flags=flags), patch.object(script, 'run') as mocked:
+                script.main(['-', '--interface', 'A:B'] + flags)
                 self.assertEqual(mocked.call_args.kwargs['repack'], enabled)
             for output in (None, '/unused'):
                 with patch.object(r, '_run') as internal:
                     r.run('-', io.StringIO(''), output, 'A:B', None, True, io.StringIO(), enabled)
                     self.assertEqual(internal.call_args.args[-1], enabled)
+
+    def test_default_library_forwarding(self):
+        for output in (None, '/unused'):
+            with patch.object(r, '_run') as internal:
+                r.run('-', io.StringIO(''), output, 'A:B', None, True, io.StringIO())
+                self.assertTrue(internal.call_args.args[-1])
+
+    def test_conflicting_options(self):
+        from contextlib import redirect_stderr
+        from tests.scripts.helpers import load_script
+        script = load_script('scripts/alphafold-rosetta-interface.py')
+        with patch.object(script, 'run') as mocked, redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                script.main(['-', '--interface', 'A:B', '--repack', '--no-repack'])
+            self.assertEqual(error.exception.code, 2)
+            mocked.assert_not_called()

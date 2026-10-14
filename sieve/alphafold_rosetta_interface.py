@@ -66,7 +66,7 @@ def read_scores(path):
     return result
 
 
-def analyze(locator, number, interface, directory, image, repack=False):
+def analyze(locator, number, interface, directory, image, repack=True):
     left, right = parse_interface(interface)
     with open_result_fold(locator) as fold:
         names = [n for n in fold.models if model_number(n) == number]
@@ -120,7 +120,7 @@ def analyze(locator, number, interface, directory, image, repack=False):
     return row
 
 
-def run(source, stream, output, interface, model, tsv, stdout, repack=False):
+def run(source, stream, output, interface, model, tsv, stdout, repack=True):
     if output is not None:
         return _run(source, stream, output, interface, model, tsv, stdout, repack)
     with tempfile.TemporaryDirectory(prefix='alphafold-rosetta-') as temporary:
@@ -139,7 +139,7 @@ def run(source, stream, output, interface, model, tsv, stdout, repack=False):
             raise ValueError(message) from exc
 
 
-def _run(source, stream, output, interface, model, tsv, stdout, repack=False):
+def _run(source, stream, output, interface, model, tsv, stdout, repack=True):
     parse_interface(interface)
     records = inputs(source, stream, model)
     directory = Path(output).expanduser().resolve()

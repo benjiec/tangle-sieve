@@ -14,8 +14,12 @@ def main(argv=None):
     parser.add_argument('--model', type=int, help='required for a plain locator')
     parser.add_argument('--output', help='preserve files in a new or empty directory; otherwise use temporary files')
     parser.add_argument('--tsv', action='store_true', help='print headered TSV, one row per model')
-    parser.add_argument('--repack', action='store_true',
-                        help='repack side chains in both complex and separated partners (no backbone relaxation)')
+    packing = parser.add_mutually_exclusive_group()
+    packing.add_argument('--repack', dest='repack', action='store_true',
+                         help='repack complex and separated partner side chains (default)')
+    packing.add_argument('--no-repack', dest='repack', action='store_false',
+                         help='score the original coordinates without side-chain repacking')
+    parser.set_defaults(repack=True)
     args = parser.parse_args(argv)
     try:
         run(args.locator, sys.stdin, args.output, args.interface, args.model, args.tsv, sys.stdout, repack=args.repack)
