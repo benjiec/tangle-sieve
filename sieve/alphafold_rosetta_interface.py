@@ -66,7 +66,7 @@ def read_scores(path):
     return result
 
 
-def analyze(locator, number, interface, directory, image):
+def analyze(locator, number, interface, directory, image, repack=False):
     left, right = parse_interface(interface)
     with open_result_fold(locator) as fold:
         names = [n for n in fold.models if model_number(n) == number]
@@ -87,12 +87,12 @@ def analyze(locator, number, interface, directory, image):
     (directory / 'model.cif').write_text(content)
     row = dict(fold_id=identifier, sequence_id=sequence_id(sequences.values()),
                model_id=number, fold_locator=locator, interface=interface,
-               score_function='ref2015', pack_input=False, pack_separated=False)
+               score_function='ref2015', pack_input=repack, pack_separated=repack)
     command = ['docker', 'run', '--rm', '--network', 'none',
                '--mount', f'type=bind,source={directory},target=/work', '-w', '/work',
                image, 'InterfaceAnalyzer', '-s', 'model.cif',
-               '-score:weights', 'ref2015', '-pack_input', 'false',
-               '-pack_separated', 'false', '-compute_packstat', 'true',
+               '-score:weights', 'ref2015', '-pack_input', str(repack).lower(),
+               '-pack_separated', str(repack).lower(), '-compute_packstat', 'true',
                '-packstat:oversample', '100', '-compute_interface_sc', 'true',
                '-constant_seed', '-jran', '111111',
                '-out:file:score_only', 'interface.sc']
@@ -120,12 +120,12 @@ def analyze(locator, number, interface, directory, image):
     return row
 
 
-def run(source, stream, output, interface, model, tsv, stdout):
+def run(source, stream, output, interface, model, tsv, stdout, repack=False):
     if output is not None:
-        return _run(source, stream, output, interface, model, tsv, stdout)
+        return _run(source, stream, output, interface, model, tsv, stdout, repack)
     with tempfile.TemporaryDirectory(prefix='alphafold-rosetta-') as temporary:
         try:
-            return _run(source, stream, temporary, interface, model, tsv, stdout)
+            return _run(source, stream, temporary, interface, model, tsv, stdout, repack)
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
             # Preserve useful diagnostics before the temporary logs are deleted.
             details = []
@@ -139,7 +139,7 @@ def run(source, stream, output, interface, model, tsv, stdout):
             raise ValueError(message) from exc
 
 
-def _run(source, stream, output, interface, model, tsv, stdout):
+def _run(source, stream, output, interface, model, tsv, stdout, repack=False):
     parse_interface(interface)
     records = inputs(source, stream, model)
     directory = Path(output).expanduser().resolve()
@@ -164,7 +164,7 @@ def _run(source, stream, output, interface, model, tsv, stdout):
     rows = []
     for index, (locator, number) in enumerate(records, 1):
         rows.append(analyze(locator, number, interface,
-                            directory / f'{index:04d}-model-{number}', image))
+                            directory / f'{index:04d}-model-{number}', image, repack))
     with (directory / 'summary.tsv').open('w', newline='') as handle:
         writer = csv.DictWriter(handle, COLUMNS, delimiter='\t', lineterminator='\n')
         writer.writeheader()

@@ -14,9 +14,11 @@ def main(argv=None):
     parser.add_argument('--model', type=int, help='required for a plain locator')
     parser.add_argument('--output', help='preserve files in a new or empty directory; otherwise use temporary files')
     parser.add_argument('--tsv', action='store_true', help='print headered TSV, one row per model')
+    parser.add_argument('--repack', action='store_true',
+                        help='repack side chains in both complex and separated partners (no backbone relaxation)')
     args = parser.parse_args(argv)
     try:
-        run(args.locator, sys.stdin, args.output, args.interface, args.model, args.tsv, sys.stdout)
+        run(args.locator, sys.stdin, args.output, args.interface, args.model, args.tsv, sys.stdout, repack=args.repack)
     except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 1

@@ -45,14 +45,27 @@ metric per line. `--tsv` prints headers and one row per model, matching
 | packstat | Packing statistic |
 | nres_int | Interface residue count |
 
-Protocol: `ref2015`, input and separated repacking off, shape complementarity
+Protocol: `ref2015`, input and separated repacking off by default, shape complementarity
 and packstat enabled, packstat oversampling 100, fixed random seed 111111.
 The interface syntax is two distinct single-character alphanumeric chain IDs,
 e.g. `A:B`. Chains are checked against CIF coordinate chain IDs. Two-chain
 inputs use the executable's automatic pair selection; larger inputs pass
 Rosetta's `A_B` interface option. General chain-group syntax is not supported.
 
-These scores describe a fixed-coordinate baseline, not measured binding free
+Add `--repack` to enable both `pack_input` and `pack_separated`. This selects
+side-chain conformations in the complex and separated partners; it does not
+perform backbone relaxation or minimization. Both settings appear in the text/TSV
+summary and saved settings. Compare protocols using separate output directories:
+
+```bash
+afl b911edee --highest | sieve-py ~/git/tangle/sieve/scripts/alphafold-rosetta-interface.py - \
+  --interface A:B --repack --output results/b911edee-repacked
+```
+
+Repacking may change scores in either direction; it does not guarantee favorable
+association. Keep preparation consistent across candidate/control comparisons.
+
+Without `--repack`, scores describe a fixed-coordinate baseline, not measured binding free
 energies or a feasibility verdict. Preparation sensitivity requires separate
 validation. The initial integration test covered a two-chain AF CIF; larger
 complexes require additional validation.

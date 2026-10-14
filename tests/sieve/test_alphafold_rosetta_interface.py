@@ -53,7 +53,7 @@ def test_multiple_outputs(tmp_path, monkeypatch, tsv):
     def fake_run(command, **kwargs):
         return SimpleNamespace(returncode=0, stderr='', stdout=json.dumps([{'Id': 'sha256:test'}]))
     monkeypatch.setattr(r.subprocess, 'run', fake_run)
-    def fake_analyze(locator, number, interface, directory, image):
+    def fake_analyze(locator, number, interface, directory, image, repack=False):
         assert image == 'sha256:test'
         directory.mkdir()
         row = dict.fromkeys(r.COLUMNS, '1')
@@ -126,6 +126,8 @@ class AnalysisTests(unittest.TestCase):
             root = Path(temp)
             def execute(command, **kwargs):
                 self.assertNotIn('-interface', command)
+                self.assertEqual(command[command.index('-pack_input')+1], 'false')
+                self.assertEqual(command[command.index('-pack_separated')+1], 'false')
                 scorefile(root / 'success' / 'interface.sc')
                 return SimpleNamespace(returncode=0)
             with patch.object(r.subprocess, 'run', execute):
@@ -138,6 +140,18 @@ class AnalysisTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'exited 2'):
                     r.analyze('locator', 0, 'A:B', root / 'failure', 'image')
             self.assertEqual(json.loads((root / 'failure/settings.json').read_text())['status'], 'failed')
+            def repacked(command, **kwargs):
+                self.assertEqual(command[command.index('-pack_input')+1], 'true')
+                self.assertEqual(command[command.index('-pack_separated')+1], 'true')
+                scorefile(root / 'repacked' / 'interface.sc')
+                return SimpleNamespace(returncode=0)
+            with patch.object(r.subprocess, 'run', repacked):
+                row = r.analyze('locator', 0, 'A:B', root / 'repacked', 'image', True)
+            self.assertTrue(row['pack_input'])
+            self.assertTrue(row['pack_separated'])
+            saved = json.loads((root / 'repacked/settings.json').read_text())
+            self.assertTrue(saved['pack_input'])
+            self.assertTrue(saved['pack_separated'])
             with self.assertRaisesRegex(ValueError, 'not present'):
                 r.analyze('locator', 0, 'A:C', root / 'badchain', 'image')
             with self.assertRaisesRegex(ValueError, 'exactly one model'):
@@ -146,7 +160,7 @@ class AnalysisTests(unittest.TestCase):
 class TemporaryOutputTests(unittest.TestCase):
     def test_success_cleanup_and_summary(self):
         seen = []
-        def execute(source, stream, directory, interface, model, tsv, stdout):
+        def execute(source, stream, directory, interface, model, tsv, stdout, repack=False):
             root = Path(directory)
             seen.append(root)
             (root / 'result').write_text('test')
@@ -185,3 +199,16 @@ class TemporaryOutputTests(unittest.TestCase):
         with patch.object(script, 'run') as run:
             self.assertEqual(script.main(['locator', '--interface', 'A:B', '--model', '0']), 0)
         self.assertIsNone(run.call_args.args[2])
+
+class RepackTests(unittest.TestCase):
+    def test_cli_and_forwarding(self):
+        from tests.scripts.helpers import load_script
+        script = load_script('scripts/alphafold-rosetta-interface.py')
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), patch.object(script, 'run') as mocked:
+                script.main(['-', '--interface', 'A:B'] + (['--repack'] if enabled else []))
+                self.assertEqual(mocked.call_args.kwargs['repack'], enabled)
+            for output in (None, '/unused'):
+                with patch.object(r, '_run') as internal:
+                    r.run('-', io.StringIO(''), output, 'A:B', None, True, io.StringIO(), enabled)
+                    self.assertEqual(internal.call_args.args[-1], enabled)
