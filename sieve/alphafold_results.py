@@ -10,7 +10,7 @@ from pathlib import Path
 
 from sieve.alphafold_result_format import ResultRecord, write_result
 from sieve.alphafold_confidence import model_confidence
-from sieve.alphafold_files import Fold, model_number, open_fold
+from sieve.alphafold_files import Fold, model_number, open_fold, read_seed, request_name
 
 HIGHEST_CHOICES = ('ipTM', 'pTM', 'ipTM8_pTM2')
 
@@ -54,13 +54,18 @@ def selected_folds(manifest, sequence_id):
     return selected
 
 
-def confidence_rows(locator, error):
+def confidence_rows(locator, error, *, include_seed=False):
     """Read only summaries; a malformed model does not suppress later models."""
     try:
         with open_result_fold(locator) as fold:
             models = sorted((model_number(name), name) for name in fold.models)
             if len({n for n, _ in models}) != len(models):
                 raise ValueError('fold contains duplicate model numbers')
+            seed = None
+            if include_seed:
+                requests = {request_name(name) for _, name in models}
+                if len(requests) != 1 or any(name in fold.member_names for name in requests):
+                    seed = read_seed(fold.read, fold.models, fold.member_names)
             for number, name in models:
                 summary = name.removesuffix(f'model_{number}.cif') + f'summary_confidences_{number}.json'
                 try:
@@ -71,7 +76,7 @@ def confidence_rows(locator, error):
                 except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
                     error(f'{locator} model {number}: {exc}')
                     continue
-                yield number, scores
+                yield number, scores, seed
     except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
         error(f'{locator}: {exc}')
 
@@ -86,7 +91,7 @@ def selection_score(scores, metric):
     return Decimal('0.8') * values[0] + Decimal('0.2') * values[1]
 
 
-def run(manifest, sequence_id, stdout=None, stderr=None, *, highest=None):
+def run(manifest, sequence_id, stdout=None, stderr=None, *, highest=None, include_seed=False):
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
     failed = False
@@ -103,14 +108,14 @@ def run(manifest, sequence_id, stdout=None, stderr=None, *, highest=None):
     writer = csv.writer(stdout, delimiter='\t', lineterminator='\n')
     for fold in folds:
         locator = fold['fold_locator']
-        for number, scores in confidence_rows(locator, error):
-            row = ResultRecord(locator, fold['fold_id'], number, scores['iptm'], scores['ptm'])
+        for number, scores, seed in confidence_rows(locator, error, include_seed=include_seed):
+            row = ResultRecord(locator, fold['fold_id'], number, scores['iptm'], scores['ptm'], seed)
             if highest is None:
-                write_result(writer, row)
+                write_result(writer, row, include_seed=include_seed)
             else:
                 score = selection_score(scores, highest)
                 if score is not None and (best_score is None or score > best_score):
                     best_row, best_score = row, score
     if best_row is not None:
-        write_result(writer, best_row)
+        write_result(writer, best_row, include_seed=include_seed)
     return int(failed)

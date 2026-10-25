@@ -708,7 +708,8 @@ Full-interface rows are still calculated and included in the optional TSV output
 
 Pass `-` as the positional input to read headerless TSV from stdin. Each record
 is either a single locator/path (existing direct-input behavior), or a result
-record produced by `alphafold-list-results.py`. Result rows select exactly their
+record produced by `alphafold-list-results.py` (five columns, or six with
+`--seed`). Result rows select exactly their
 `model_id` within their `fold_locator`, before model data is read. The shared
 `alphafold_result_format` module defines the column order and reader/writer.
 

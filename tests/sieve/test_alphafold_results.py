@@ -202,3 +202,60 @@ class ResultsTests(unittest.TestCase):
         self.assertEqual(run(self.manifest, 'b911edee', self.out, self.err, highest='ipTM'), 1)
         self.assertEqual(self.out.getvalue(), f'{folder}\t12345678\t0\t0.6\t0.7\n')
         self.assertIn('ERROR:', self.err.getvalue())
+
+    def test_seed_directory_zip_and_highest(self):
+        members = {'fold_model_0.cif': '', 'fold_model_1.cif': '',
+                   'fold_summary_confidences_0.json': '{"iptm":0.2,"ptm":0.3}',
+                   'fold_summary_confidences_1.json': '{"iptm":0.8,"ptm":0.9}',
+                   'fold_job_request.json': '[{"modelSeeds":["12345678901234567890"]}]'}
+        folder = self.directory('seeded', members)
+        archive = self.root/'seeded.zip'
+        archive.write_bytes(zip_bytes({'inner.zip': zip_bytes(members)}))
+        for locator in (folder, f'{archive}::inner.zip!/.'):
+            for highest, count in [(None, 2), ('ipTM8_pTM2', 1)]:
+                with self.subTest(locator=locator, highest=highest):
+                    self.manifest_rows([(locator, '12345678', 'b911edee')])
+                    out = io.StringIO()
+                    self.assertEqual(run(self.manifest, 'b911edee', out, self.err,
+                                         highest=highest, include_seed=True), 0)
+                    rows = list(csv.reader(io.StringIO(out.getvalue()), delimiter='\t'))
+                    self.assertEqual(len(rows), count)
+                    self.assertTrue(all(len(row) == 6 and row[-1] == '12345678901234567890' for row in rows))
+                    if highest:
+                        self.assertEqual(rows[0][2], '1')
+
+    def test_missing_and_invalid_seeds(self):
+        missing = self.directory('missing-seed', {'fold_model_0.cif': ''})
+        invalid = self.directory('invalid-seed', {'fold_model_0.cif': ''})
+        self.manifest_rows([(invalid, '12345678', 'b911edee'), (missing, '87654321', 'b911edee')])
+        for request in ('{', '{}', '{"modelSeeds":[1,2]}', '{"modelSeeds":[true]}',
+                        '{"modelSeeds":[-1]}', '{"modelSeeds":[1.5]}'):
+            with self.subTest(request=request):
+                (Path(invalid)/'fold_job_request.json').write_text(request)
+                out, err = io.StringIO(), io.StringIO()
+                self.assertEqual(run(self.manifest, 'b911edee', out, err, include_seed=True), 1)
+                self.assertEqual(out.getvalue(), f'{missing}\t87654321\t0\tNA\tNA\tNA\n')
+                self.assertIn('ERROR:', err.getvalue())
+                self.assertEqual(run(self.manifest, 'b911edee', io.StringIO(), io.StringIO()), 0)
+
+    def test_seed_cli_and_zero(self):
+        folder = self.directory('zero', {'fold_model_0.cif': '',
+                                         'fold_job_request.json': '{"modelSeeds":[0]}'})
+        self.manifest_rows([(folder, '12345678', 'b911edee')])
+        script = load_script(Path(__file__).resolve().parents[2]/'scripts/alphafold-list-results.py')
+        with contextlib.redirect_stdout(self.out):
+            self.assertEqual(script.main([str(self.manifest), 'b911edee', '--seed']), 0)
+        self.assertTrue(self.out.getvalue().endswith('\t0\n'))
+
+    def test_duplicate_seed_request_rejected(self):
+        archive = self.root/'duplicate-seed.zip'
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            with zipfile.ZipFile(archive, 'w') as output:
+                output.writestr('fold_model_0.cif', '')
+                for _ in range(2):
+                    output.writestr('fold_job_request.json', '{"modelSeeds":[1]}')
+        self.manifest_rows([(f'{archive}::.', '12345678', 'b911edee')])
+        self.assertEqual(run(self.manifest, 'b911edee', self.out, self.err, include_seed=True), 1)
+        self.assertEqual(self.out.getvalue(), '')
+        self.assertIn('expected exactly one seed job-request file', self.err.getvalue())

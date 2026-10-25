@@ -13,20 +13,26 @@ class ResultRecord:
     model_id: int
     ipTM: object
     pTM: object
+    seed: object = None
 
 
-RESULT_COLUMNS = tuple(field.name for field in fields(ResultRecord))
+RESULT_COLUMNS = tuple(field.name for field in fields(ResultRecord) if field.name != 'seed')
+SEEDED_RESULT_COLUMNS = (*RESULT_COLUMNS, 'seed')
 
 
-def write_result(writer, record):
+def write_result(writer, record, *, include_seed=False):
     writer.writerow(['NA' if getattr(record, name) is None else getattr(record, name)
-                     for name in RESULT_COLUMNS])
+                     for name in (SEEDED_RESULT_COLUMNS if include_seed else RESULT_COLUMNS)])
 
 
 def parse_result(values):
-    if len(values) != len(RESULT_COLUMNS):
-        raise ValueError(f'expected {len(RESULT_COLUMNS)} result columns')
-    data = dict(zip(RESULT_COLUMNS, values))
+    if len(values) not in (len(RESULT_COLUMNS), len(SEEDED_RESULT_COLUMNS)):
+        raise ValueError('expected 5 or 6 result columns')
+    data = dict(zip(SEEDED_RESULT_COLUMNS, values))
+    seed = data.get('seed', 'NA')
+    if seed != 'NA' and not re.fullmatch('[0-9]+', seed):
+        raise ValueError('seed must be a nonnegative integer or NA')
+    seed = None if seed == 'NA' else int(seed)
     if not data['fold_locator'] or not re.fullmatch('[0-9a-f]{8}', data['fold_id']):
         raise ValueError('invalid fold locator or fold ID')
     if not re.fullmatch('[0-9]+', data['model_id']):
@@ -34,7 +40,7 @@ def parse_result(values):
     scores = model_confidence({name.lower(): None if data[name] == 'NA' else float(data[name])
                                for name in ('ipTM', 'pTM')})
     return ResultRecord(data['fold_locator'], data['fold_id'], int(data['model_id']),
-                        scores['iptm'], scores['ptm'])
+                        scores['iptm'], scores['ptm'], seed)
 
 
 @dataclass(frozen=True)

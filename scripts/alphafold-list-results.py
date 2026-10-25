@@ -13,9 +13,10 @@ def main(argv=None):
     parser.add_argument('--highest', nargs='?', choices=HIGHEST_CHOICES,
                         const='ipTM8_pTM2', default=None,
                         help='print only the highest-scoring row; without a value use 0.8*ipTM+0.2*pTM')
+    parser.add_argument('--seed', action='store_true', help='append the AF job seed as a sixth column (NA if unavailable)')
     args = parser.parse_args(argv)
     try:
-        return run(args.manifest, args.sequence_id, highest=args.highest)
+        return run(args.manifest, args.sequence_id, highest=args.highest, include_seed=args.seed)
     except (OSError, ValueError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 1

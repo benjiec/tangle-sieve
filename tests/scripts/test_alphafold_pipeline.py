@@ -56,6 +56,10 @@ class PipelineTests(unittest.TestCase):
                 self.assertNotIn('Model 1', output)
                 self.assertNotIn('pTM 0.990000', output)
 
+    def test_seeded_row_matches_original_pipeline(self):
+        original = record(str(self.folder), 0)
+        self.assertEqual(self.call(original), self.call(original.rstrip('\n') + '\t42\n'))
+
     def test_locator_only_matches_direct_and_multiple_records_separate(self):
         (self.folder/'fold_model_1.cif').write_text(CIF)
         (self.folder/'fold_full_data_1.json').write_text(json.dumps(DATA))
@@ -126,3 +130,23 @@ class PipelineTests(unittest.TestCase):
             if producer.poll() is None:
                 producer.kill()
                 producer.communicate()
+
+class SeedFormatTests(unittest.TestCase):
+    def test_optional_seed_roundtrip(self):
+        from sieve.alphafold_result_format import parse_result
+        for seed in (None, 0, 12345678901234567890):
+            for include in (False, True):
+                stream = io.StringIO()
+                value = ResultRecord('/fold', '12345678', 2, None, 0.9, seed)
+                write_result(csv.writer(stream, delimiter='\t'), value, include_seed=include)
+                values = next(csv.reader(io.StringIO(stream.getvalue()), delimiter='\t'))
+                self.assertEqual(len(values), 6 if include else 5)
+                self.assertEqual(parse_result(values).seed, seed if include else None)
+                request, = read_patch_inputs(io.StringIO(stream.getvalue()))
+                self.assertEqual((request.locator, request.model_id), ('/fold', 2))
+
+    def test_invalid_seed(self):
+        from sieve.alphafold_result_format import parse_result
+        for seed in ('', '-1', '1.5', 'True', 'unknown'):
+            with self.subTest(seed=seed), self.assertRaisesRegex(ValueError, 'seed'):
+                parse_result(['/fold', '12345678', '0', 'NA', 'NA', seed])

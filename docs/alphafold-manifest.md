@@ -123,13 +123,26 @@ models are sorted numerically. IDs and locators are copied from the manifest,
 without recomputing hashes. Distinct fold locations remain separate.
 
 Only model filenames and matching `*_summary_confidences_N.json` files are needed;
-CIF contents, full-data JSON, and job requests are not read. Missing summary files,
+CIF contents and full-data JSON are not read; job requests are read only with `--seed`. Missing summary files,
 missing fields, and null values print `NA`. No matches produce no output and a
 successful exit status. Malformed JSON, invalid score values, duplicate model
 numbers/summary members, and inaccessible folds are reported to stderr. Other
 models/folds continue; any such error yields exit status 1. Invalid manifest
 headers/rows or sequence IDs fail before any results are printed. The input
 manifest is not modified.
+
+### Include the seed
+
+Add `--seed` to append a sixth, headerless `seed` column. The seed is read once
+per fold from `modelSeeds` in its matching `*_job_request.json`. Missing job
+requests print `NA`; malformed, duplicate, or multiple-seed requests report an
+error, skip that fold, and yield exit status 1 while other folds continue.
+`--highest` preserves the selected row's seed. Without `--seed`, output remains
+five columns. Shared pipeline readers accept either format.
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee --highest --seed
+```
 
 ### Select the highest-scoring model
 
@@ -169,7 +182,7 @@ valid score. If no rows qualify, stdout is empty and the exit status is zero unl
 an input error occurred. Ties retain the first row in manifest order, then numeric
 model order. Combined scores use decimal arithmetic on the loaded score values.
 
-Output remains the original five columns without a header; the combined score
+Output remains headerless, with five columns (six with `--seed`); the combined score
 is not added. Errors still go to stderr and yield exit status 1. If some inputs
 fail, the best row among successfully read eligible models is still printed.
 

@@ -12,7 +12,7 @@ sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py \
 
 For a plain locator, specify `--model 0`. Both extracted fold directories and
 ZIP/nested-ZIP locators use the existing fold loader. Stdin accepts the shared
-five-column list-results format or one locator per record. Multiple records
+five-column list-results format (or six columns with `--seed`) or one locator per record. Multiple records
 produce one analysis each. Conflicting `--model` selections are errors.
 
 `--output DIRECTORY` is optional. When provided, it must be new or empty.
