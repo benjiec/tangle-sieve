@@ -14,6 +14,7 @@ from sieve.alphafold_files import model_number, read_seed
 from sieve.alphafold_manifest import chain_sequences, fold_id, sequence_id
 from sieve.alphafold_result_format import PatchInput, read_patch_inputs
 from sieve.alphafold_results import open_result_fold
+from sieve.alphafold_structure import identity_for_fold
 
 IMAGE = 'rosettacommons/rosetta:serial'
 METRICS = ('dG_separated', 'dG_separated/dSASAx100', 'dSASA_int',
@@ -74,7 +75,7 @@ def analyze(locator, number, interface, directory, image, repack=True):
             raise ValueError(f'expected exactly one model {number}: {locator}')
         content = fold.read(names[0])
         sequences = chain_sequences(content)
-        identifier = fold_id(read_seed(fold.read, names, fold.member_names), sequences.values())
+        identifier = identity_for_fold(fold, content)['fold_id']
     structure = MMCIFParser(QUIET=True).get_structure('model', io.StringIO(content))
     if len(structure) != 1:
         raise ValueError('CIF must contain exactly one coordinate model')

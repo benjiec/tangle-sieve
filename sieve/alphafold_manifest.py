@@ -14,7 +14,7 @@ from Bio.Data.PDBData import protein_letters_3to1
 from sieve.alphafold_cache import read_cache, write_cache
 from sieve.alphafold_files import discover, fold_locator, model_number, read_seed
 
-BASE_COLUMNS = ['source_path', 'fold_path', 'fold_locator', 'fold_id', 'sequence_id', 'timestamp']
+BASE_COLUMNS = ['source_path', 'fold_path', 'fold_locator', 'fold_id', 'sequence_id', 'timestamp', 'source_type']
 INPUT_COLUMNS = [f'input {i} {field}' for i in range(1, 6) for field in ('description', 'copies')]
 COLUMNS = BASE_COLUMNS + INPUT_COLUMNS
 
@@ -137,17 +137,19 @@ def identify(fold, candidates):
     grouped = defaultdict(list)
     for chain, sequence in chains.items():
         grouped[sequence].append(chain)
-    seed = read_seed(fold.read, fold.models, fold.member_names)
-    return make_row(fold.source_path, fold.fold_path, fold_id(seed, chains.values()), sequence_id(chains.values()),
-                    fold.timestamp, [(candidates[seq], len(ids)) for seq, ids in sorted(grouped.items())])
+    from sieve.alphafold_structure import identity_for_fold
+    identity = identity_for_fold(fold, fold.read(fold.models[0]))
+    return make_row(fold.source_path, fold.fold_path, identity['fold_id'], identity['sequence_id'],
+                    fold.timestamp, [(candidates[seq], len(ids)) for seq, ids in sorted(grouped.items())],
+                    source_type=identity['source_type'])
 
 
-def make_row(source, member, identifier, sequence_identifier, timestamp, inputs):
+def make_row(source, member, identifier, sequence_identifier, timestamp, inputs, source_type='alphafold'):
     if len(inputs) > 5:
         raise ValueError(f'fold contains {len(inputs)} distinct sequences; maximum is 5')
     row = dict.fromkeys(COLUMNS, '')
     row.update(source_path=source, fold_path=member, fold_locator=fold_locator(source, member),
-               fold_id=identifier, sequence_id=sequence_identifier, timestamp=timestamp)
+               fold_id=identifier, sequence_id=sequence_identifier, timestamp=timestamp, source_type=source_type)
     for index, (description, copies) in enumerate(inputs, 1):
         row[f'input {index} description'] = description
         row[f'input {index} copies'] = str(copies)
@@ -159,6 +161,8 @@ def validate_cache(rows):
     for row in rows:
         if any(row.get(c) is None for c in COLUMNS):
             raise ValueError('cache contains an incomplete row')
+        if row.get('source_type') not in ('alphafold', 'assembled'):
+            raise ValueError('invalid manifest source_type')
         key = (row['source_path'], row['fold_path'])
         if key in cached:
             raise ValueError(f'duplicate cached fold: {key}')
@@ -184,9 +188,9 @@ def load_manifest(path):
     columns, rows = read_cache(path, ['source_path', 'fold_path', 'fold_id'])
     if columns is None:
         return {}, False
-    if any(c not in columns for c in COLUMNS):
+    if any(c not in columns for c in COLUMNS if c != 'source_type'):
         raise ValueError('manifest uses an older or incomplete format; remove it and regenerate with both fold_id and sequence_id')
-    converted = [{c: row[c] for c in COLUMNS} for row in rows]
+    converted = [{c: row.get(c, 'alphafold' if c == 'source_type' else None) for c in COLUMNS} for row in rows]
     return validate_cache(converted), columns != COLUMNS
 
 

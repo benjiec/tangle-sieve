@@ -12,6 +12,7 @@ from Bio.PDB import MMCIFParser
 from sieve.alphafold_files import model_number, read_seed
 from sieve.alphafold_manifest import chain_sequences, fold_id, sequence_id
 from sieve.alphafold_results import open_result_fold
+from sieve.alphafold_structure import identity_for_fold
 from sieve.alphafold_rosetta_interface import IMAGE, inputs
 from sieve.rosetta_integrity_worker import MEASURES, PROTOCOL, check_finite
 
@@ -27,7 +28,7 @@ def prepare(locator, number, directory):
             raise ValueError(f'expected exactly one model {number}: {locator}')
         content = fold.read(names[0])
         sequences = chain_sequences(content)
-        metadata = dict(fold_id=fold_id(read_seed(fold.read, names, fold.member_names), sequences.values()),
+        metadata = dict(fold_id=identity_for_fold(fold, content)['fold_id'],
                         sequence_id=sequence_id(sequences.values()), model_id=number,
                         fold_locator=locator, score_function='ref2015')
     structure = MMCIFParser(QUIET=True).get_structure('model', io.StringIO(content))

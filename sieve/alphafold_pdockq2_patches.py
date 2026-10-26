@@ -166,7 +166,7 @@ def detect_patches(residues, pae, options=None, chains=None):
                         'separator residues': labels(separator), 'discarded residues': labels(discarded)})
             patch_rows.append(row)
             stack.extend((child, patch_id, depth + 1) for child in reversed(children))
-        ranked = sorted(patch_rows, key=lambda r: (-r['pDockQ2 max'], -r['contact count'], r['graph residues']))
+        ranked = sorted(patch_rows, key=lambda r: (-(r['pDockQ2 max'] if r['pDockQ2 max'] is not None else -1), -r['contact count'], r['graph residues']))
         for rank, row in enumerate(ranked, 1):
             row['rank'] = rank
         rows.extend(patch_rows)
@@ -202,6 +202,23 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None, s
     def summary_name(name, number):
         return str(name).removesuffix(f'model_{number}.cif') + f'summary_confidences_{number}.json'
 
+    # Derived assemblies have coordinates and identity, but no joint PAE matrix.
+    from sieve.alphafold_structure import open_structure_fold, assembly_metadata, COMPLEX_FILE
+    candidate = Path(str(path))
+    if '::' in str(path) or (candidate.is_dir() and (candidate/COMPLEX_FILE).is_file()) or candidate.name == COMPLEX_FILE:
+        with open_structure_fold(path) as fold:
+            meta = assembly_metadata(fold)
+            if meta:
+                if full_data:
+                    raise ValueError('assembled inputs do not accept --full-data')
+                select_models([(0, fold.models[0])])
+                source = str(candidate.resolve()) if '::' not in str(path) else str(path)
+                if model_scores is not None:
+                    model_scores[(source,0)] = model_confidence({})
+                if model_seeds is not None:
+                    model_seeds[(source,0)] = None
+                yield source, 0, fold.read(fold.models[0]), {'_assembly':meta}
+                return
     if '::' in str(path):
         if full_data:
             raise ValueError('--full-data is only valid with CIF input')
@@ -298,7 +315,7 @@ def analyze(path, full_data=None, options=None, chains=None, summary_targets=Non
                 sequence_ids[source] = composition
             if fold_ids is not None:
                 seed = seeds[(source, '' if model is None else model)]
-                identifier = fold_id(seed, sequences) if seed is not None and composition is not None else None
+                identifier = data['_assembly']['fold_id'] if '_assembly' in data else (fold_id(seed, sequences) if seed is not None and composition is not None else None)
                 if source in fold_ids:
                     previous = fold_ids[source]
                     if previous is not None and identifier is not None and previous != identifier:
@@ -311,9 +328,9 @@ def analyze(path, full_data=None, options=None, chains=None, summary_targets=Non
             summary_inputs[(source, '' if model is None else model)] = cif
         for values in residues.values():
             for r in values:
-                if not all(math.isfinite(v) for v in (*r.ca, r.plddt)) or not 0 <= r.plddt <= 100:
+                if not all(math.isfinite(v) for v in r.ca) or (r.plddt is not None and (not math.isfinite(r.plddt) or not 0 <= r.plddt <= 100)):
                     raise ValueError('coordinates must be finite and pLDDT must be in [0, 100]')
-        if any(not math.isfinite(float(v)) or float(v) < 0 for row in pae for v in row):
+        if any(not math.isfinite(float(v)) or float(v) < 0 for row in (pae or []) for v in row):
             raise ValueError('PAE must be finite and nonnegative')
         patches = detect_patches(residues, pae, options, chains)
         if summary_targets is not None:
@@ -321,6 +338,8 @@ def analyze(path, full_data=None, options=None, chains=None, summary_targets=Non
                 chains[1] if chains is not None else next(reversed(residues), None))
         for row in patches:
             row.update(source=source, model='' if model is None else model)
+            if '_assembly' in data:
+                row['confidence origin'] = 'inherited per-chain values; no assembled confidence'
             rows.append(row)
     return rows
 
@@ -349,6 +368,8 @@ def distinct_patches(candidates, targets, limit=5):
 
 
 def pae_confidence_text(row):
+    if row['normalized PAE 1 to 2'] is None:
+        return 'PAE-only confidence: NA (assembled model has no joint PAE)'
     if not row['contact count']:
         return 'PAE-only confidence: n/a (no contacts)'
     return (f"PAE-only confidence (0–1, higher better): "
@@ -384,15 +405,18 @@ def write_summary(rows, targets, stream, descriptions=None, *, structure=False, 
         candidates = [r for r in rows if r['source'] == source and r['scope'] == 'patch'
                       and targets.get((source, r['model'])) in (r['chain 1'], r['chain 2'])
                       and (chains is None or {r['chain 1'], r['chain 2']} == set(chains))]
-        candidates.sort(key=lambda r: (-r['pDockQ2 max'], -r['contact count'],
+        if any(r['pDockQ2 max'] is None for r in candidates):
+            print('  Geometric ranking by contact count; pDockQ2 unavailable for assembled coordinates.', file=stream)
+        candidates.sort(key=lambda r: (-(r['pDockQ2 max'] if r['pDockQ2 max'] is not None else -1), -r['contact count'],
                                       str(r['model']), r['chain 1'], r['chain 2'], r['graph residues'], r['patch id']))
         if not candidates:
             subject = 'the selected chains' if chains is not None else 'the last chain'
             print(f'  No qualifying patches for {subject} under these settings.', file=stream)
         for rank, row in enumerate(distinct_patches(candidates, targets), 1):
             model = row['model'] if row['model'] != '' else 'unnumbered'
+            patch_score = 'NA' if row['pDockQ2 max'] is None else f"{row['pDockQ2 max']:.6f}"
             print(f"  {rank}. Model {model} | patch {row['patch id']} ({row['status']}) | "
-                  f"{row['chain 1']}–{row['chain 2']} | max pDockQ2 {row['pDockQ2 max']:.6f}", file=stream)
+                  f"{row['chain 1']}–{row['chain 2']} | max pDockQ2 {patch_score}", file=stream)
             print(f"     Region 1 ({row['chain 1']}): {row['region 1']}", file=stream)
             print(f"     Region 2 ({row['chain 2']}): {row['region 2']}", file=stream)
             print(f'     {pae_confidence_text(row)}', file=stream)
@@ -411,7 +435,10 @@ def write_summary(rows, targets, stream, descriptions=None, *, structure=False, 
 
 
 def write_patches(rows, stream):
-    writer = csv.DictWriter(stream, fieldnames=OUTPUT_COLUMNS + EXTRA_COLUMNS, delimiter='\t', lineterminator='\n')
+    columns = OUTPUT_COLUMNS + EXTRA_COLUMNS
+    if any('confidence origin' in row for row in rows):
+        columns = columns + ['confidence origin']
+    writer = csv.DictWriter(stream, fieldnames=columns, delimiter='\t', lineterminator='\n')
     writer.writeheader()
     for row in rows:
-        writer.writerow({k: f'{v:.6f}' if isinstance(v, float) else v for k, v in row.items()})
+        writer.writerow({k: 'NA' if v is None else f'{v:.6f}' if isinstance(v, float) else v for k, v in row.items()})

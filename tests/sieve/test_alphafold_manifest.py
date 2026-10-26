@@ -263,7 +263,8 @@ class ManifestTests(unittest.TestCase):
         self.fold('six', (*seqs, 'CC'))
         self.assertEqual(self.run_manifest(), 1)
         row = self.rows()[0]
-        self.assertEqual(len(row), 16)
+        self.assertEqual(len(row), 17)
+        self.assertEqual(row['source_type'], 'alphafold')
         self.assertEqual(row['input 1 copies'], '2')
         self.assertTrue(row['input 5 description'])
         self.assertIn('6 distinct sequences; maximum is 5', self.log.getvalue())

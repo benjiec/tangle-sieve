@@ -120,7 +120,7 @@ class AnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, \
              patch.object(r, 'open_result_fold', opened), \
              patch.object(r, 'chain_sequences', return_value={'A': 'AA', 'B': 'GG'}), \
-             patch.object(r, 'read_seed', return_value=1), \
+             patch.object(r, 'identity_for_fold', return_value={'fold_id': '12345678'}), \
              patch.object(r, 'MMCIFParser') as parser:
             parser.return_value.get_structure.return_value = [chains]
             root = Path(temp)

@@ -109,3 +109,11 @@ and loading, not biological accuracy of the model.
 Sources: [REF2015](https://doi.org/10.1021/acs.jctc.7b00125),
 [Rosetta buried-polar calculator](https://github.com/RosettaCommons/rosetta/blob/main/source/src/protocols/simple_pose_metric_calculators/BuriedUnsatisfiedPolarsCalculator.cc),
 [packing statistic](https://docs.rosettacommons.org/docs/latest/application_documentation/analysis/interface-analyzer).
+
+## Derived assemblies
+
+An `alphafold-overlap.py` output directory is a supported locator. Select `--model 0`
+or pipe a matching list-results row (without `--highest`, since assemblies have no
+ipTM/pTM). The loader verifies the CIF/provenance hashes and uses the derived
+fold ID. Coordinate analysis and preparation settings are unchanged. See
+[assembly documentation](alphafold-overlap.md).

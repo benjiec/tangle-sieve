@@ -94,7 +94,8 @@ class PatchDescriptions:
                                     sasa_burial(model, chains, self.options.sasa_points))
         interactions, burial = self.pairs[pair_key]
         selected = {c: {n for n in map(int, row[f'interface residues {i}'].split(','))} if row[f'interface residues {i}'] else set() for i, c in enumerate(chains, 1)}
-        print('     Local pLDDT (unique contacting residues): ' + ' | '.join(f"{c} {row[f'interface pLDDT {i}']:.2f}" for i, c in enumerate(chains, 1)), file=stream)
+        origin = 'Inherited source pLDDT' if row.get('confidence origin') else 'Local pLDDT'
+        print(f'     {origin} (unique contacting residues): ' + ' | '.join(f"{c} {number(row[f'interface pLDDT {i}'])}" for i, c in enumerate(chains, 1)), file=stream)
         charges = {}
         for c in chains:
             context = neighborhood(model[c], selected[c], self.options.flank, self.options.radius)

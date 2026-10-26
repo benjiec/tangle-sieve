@@ -212,3 +212,16 @@ analyses succeed. An optional `--output` TSV contains results from all records.
 For shell pipelines where an upstream failure must affect the pipeline exit
 status, enable `set -o pipefail`; the consumer cannot infer upstream errors from
 an empty or partial valid stream.
+
+## Assembled complex directories
+
+Directories written by `alphafold-overlap.py` can be registered through the same
+manifest command. Their `source_type` is `assembled`; AF rows are `alphafold`.
+Current-format manifests without this column are upgraded while preserving cached
+rows and IDs. Assembly IDs come from validated provenance, not a synthetic seed.
+The sequence-ID algorithm and five-distinct-sequence limit are unchanged.
+
+Result listing supports these directories and ZIP locators, printing `NA` for
+ipTM/pTM/seed. `--highest` excludes these unscored rows. See
+[overlap and derived complexes](alphafold-overlap.md) for creation, recursive use,
+provenance, and artifact verification.

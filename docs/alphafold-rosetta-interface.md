@@ -73,3 +73,10 @@ validation. The initial integration test covered a two-chain AF CIF; larger
 complexes require additional validation.
 
 Reference: [Rosetta InterfaceAnalyzer documentation](https://docs.rosettacommons.org/docs/latest/application_documentation/analysis/interface-analyzer).
+
+## Derived assemblies
+
+An `alphafold-overlap.py` output directory can be used as a locator with `--model 0`.
+Its validated derived fold ID replaces the AF seed-based identity; InterfaceAnalyzer
+settings and interface selection remain unchanged. No synthetic AF seed or
+confidence is assigned. See [assembly documentation](alphafold-overlap.md).

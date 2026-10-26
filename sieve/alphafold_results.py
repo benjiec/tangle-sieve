@@ -4,34 +4,19 @@ import json
 import re
 import sys
 import zipfile
-from contextlib import contextmanager
 from decimal import Decimal
-from pathlib import Path
 
 from sieve.alphafold_result_format import ResultRecord, write_result
 from sieve.alphafold_confidence import model_confidence
-from sieve.alphafold_files import Fold, model_number, open_fold, read_seed, request_name
+from sieve.alphafold_files import model_number, read_seed, request_name
 
 HIGHEST_CHOICES = ('ipTM', 'pTM', 'ipTM8_pTM2')
 
 REQUIRED_COLUMNS = ('fold_locator', 'fold_id', 'sequence_id')
 
 
-@contextmanager
-def open_result_fold(locator):
-    if '::' in locator:
-        with open_fold(locator) as fold:
-            yield fold
-    else:
-        path = Path(locator)
-        if not path.is_dir():
-            raise ValueError(f'expected an extracted fold directory or ZIP fold locator: {locator}')
-        names = tuple(p.name for p in path.iterdir() if p.is_file())
-        models = sorted(n for n in names if model_number(n) is not None)
-        if not models:
-            raise ValueError(f'no model CIF files at fold locator: {locator}')
-        yield Fold(str(path), '.', models,
-                   lambda name: (path / name).read_text(encoding='utf-8'), names)
+# Keep the public name for existing callers.
+from sieve.alphafold_structure import open_structure_fold as open_result_fold, assembly_metadata
 
 
 def selected_folds(manifest, sequence_id):
@@ -62,6 +47,11 @@ def confidence_rows(locator, error, *, include_seed=False):
             if len({n for n, _ in models}) != len(models):
                 raise ValueError('fold contains duplicate model numbers')
             seed = None
+            metadata = assembly_metadata(fold)
+            if metadata:
+                for number, _ in models:
+                    yield number, model_confidence({}), None
+                return
             if include_seed:
                 requests = {request_name(name) for _, name in models}
                 if len(requests) != 1 or any(name in fold.member_names for name in requests):

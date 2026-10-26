@@ -18,6 +18,8 @@ def ignored(name):
 def model_number(name):
     if ignored(name):
         return None
+    if PurePosixPath(str(name)).name == 'model0_complex.cif':
+        return 0
     match = re.search(r'_model_(\d+)\.cif$', str(name))
     return int(match.group(1)) if match else None
 
@@ -110,10 +112,14 @@ def discover(path, error):
                 nested.append(info)
         for directory in sorted(candidates - groups.keys()):
             error(f'{source}::{prefix}{directory}: fold candidate has no recognized model CIF files')
+        def read_unique(name):
+            if archive.namelist().count(name) != 1:
+                raise ValueError(f'expected exactly one archive member: {name}')
+            return archive.read(name).decode('utf-8')
         for directory, infos in sorted(groups.items()):
             names = sorted(i.filename for i in infos)
             yield Fold(source, prefix + directory, names,
-                       lambda name: archive.read(name).decode('utf-8'),
+                       read_unique,
                        member_names=tuple(archive.namelist()), timestamp=zip_timestamp(infos))
         for info in sorted(nested, key=lambda i: i.filename):
             try:

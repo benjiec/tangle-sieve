@@ -724,3 +724,13 @@ record. `--full-data` remains limited to direct CIF inputs, including one-field
 CIF records. Errors identify their stdin record and abort before stdout or the
 optional TSV is written. Model IDs must exist; a missing model never falls back
 to all models. Piped scores/IDs do not replace source metadata.
+
+## Assembled complexes without PAE
+
+Directories and ZIP locators produced by `alphafold-overlap.py` support geometric
+patch analysis without a joint PAE matrix. PAE-dependent scores and pDockQ2 print
+`NA`; ranking uses contact count and deterministic ties. Known source pLDDT is
+labeled inherited. With derived rows, the optional TSV adds `confidence origin`;
+AF-only TSV columns remain unchanged. Pairwise contacts, burial, chemistry and
+secondary structure retain their existing definitions; this does not add combined
+multichain patch scoring. See [assembly documentation](alphafold-overlap.md).

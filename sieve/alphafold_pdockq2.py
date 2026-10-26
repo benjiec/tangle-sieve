@@ -77,6 +77,16 @@ def _pdockq2(normalized_pae, interface_plddt):
 
 
 def parse_model(cif_text, full_data):
+    if '_assembly' in full_data:
+        metadata = full_data['_assembly']
+        structure = MMCIFParser(QUIET=True).get_structure('assembled', io.StringIO(cif_text))
+        residues = {}
+        for chain in structure[0]:
+            known = metadata['chains'][chain.id].get('plddt_known', False)
+            residues[chain.id] = [Residue(chain.id, int(r.id[1]), -1,
+                float(r['CA'].bfactor) if known else None, tuple(float(x) for x in r['CA'].coord))
+                for r in chain if 'CA' in r]
+        return residues, None
     chain_ids = full_data.get("token_chain_ids")
     residue_ids = full_data.get("token_res_ids")
     pae = full_data.get("pae")
@@ -152,12 +162,12 @@ def score_selections(chain1, chain2, selected1, selected2, pae, ranges1, ranges2
     contacts = [(r1, r2) for r1 in selected1 for r2 in selected2 if _distance(r1.ca, r2.ca) <= cutoff]
     interface1 = {r1.number: r1 for r1, _ in contacts}
     interface2 = {r2.number: r2 for _, r2 in contacts}
-    plddt1 = _mean([residue.plddt for residue in interface1.values()])
-    plddt2 = _mean([residue.plddt for residue in interface2.values()])
-    norm12 = _mean([1.0 / (1.0 + (float(pae[r1.token_index][r2.token_index]) / 10.0) ** 2) for r1, r2 in contacts])
-    norm21 = _mean([1.0 / (1.0 + (float(pae[r2.token_index][r1.token_index]) / 10.0) ** 2) for r1, r2 in contacts])
-    score12 = _pdockq2(norm12, plddt1)
-    score21 = _pdockq2(norm21, plddt2)
+    plddt1 = _mean([residue.plddt for residue in interface1.values()]) if all(r.plddt is not None for r in interface1.values()) else None
+    plddt2 = _mean([residue.plddt for residue in interface2.values()]) if all(r.plddt is not None for r in interface2.values()) else None
+    norm12 = _mean([1.0 / (1.0 + (float(pae[r1.token_index][r2.token_index]) / 10.0) ** 2) for r1, r2 in contacts]) if pae is not None else None
+    norm21 = _mean([1.0 / (1.0 + (float(pae[r2.token_index][r1.token_index]) / 10.0) ** 2) for r1, r2 in contacts]) if pae is not None else None
+    score12 = _pdockq2(norm12, plddt1) if pae is not None else None
+    score21 = _pdockq2(norm21, plddt2) if pae is not None else None
     return {
         "chain 1": chain1,
         "chain 2": chain2,
@@ -172,7 +182,7 @@ def score_selections(chain1, chain2, selected1, selected2, pae, ranges1, ranges2
         "normalized PAE 2 to 1": norm21,
         "pDockQ2 1 to 2": score12,
         "pDockQ2 2 to 1": score21,
-        "pDockQ2 max": max(score12, score21),
+        "pDockQ2 max": max(score12, score21) if pae is not None else None,
     }
 
 
