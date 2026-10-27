@@ -275,3 +275,30 @@ class OverlapTests(unittest.TestCase):
         self.assertIn('Model combinations: 1 assessed;',text)
         self.assertIn('combinations with warnings; 0 errors.',text)
         self.assertIn(f"All combinations: {(self.root/'summary').resolve() / 'comparisons.tsv'}",text)
+
+    def test_input_identities_in_stdout_and_readme(self):
+        # Selected nonzero models, with --all-models, must identify the saved pair.
+        shutil.copyfile(self.a/'fold_model_0.cif', self.a/'fold_model_2.cif')
+        shutil.copyfile(self.b/'fold_model_0.cif', self.b/'fold_model_3.cif')
+        stream=io.StringIO()
+        out=self.root/'identities'
+        app.run(self.a,self.b,out,model_a=2,model_b=3,all_models=True,stdout=stream)
+        for label,path,number in [('A',self.a,2),('B',self.b,3)]:
+            identity=load_structure(path,number).identity
+            expected=f"Input {label}: Fold ID {identity['fold_id']} | Sequence ID {identity['sequence_id']} | Model {number}"
+            self.assertIn(expected,stream.getvalue())
+            self.assertIn(expected,(out/'README.md').read_text())
+        self.assertLess(stream.getvalue().index('Locator:'),stream.getvalue().index('Input A:'))
+
+    def test_recursive_and_unknown_input_identities(self):
+        out,meta=self.assemble()
+        third=self.make('identity-third',[('A','DDDD',[7,0,0]),('B','EEEE',[14,0,0])])
+        plain=self.root/'standalone.cif'
+        plain.write_text((third/'fold_model_0.cif').read_text())
+        stream=io.StringIO();final=self.root/'identity-recursive'
+        app.run(out,plain,final,stdout=stream)
+        expected_a=f"Input A: Fold ID {meta['fold_id']} | Sequence ID {meta['sequence_id']} | Model 0"
+        expected_b=f"Input B: Fold ID NA | Sequence ID {load_structure(plain).identity['sequence_id']} | Model 0"
+        for expected in [expected_a,expected_b]:
+            self.assertIn(expected,stream.getvalue())
+            self.assertIn(expected,(final/'README.md').read_text())

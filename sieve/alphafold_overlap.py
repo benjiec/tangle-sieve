@@ -390,7 +390,11 @@ def run(locator_a,locator_b,output,*,model_a=0,model_b=0,all_models=False,option
                ('shared_interface_clashes','replacement_clashes',['partner_chain_b','change','residue_a','atom_a','residue_b','atom_b','distance_A','overlap_A','backbone_backbone']),
                ('shared_interface_contact_changes','contact_changes',['partner_chain_b','change','shared_position','partner_position'])]
         for name,key,cols in specs: table(temporary/(name+'.tsv'),primary[key],cols)
-        summary=quick_summary(primary,options)
+        input_summary = '\n'.join(
+            f"Input {label}: Fold ID {source.identity.get('fold_id') or 'NA'} | "
+            f"Sequence ID {source.identity.get('sequence_id') or 'NA'} | Model {source.number}"
+            for label, source in [('A', first), ('B', second)])
+        summary=input_summary + '\n' + quick_summary(primary,options)
         doc=Path(__file__).resolve().parents[1]/'docs/alphafold-overlap.md'
         readme=f"# Assembly {provenance['fold_id']}\n\nSequence ID: {provenance['sequence_id']}\n\n```text\n{summary}\n```\n\n"
         readme+='## Output chain mapping\n\n'+''.join(f"- {c}: input {v['input'].upper()}, original chain {v['original_chain']}, {len(v['sequence'])} residues.\n" for c,v in mapping.items())

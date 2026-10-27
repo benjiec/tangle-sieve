@@ -22,6 +22,11 @@ errors exit 1. Output must be new or empty; publication is atomic.
 
 ## Quick assessment and thresholds
 
+Stdout and the generated README identify both selected inputs with their fold ID,
+sequence ID, and model number. Recursive inputs show the immediate input assembly
+IDs; unavailable fold IDs (for example, standalone CIFs without seed metadata)
+print `NA`.
+
 The first stdout line after identifiers and the beginning of the generated README
 show a specific warning assessment or `No detected geometric conflict`.
 When shared-chain replacement conflicts are the only warning, the assessment is
