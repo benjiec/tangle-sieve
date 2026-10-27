@@ -251,3 +251,27 @@ class OverlapTests(unittest.TestCase):
         self.assertEqual(code,1)
         self.assertIn('ERROR — cannot assemble',error.getvalue())
         self.assertFalse((self.root/'bad').exists())
+
+    def test_specific_assessment_messages(self):
+        self.assertEqual(app.assessment_status(), 'No detected geometric conflict')
+        self.assertEqual(app.assessment_status(replacement=True),
+                         'WARNING — Partners do not clash; merged shared-chain interface requires refinement')
+        for field, phrase in [('alignment','alignment requires review'),
+                              ('cross_clashes','cross-partner clashes detected'),
+                              ('alternative_clashes','alternative alignments'),
+                              ('inherited','input assembly warnings')]:
+            for replacement in (False,True):
+                with self.subTest(field=field,replacement=replacement):
+                    status=app.assessment_status(**{field:True},replacement=replacement)
+                    self.assertIn(phrase,status)
+                    self.assertNotIn('Partners do not clash',status)
+                    self.assertEqual('interface requires refinement' in status,replacement)
+
+    def test_combination_summary_identifies_selected_pair_and_table(self):
+        output=io.StringIO()
+        app.run(self.a,self.b,self.root/'summary',all_models=True,stdout=output)
+        text=output.getvalue()
+        self.assertIn('Selected models: A=0, B=0',text)
+        self.assertIn('Model combinations: 1 assessed;',text)
+        self.assertIn('combinations with warnings; 0 errors.',text)
+        self.assertIn(f"All combinations: {(self.root/'summary').resolve() / 'comparisons.tsv'}",text)

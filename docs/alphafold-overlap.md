@@ -23,8 +23,14 @@ errors exit 1. Output must be new or empty; publication is atomic.
 ## Quick assessment and thresholds
 
 The first stdout line after identifiers and the beginning of the generated README
-show `WARNING — structural compatibility unresolved` or `No detected geometric
-conflict`. Errors print `ERROR — cannot assemble`. Warnings do not suppress output:
+show a specific warning assessment or `No detected geometric conflict`.
+When shared-chain replacement conflicts are the only warning, the assessment is
+`WARNING — Partners do not clash; merged shared-chain interface requires refinement`.
+Alignment problems, cross-partner clashes, alternative-alignment clashes, and
+inherited input warnings receive separate messages; multiple issues are listed
+together. Stdout identifies the selected models. With `--all-models`, the final
+count means **combinations with warnings**, not individual warning messages, and
+points to `comparisons.tsv` for every combination's details. Errors print `ERROR — cannot assemble`. Warnings do not suppress output:
 the coordinates remain useful for inspection. Neither label establishes binding,
 affinity, thermodynamic stability, or complete stereochemical validity.
 

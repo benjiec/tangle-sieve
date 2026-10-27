@@ -120,6 +120,25 @@ def rmsd(deviations):
     return float(np.sqrt(np.mean(deviations**2))) if len(deviations) else None
 
 
+def assessment_status(*, alignment=False, cross_clashes=False, replacement=False,
+                      alternative_clashes=False, inherited=False):
+    """Summarize warning categories without implying that other checks passed."""
+    if replacement and not any((alignment, cross_clashes, alternative_clashes, inherited)):
+        return 'WARNING — Partners do not clash; merged shared-chain interface requires refinement'
+    issues = []
+    if alignment:
+        issues.append('shared-chain alignment requires review')
+    if cross_clashes:
+        issues.append('cross-partner clashes detected')
+    if replacement:
+        issues.append('merged shared-chain interface requires refinement')
+    if alternative_clashes:
+        issues.append('partner clashes detected with alternative alignments')
+    if inherited:
+        issues.append('input assembly warnings require review')
+    return 'WARNING — ' + '; '.join(issues) if issues else 'No detected geometric conflict'
+
+
 def compare(first, second, options):
     shared_a,shared_b=unique_shared(first,second)
     ca_a={a['number']:a for a in first.atoms[shared_a] if a['name']=='CA'}
@@ -203,16 +222,20 @@ def compare(first, second, options):
             warnings.append(f'{label}: missing or incomplete binding-site Cα coverage')
         if site['site_RMSD_A'] is not None and site['site_RMSD_A']>options.site_rmsd_warning:
             warnings.append(f"{label}: site deviation {site['site_RMSD_A']:.2f} > {options.site_rmsd_warning:g} Å")
+    alignment_warning = bool(warnings)
     clashes=sum(r['clash_atom_pairs'] for r in cross)
     if clashes: warnings.append(f'{clashes} cross-partner heavy-atom overlaps exceed {options.clash_overlap:g} Å')
     introduced=sum(r['introduced_clashes'] for r in changes)
     worsened=sum(r['worsened_clashes'] for r in changes)
     if introduced or worsened:
         warnings.append(f'shared-chain replacement introduces {introduced} and worsens {worsened} overlapping atom pairs')
-    if any(r['clash_atom_pairs'] for r in sensitivity if r['status']=='computed') and not clashes:
+    alternative_clashes = any(r['clash_atom_pairs'] for r in sensitivity if r['status']=='computed') and not clashes
+    if alternative_clashes:
         warnings.append('partner clashes appear with an alternative alignment subset')
+    inherited_warning = False
     for label,source in [('A',first),('B',second)]:
         if source.metadata and source.metadata.get('assessment',{}).get('warnings'):
+            inherited_warning = True
             warnings.append(f'input {label} carries warnings from an earlier assembly; see provenance history')
     summary=dict(model_a=first.number,model_b=second.number,shared_chain_a=shared_a,shared_chain_b=shared_b,
                  shared_length=length,matched_CA=len(positions),coverage=coverage,CA_RMSD_A=global_rmsd,
@@ -223,7 +246,9 @@ def compare(first, second, options):
                  cross_partner_max_overlap_A=max(r['max_overlap_A'] for r in cross),
                  shared_replacement_introduced_clashes=introduced,shared_replacement_worsened_clashes=worsened,
                  shared_replacement_max_overlap_A=max(r['assembled_max_overlap_A'] for r in changes),
-                 status='WARNING — structural compatibility unresolved' if warnings else 'No detected geometric conflict',
+                 status=assessment_status(alignment=alignment_warning, cross_clashes=bool(clashes),
+                                          replacement=bool(introduced or worsened), alternative_clashes=alternative_clashes,
+                                          inherited=inherited_warning),
                  warnings='; '.join(warnings))
     return dict(summary=summary,warnings=warnings,sites=site_rows,deviations=local,cross=cross,cross_clashes=cross_clashes,
                 changes=changes,replacement_clashes=replacement_clashes,contact_changes=contact_changes,
@@ -270,7 +295,7 @@ def complex_cif(first, second, result):
 
 def quick_summary(result, options):
     s=result['summary']
-    lines=[s['status'],f"Shared-chain alignment: {s['matched_CA']}/{s['shared_length']} Cα ({s['coverage']:.1%}); RMSD {s['CA_RMSD_A']:.3f} Å (warning >{options.rmsd_warning:g} Å)",
+    lines=[s['status'], f"Selected models: A={s['model_a']}, B={s['model_b']}",f"Shared-chain alignment: {s['matched_CA']}/{s['shared_length']} Cα ({s['coverage']:.1%}); RMSD {s['CA_RMSD_A']:.3f} Å (warning >{options.rmsd_warning:g} Å)",
            f"Largest Cα deviation: {s['CA_max_deviation_A']:.3f} Å at sequence position {s['CA_max_deviation_position']}"]
     for row in result['sites']:
         value='NA' if row['site_RMSD_A'] is None else f"{row['site_RMSD_A']:.3f} Å"
@@ -378,5 +403,6 @@ def run(locator_a,locator_b,output,*,model_a=0,model_b=0,all_models=False,option
         if temporary.exists(): shutil.rmtree(temporary)
     print(f"Fold ID: {provenance['fold_id']}\nSequence ID: {provenance['sequence_id']}\nLocator: {output}\n"+summary,file=stdout)
     if all_models:
-        print(f"Model combinations: {len(comparisons)}; warnings: {sum(r.get('status','').startswith('WARNING') for r in comparisons)}; errors: {sum(r.get('status','').startswith('ERROR') for r in comparisons)}",file=stdout)
+        print(f"Model combinations: {len(comparisons)} assessed; {sum(r.get('status','').startswith('WARNING') for r in comparisons)} combinations with warnings; {sum(r.get('status','').startswith('ERROR') for r in comparisons)} errors.",file=stdout)
+        print(f"All combinations: {output / 'comparisons.tsv'}", file=stdout)
     return provenance
