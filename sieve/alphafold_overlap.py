@@ -1,4 +1,4 @@
-"""Rigid assembly through one uniquely shared protein sequence; no relaxation."""
+"""Rigid assembly through an automatically or explicitly selected shared sequence; no relaxation."""
 import csv
 import io
 import itertools
@@ -74,7 +74,19 @@ def transformed(atoms, rotation, translation):
     return [dict(a,coord=p.tolist()) for a,p in zip(atoms,coordinates(atoms) @ rotation + translation)]
 
 
-def unique_shared(first, second):
+def unique_shared(first, second, sequence=None):
+    if sequence is not None:
+        from sieve.alphafold_composition import AMINO_ACIDS
+        if not isinstance(sequence, str) or not sequence or any(c not in AMINO_ACIDS for c in sequence):
+            raise ValueError('--sequence must be a nonempty literal sequence of uppercase standard amino acids')
+        selected = []
+        for label, structure in [('A', first), ('B', second)]:
+            # StructureInput.sequences preserves the CIF _struct_asym row order.
+            chain = next((c for c, value in structure.sequences.items() if sequence in value), None)
+            if chain is None:
+                raise ValueError(f'--sequence {sequence} not found in input {label}: {structure.locator} (model {structure.number})')
+            selected.append(chain)
+        return tuple(selected)
     common = set(first.sequences.values()) & set(second.sequences.values())
     if len(common) != 1:
         raise ValueError(f'exactly one shared sequence is required; found {len(common)}')
@@ -139,18 +151,24 @@ def assessment_status(*, alignment=False, cross_clashes=False, replacement=False
     return 'WARNING — ' + '; '.join(issues) if issues else 'No detected geometric conflict'
 
 
-def compare(first, second, options):
+def compare(first, second, options, *, sequence=None):
     if any(first.modifications.values()) or any(second.modifications.values()):
         raise ValueError('overlap chemistry for PTM-containing structures is not yet supported; modifications cannot be discarded')
-    shared_a,shared_b=unique_shared(first,second)
+    shared_a,shared_b=unique_shared(first,second,sequence)
     ca_a={a['number']:a for a in first.atoms[shared_a] if a['name']=='CA'}
     ca_b={a['number']:a for a in second.atoms[shared_b] if a['name']=='CA'}
+    start_a = first.sequences[shared_a].find(sequence)+1 if sequence is not None else 1
+    start_b = second.sequences[shared_b].find(sequence)+1 if sequence is not None else 1
+    length = len(sequence) if sequence is not None else len(first.sequences[shared_a])
+    # Relative positions index the requested segment; source numbers remain separate.
+    ca_a = {n-start_a+1:a for n,a in ca_a.items() if start_a <= n < start_a+length}
+    ca_b = {n-start_b+1:a for n,a in ca_b.items() if start_b <= n < start_b+length}
     positions=sorted(ca_a.keys() & ca_b.keys())
     fixed=coordinates([ca_a[n] for n in positions]);mobile=coordinates([ca_b[n] for n in positions])
     rotation,translation=fit(fixed,mobile)
     deviations=np.linalg.norm(mobile @ rotation + translation-fixed,axis=1)
     moved={c:transformed(a,rotation,translation) for c,a in second.atoms.items()}
-    length=len(first.sequences[shared_a]);coverage=len(positions)/length
+    coverage=len(positions)/length
     partner_a=[c for c in first.sequences if c!=shared_a]
     partner_b=[c for c in second.sequences if c!=shared_b]
     if not partner_a or not partner_b:
@@ -164,10 +182,10 @@ def compare(first, second, options):
             all_mask=nearby(coordinates(list(full_ca.values())),structure.atoms[partner],options.site_distance)
             all_site={n for n,yes in zip(all_numbers,all_mask) if yes}
             site_rows.append(dict(input=side,partner_chain=partner,matched_site_CA=int(mask.sum()),
-                                  observed_site_CA=len(all_site),site_coverage=len(set(positions)&all_site)/len(all_site) if all_site else None,
+                                  observed_site_CA=len(all_site),site_coverage=len({n+(start_a if side=='a' else start_b)-1 for n in positions}&all_site)/len(all_site) if all_site else None,
                                   site_RMSD_A=rmsd(deviations[mask])))
             sites.append((f'site_{side}_{partner}',mask))
-    local=[dict(sequence_position=n,CA_deviation_A=float(d),
+    local=[dict(sequence_position=n,source_position_a=n+start_a-1,source_position_b=n+start_b-1,CA_deviation_A=float(d),
                 source_plddt_a=ca_a[n]['bfactor'] if first.plddt_known[shared_a] else None,
                 source_plddt_b=ca_b[n]['bfactor'] if second.plddt_known[shared_b] else None) for n,d in zip(positions,deviations)]
     cross=[];cross_clashes=[]
@@ -176,11 +194,18 @@ def compare(first, second, options):
         cross.append(dict(chain_a=a,chain_b=b,**metrics))
         cross_clashes.extend(dict(chain_a=a,chain_b=b,**c) for c in clashes)
     changes=[];replacement_clashes=[];contact_changes=[]
-    key=lambda c:(c['residue_a'],c['atom_a'],c['residue_b'],c['atom_b'])
+    def old_position(n):
+        # Only the aligned segment has a defined correspondence. B flanks are discarded.
+        return ('a', n-start_b+start_a) if start_b <= n < start_b+length else ('b', n)
+    def key(c, original=False):
+        pos = old_position(c['residue_a']) if original else ('a', c['residue_a'])
+        return (*pos,c['atom_a'],c['residue_b'],c['atom_b'])
     for b in partner_b:
         before,old_clashes,old_contacts=pair_geometry(second.atoms[shared_b],second.atoms[b],options)
         after,new_clashes,new_contacts=pair_geometry(first.atoms[shared_a],moved[b],options)
-        old={key(c):c for c in old_clashes};new={key(c):c for c in new_clashes}
+        old={key(c,True):c for c in old_clashes};new={key(c):c for c in new_clashes}
+        old_contacts = {(old_position(x),y) for x,y in old_contacts}
+        new_contacts = {(('a',x),y) for x,y in new_contacts}
         introduced=new.keys()-old.keys()
         worsened={k for k in new.keys()&old.keys() if new[k]['overlap_A']>old[k]['overlap_A']+1e-6}
         changes.append(dict(partner_chain_b=b,shared_chain_a=shared_a,shared_chain_b=shared_b,
@@ -193,9 +218,9 @@ def compare(first, second, options):
         for k,c in new.items():
             replacement_clashes.append(dict(partner_chain_b=b,change='introduced' if k in introduced else 'worsened' if k in worsened else 'preexisting',**c))
         for label,pairs in [('lost',old_contacts-new_contacts),('gained',new_contacts-old_contacts)]:
-            contact_changes.extend(dict(partner_chain_b=b,change=label,shared_position=x,partner_position=y) for x,y in sorted(pairs))
+            contact_changes.extend(dict(partner_chain_b=b,change=label,shared_input=x[0],shared_position=x[1],partner_position=y) for x,y in sorted(pairs))
     sensitivity=[]
-    masks=[('whole_chain',np.ones(len(positions),dtype=bool)),
+    masks=[('matched_segment' if sequence is not None else 'whole_chain',np.ones(len(positions),dtype=bool)),
            ('exclude_terminal_three',np.array([3<n<=length-3 for n in positions]))]+sites
     if first.plddt_known[shared_a] and second.plddt_known[shared_b]:
         masks.append(('source_plddt_ge_80',np.array([ca_a[n]['bfactor']>=80 and ca_b[n]['bfactor']>=80 for n in positions])))
@@ -210,6 +235,8 @@ def compare(first, second, options):
                      min_partner_distance_A=min(x['min_distance_A'] for x in metrics),clash_atom_pairs=sum(x['clash_atom_pairs'] for x in metrics),status='computed')
         sensitivity.append(entry)
     warnings=[]
+    if length != len(first.sequences[shared_a]) or length != len(second.sequences[shared_b]):
+        warnings.append('subsequence alignment: flanking conformations are not validated; input A chain is retained and input B chain flanks are discarded')
     if coverage<options.coverage_warning:
         warnings.append(f'alignment coverage {coverage:.1%} < {options.coverage_warning:.1%}')
     global_rmsd=rmsd(deviations)
@@ -240,6 +267,8 @@ def compare(first, second, options):
             inherited_warning = True
             warnings.append(f'input {label} carries warnings from an earlier assembly; see provenance history')
     summary=dict(model_a=first.number,model_b=second.number,shared_chain_a=shared_a,shared_chain_b=shared_b,
+                 alignment_start_a=start_a,alignment_end_a=start_a+length-1,
+                 alignment_start_b=start_b,alignment_end_b=start_b+length-1,
                  shared_length=length,matched_CA=len(positions),coverage=coverage,CA_RMSD_A=global_rmsd,
                  CA_max_deviation_A=float(deviations.max()),CA_max_deviation_position=positions[int(deviations.argmax())],
                  fraction_CA_deviation_gt_3_A=fraction,
@@ -297,8 +326,10 @@ def complex_cif(first, second, result):
 
 def quick_summary(result, options):
     s=result['summary']
-    lines=[s['status'], f"Selected models: A={s['model_a']}, B={s['model_b']}",f"Shared-chain alignment: {s['matched_CA']}/{s['shared_length']} Cα ({s['coverage']:.1%}); RMSD {s['CA_RMSD_A']:.3f} Å (warning >{options.rmsd_warning:g} Å)",
-           f"Largest Cα deviation: {s['CA_max_deviation_A']:.3f} Å at sequence position {s['CA_max_deviation_position']}"]
+    lines=[s['status'], f"Selected models: A={s['model_a']}, B={s['model_b']}",
+           f"Alignment chains: input A={s['shared_chain_a']}, input B={s['shared_chain_b']}",
+           f"Alignment ranges: A={s['alignment_start_a']}-{s['alignment_end_a']}, B={s['alignment_start_b']}-{s['alignment_end_b']} (sequence positions)",f"Shared-chain alignment: {s['matched_CA']}/{s['shared_length']} Cα ({s['coverage']:.1%}); RMSD {s['CA_RMSD_A']:.3f} Å (warning >{options.rmsd_warning:g} Å)",
+           f"Largest Cα deviation: {s['CA_max_deviation_A']:.3f} Å at alignment position {s['CA_max_deviation_position']}"]
     for row in result['sites']:
         value='NA' if row['site_RMSD_A'] is None else f"{row['site_RMSD_A']:.3f} Å"
         lines.append(f"Binding site {row['input']}:{row['partner_chain']}: {value}, {row['matched_site_CA']}/{row['observed_site_CA']} observed site Cα matched (warning >{options.site_rmsd_warning:g} Å)")
@@ -326,7 +357,7 @@ def model_numbers(locator):
         return sorted(numbers)
 
 
-def run(locator_a,locator_b,output,*,model_a=0,model_b=0,all_models=False,options=None,stdout=None):
+def run(locator_a,locator_b,output,*,model_a=0,model_b=0,all_models=False,options=None,stdout=None,sequence=None):
     import sys
     options=options or Options();stdout=stdout or sys.stdout
     output=Path(output).resolve()
@@ -337,7 +368,7 @@ def run(locator_a,locator_b,output,*,model_a=0,model_b=0,all_models=False,option
         if path==output or output in path.parents:
             raise ValueError('output must not contain or replace an input')
     first=load_structure(locator_a,model_a);second=load_structure(locator_b,model_b)
-    primary=compare(first,second,options)
+    primary=compare(first,second,options,sequence=sequence)
     text,mapping=complex_cif(first,second,primary)
     # Validate full sequence metadata and hashing before publishing any directory.
     from sieve.alphafold_manifest import chain_sequences
@@ -363,15 +394,25 @@ def run(locator_a,locator_b,output,*,model_a=0,model_b=0,all_models=False,option
             try:
                 if isinstance(left[a],str) or isinstance(right[b],str):
                     raise ValueError(left[a] if isinstance(left[a],str) else right[b])
-                comparisons.append(compare(left[a],right[b],options)['summary'])
+                comparisons.append(compare(left[a],right[b],options,sequence=sequence)['summary'])
             except ValueError as exc:
                 comparisons.append(dict(model_a=a,model_b=b,status='ERROR — cannot assemble',warnings=str(exc)))
     identity=dict(algorithm='rigid-shared-sequence-v1',inputs=[dict(cif_sha256=digest(s.content),model=s.number) for s in (first,second)],
                   shared_chains=[primary['summary']['shared_chain_a'],primary['summary']['shared_chain_b']],
                   retained_shared_input='a',alignment='all-matched-sequence-position-CA',output_sha256=digest(text))
+    if sequence is not None and (len(sequence) != len(first.sequences[primary['summary']['shared_chain_a']]) or
+                                 len(sequence) != len(second.sequences[primary['summary']['shared_chain_b']])):
+        identity['alignment'] = 'matched-subsequence-position-CA'
+        identity['alignment_ranges'] = [[primary['summary'][f'alignment_start_{side}'],
+                                         primary['summary'][f'alignment_end_{side}']] for side in ('a','b')]
     provenance=dict(format=ASSEMBLY_FORMAT,source_type='assembled',tool_version=VERSION,
                     created_at=datetime.now(timezone.utc).isoformat(),fold_id=assembly_id(identity),sequence_id=sequence_id(sequences.values()),
                     identity=identity,cif_sha256=digest(text),model_id=0,chains=mapping,
+                    alignment_selection=dict(mode='explicit-sequence' if sequence is not None else 'automatic',
+                        requested_sequence=sequence, chain_order='CIF _struct_asym',
+                        chain_a=primary['summary']['shared_chain_a'], chain_b=primary['summary']['shared_chain_b'],
+                        range_a=[primary['summary']['alignment_start_a'],primary['summary']['alignment_end_a']],
+                        range_b=[primary['summary']['alignment_start_b'],primary['summary']['alignment_end_b']]),
                     inputs=[dict(locator=s.locator,model=s.number,cif_sha256=digest(s.content),identity=s.identity,history=s.metadata) for s in (first,second)],
                     rotation=primary['rotation'].tolist(),translation=primary['translation'].tolist(),
                     transform_convention='row vectors: coordinates @ rotation + translation',settings=asdict(options),vdw_radii_A=VDW,
@@ -383,14 +424,14 @@ def run(locator_a,locator_b,output,*,model_a=0,model_b=0,all_models=False,option
         (temporary/COMPLEX_FILE).write_text(text)
         (temporary/'provenance.json').write_text(json.dumps(provenance,indent=2,allow_nan=False)+'\n')
         table(temporary/'comparisons.tsv',comparisons,list(primary['summary']))
-        specs=[('shared_chain_deviations', 'deviations',['sequence_position','CA_deviation_A','source_plddt_a','source_plddt_b']),
+        specs=[('shared_chain_deviations', 'deviations',['sequence_position','source_position_a','source_position_b','CA_deviation_A','source_plddt_a','source_plddt_b']),
                ('shared_chain_sites','sites',['input','partner_chain','matched_site_CA','observed_site_CA','site_coverage','site_RMSD_A']),
                ('alignment_sensitivity','sensitivity',['alignment','matched_CA','fit_RMSD_A','min_partner_distance_A','clash_atom_pairs','status']),
                ('cross_partner_metrics','cross',['chain_a','chain_b','min_distance_A','max_overlap_A','clash_atom_pairs','clash_residue_pairs','backbone_backbone_clashes','contact_residue_pairs']),
                ('cross_partner_clashes','cross_clashes',['chain_a','chain_b','residue_a','atom_a','residue_b','atom_b','distance_A','overlap_A','backbone_backbone']),
                ('shared_interface_changes','changes',['partner_chain_b','shared_chain_a','shared_chain_b','original_clashes','assembled_clashes','introduced_clashes','worsened_clashes','resolved_clashes','original_max_overlap_A','assembled_max_overlap_A','contacts_before','contacts_after','contacts_lost','contacts_gained']),
                ('shared_interface_clashes','replacement_clashes',['partner_chain_b','change','residue_a','atom_a','residue_b','atom_b','distance_A','overlap_A','backbone_backbone']),
-               ('shared_interface_contact_changes','contact_changes',['partner_chain_b','change','shared_position','partner_position'])]
+               ('shared_interface_contact_changes','contact_changes',['partner_chain_b','change','shared_input','shared_position','partner_position'])]
         for name,key,cols in specs: table(temporary/(name+'.tsv'),primary[key],cols)
         input_summary = '\n'.join(
             f"Input {label}: Fold ID {source.identity.get('fold_id') or 'NA'} | "

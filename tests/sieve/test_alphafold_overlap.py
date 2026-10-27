@@ -302,3 +302,122 @@ class OverlapTests(unittest.TestCase):
         for expected in [expected_a,expected_b]:
             self.assertIn(expected,stream.getvalue())
             self.assertIn(expected,(final/'README.md').read_text())
+
+class ExplicitSequenceTests(unittest.TestCase):
+    setUp = OverlapTests.setUp
+    make = OverlapTests.make
+    assemble = OverlapTests.assemble
+
+    def test_first_copy_uses_cif_order_and_preserves_other_copies(self):
+        left=self.make('duplicates-left',[('Z','CCCC',[0,0,0]),('A','CCCC',[20,0,0]),('D','DDDD',[-7,0,0])])
+        right=self.make('duplicates-right',[('Y','CCCC',[0,0,0]),('B','CCCC',[40,0,0]),('D','DDDD',[7,0,0])])
+        a,b=load_structure(left),load_structure(right)
+        with self.assertRaises(ValueError):app.unique_shared(a,b)
+        self.assertEqual(app.unique_shared(a,b,'CCCC'),('Z','Y'))
+        out=self.root/'explicit';stream=io.StringIO()
+        meta=app.run(left,right,out,sequence='CCCC',stdout=stream)
+        self.assertEqual(meta['identity']['shared_chains'],['Z','Y'])
+        self.assertEqual(meta['alignment_selection']['requested_sequence'],'CCCC')
+        self.assertIn('Alignment chains: input A=Z, input B=Y',stream.getvalue())
+        self.assertIn('Alignment chains: input A=Z, input B=Y',(out/'README.md').read_text())
+        values=list(load_structure(out).sequences.values())
+        self.assertEqual(values.count('CCCC'),3)
+        self.assertEqual(values.count('DDDD'),2)
+
+    def test_missing_invalid_sequence_and_no_output(self):
+        for sequence,label in [('AAAA','B'),('DDDD','A'),('GGGG','A')]:
+            with self.subTest(sequence=sequence):
+                out=self.root/'missing'
+                with self.assertRaisesRegex(ValueError,f'not found in input {label}'):
+                    app.run(self.a,self.b,out,sequence=sequence,stdout=io.StringIO())
+                self.assertFalse(out.exists())
+        for sequence in ('','cccc','CC CC','CCCC*','X'):
+            with self.subTest(sequence=sequence),self.assertRaises(ValueError):
+                app.unique_shared(load_structure(self.a),load_structure(self.b),sequence)
+
+    def test_explicit_same_selection_preserves_assembly_ids(self):
+        _,automatic=self.assemble('auto')
+        _,explicit=self.assemble('specified',sequence='CCCC')
+        self.assertEqual(automatic['fold_id'],explicit['fold_id'])
+        self.assertEqual(automatic['sequence_id'],explicit['sequence_id'])
+        self.assertEqual(automatic['alignment_selection']['mode'],'automatic')
+
+    def test_all_models_selects_independently_and_records_missing_sequence(self):
+        (self.a/'fold_model_1.cif').write_text(fixture([('Z','CCCC',[0,0,0]),('A','AAAA',[-7,0,0])]))
+        (self.b/'fold_model_1.cif').write_text(fixture([('X','GGGG',[0,0,0]),('Y','DDDD',[7,0,0])]))
+        out,_=self.assemble('all-explicit',sequence='CCCC',all_models=True)
+        with (out/'comparisons.tsv').open() as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+        self.assertEqual(len(rows),4)
+        self.assertEqual(sum(r['status'].startswith('ERROR') for r in rows),2)
+        self.assertEqual(next(r for r in rows if r['model_a']=='1' and r['model_b']=='0')['shared_chain_a'],'Z')
+        self.assertTrue(all('not found in input B' in r['warnings'] for r in rows if r['model_b']=='1'))
+
+    def test_cli_sequence_option(self):
+        script=load_script(Path(__file__).resolve().parents[2]/'scripts/alphafold-overlap.py')
+        with patch('sys.stdout',new_callable=io.StringIO):
+            self.assertEqual(script.main([str(self.a),str(self.b),'--sequence','CCCC',
+                                          '--output',str(self.root/'cli-explicit')]),0)
+
+class SubsequenceTests(unittest.TestCase):
+    setUp = OverlapTests.setUp
+    make = OverlapTests.make
+
+    def test_different_offsets_and_retained_flanks(self):
+        a=self.make('sub-a',[('Z','ACCC',[0,0,0]),('A','DDDD',[-10,0,0])])
+        b=self.make('sub-b',[('Y','CCCA',[0,0,0]),('B','GGGG',[10,0,0])])
+        first,second=load_structure(a),load_structure(b)
+        result=app.compare(first,second,app.Options(),sequence='CCC')
+        summary=result['summary']
+        self.assertEqual((summary['alignment_start_a'],summary['alignment_end_a']),(2,4))
+        self.assertEqual((summary['alignment_start_b'],summary['alignment_end_b']),(1,3))
+        self.assertEqual(summary['matched_CA'],3)
+        self.assertEqual(summary['coverage'],1)
+        self.assertAlmostEqual(summary['CA_RMSD_A'],0,places=6)
+        self.assertEqual([r['source_position_a'] for r in result['deviations']],[2,3,4])
+        self.assertEqual([r['source_position_b'] for r in result['deviations']],[1,2,3])
+        self.assertTrue(any('flanks are discarded' in w for w in result['warnings']))
+        out=self.root/'sub-output';stream=io.StringIO()
+        meta=app.run(a,b,out,sequence='CCC',stdout=stream)
+        self.assertEqual(meta['alignment_selection']['range_a'],[2,4])
+        self.assertEqual(meta['alignment_selection']['range_b'],[1,3])
+        self.assertEqual(meta['identity']['alignment'],'matched-subsequence-position-CA')
+        self.assertEqual(list(load_structure(out).sequences.values()),['ACCC','DDDD','GGGG'])
+        self.assertIn('Alignment ranges: A=2-4, B=1-3',stream.getvalue())
+
+    def test_first_chain_and_first_occurrence(self):
+        a=self.make('repeat-a',[('Z','CCCC',[0,0,0]),('A','CCCA',[-10,0,0])])
+        b=self.make('repeat-b',[('Y','CCCC',[0,0,0]),('B','CCCA',[10,0,0])])
+        result=app.compare(load_structure(a),load_structure(b),app.Options(),sequence='CCC')
+        s=result['summary']
+        self.assertEqual((s['shared_chain_a'],s['shared_chain_b']),('Z','Y'))
+        self.assertEqual((s['alignment_start_a'],s['alignment_start_b']),(1,1))
+        self.assertEqual(s['matched_CA'],3)
+
+    def test_short_or_missing_coordinates_no_fallback(self):
+        a,b=load_structure(self.a),load_structure(self.b)
+        with self.assertRaisesRegex(ValueError,'at least three'):
+            app.compare(a,b,app.Options(),sequence='CC')
+        a.atoms['B']=[x for x in a.atoms['B'] if x['number']!=2]
+        with self.assertRaisesRegex(ValueError,'at least three'):
+            app.compare(a,b,app.Options(),sequence='CCC')
+
+    def test_replacement_contacts_use_correspondence_not_raw_numbers(self):
+        a=self.make('mapped-a',[('Z','ACCC',[0,0,0]),('D','DDDD',[-100,0,0])])
+        b=self.make('mapped-b',[('Y','CCCA',[0,0,0]),('G','GGGG',[0,0,0])])
+        first,second=load_structure(a),load_structure(b)
+        lookup={(x['number'],x['name']):x for x in second.atoms['Y']}
+        for atom in first.atoms['Z']:
+            if atom['number']>1:
+                atom['coord']=list(lookup[(atom['number']-1,atom['name'])]['coord'])
+            else:
+                atom['coord']=[v+100 for v in atom['coord']]
+        for atom in second.atoms['Y']:
+            if atom['number']==4:atom['coord']=[v+100 for v in atom['coord']]
+        result=app.compare(first,second,app.Options(clash_overlap=.5),sequence='CCC')
+        change=result['changes'][0]
+        self.assertGreater(change['original_clashes'],0)
+        self.assertEqual(change['introduced_clashes'],0)
+        self.assertEqual(change['worsened_clashes'],0)
+        self.assertEqual(change['resolved_clashes'],0)
+        self.assertEqual(change['contacts_lost'],0)
+        self.assertEqual(change['contacts_gained'],0)

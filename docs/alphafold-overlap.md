@@ -7,11 +7,53 @@ sieve-py ~/git/tangle/sieve/scripts/alphafold-overlap.py complex locatorC --outp
 
 Inputs are AF ZIP locators (including nested ZIPs), extracted AF fold directories,
 assembled directories, or standalone CIFs with full polymer sequence metadata.
-Exactly one sequence must be shared, occurring exactly once in each input.
+By default, exactly one sequence must be shared, occurring exactly once in each input.
 Both inputs must have a nonshared partner. All chains are preserved except the
 second copy of the shared chain. Input A's shared coordinates are retained;
 all input B coordinates undergo the same proper rigid transformation.
 No repacking, relaxation, sequence mutation, or fabricated confidence is performed.
+
+To select the alignment sequence explicitly:
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-overlap.py locatorA locatorB \
+  --sequence AMINOACIDSEQUENCE --output complex
+```
+
+Replace `AMINOACIDSEQUENCE` with a literal contiguous subsequence (or the full chain sequence), using uppercase
+standard amino-acid letters without whitespace. Matching is an exact substring search, without gaps or substitutions. If either selected model lacks the sequence, the
+run fails before publishing output. Multiple shared sequences are allowed with
+this option. If the requested sequence occurs more than once, the first matching
+chain in each CIF's `_struct_asym` row order is selected, independently in each
+input; chain IDs are not sorted. Within that chain, the first occurrence is used.
+Only Cα atoms in the matched ranges are fitted, with positions matched relative
+to the supplied subsequence; source starting positions may differ. At least three
+noncollinear matched Cα coordinates are required. There is no fallback to a later
+occurrence or another chain when the first match has insufficient coordinates.
+The selected chains and one-based sequence ranges are printed in the summary
+and recorded with the request in `provenance.json` under `alignment_selection`.
+
+Other copies remain partner chains. Only the selected shared copy from input B
+is removed, including its flanking regions; the entire selected chain from A
+is retained, including A's flanks. All other chains are retained. This may expose clashes between
+retained duplicate copies, which the existing geometry checks report.
+With `--all-models`, the same sequence-selection rule is applied separately to
+each combination. A missing sequence in a secondary combination is recorded as
+an error in `comparisons.tsv`; a missing sequence in the primary pair stops the
+run. Omitting `--sequence` preserves the original strict automatic selection.
+Existing PTM restrictions and alignment geometry requirements still apply.
+A partial-chain fit emits a warning that flanking conformations were not validated.
+Binding-site coverage uses the entire observed binding site as its denominator,
+so sites outside the alignment segment are reported as incompletely covered.
+
+In `shared_chain_deviations.tsv`, `sequence_position` is relative to the alignment
+segment; `source_position_a` and `source_position_b` retain original sequence
+positions. The summary's maximum-deviation position is also segment-relative.
+Replacement contacts/clashes use the matched correspondence rather than equal
+raw residue numbers. Flanks outside the segment have no inferred correspondence:
+contacts to discarded B flanks are lost and new contacts to A flanks are gained.
+`shared_interface_contact_changes.tsv` identifies their numbering source through
+`shared_input` (`a` or `b`).
 
 Default model is 0. `--model-a N` and `--model-b N` choose alternatives.
 `--all-models` adds every combination to comparisons.tsv, but saves only the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble complexes through exactly one uniquely shared protein sequence."""
+"""Assemble complexes through an automatically or explicitly selected shared sequence."""
 import argparse
 import sys
 import zipfile
@@ -13,13 +13,14 @@ def main(argv=None):
     parser.add_argument('--output',required=True,help='new or empty output directory')
     parser.add_argument('--model-a',type=int,default=0)
     parser.add_argument('--model-b',type=int,default=0)
+    parser.add_argument('--sequence', help='exact uppercase amino-acid subsequence; use first matching chain in CIF _struct_asym order and first occurrence')
     parser.add_argument('--all-models',action='store_true',help='also assess all combinations; save only the selected pair')
     for name,default in [('clash-overlap',.4),('rmsd-warning',2),('site-rmsd-warning',1.5),('coverage-warning',.9),('site-distance',8),('contact-distance',4.5)]:
         parser.add_argument('--'+name,type=float,default=default)
     args=parser.parse_args(argv)
     try:
         options=Options(**{name:getattr(args,name) for name in Options.__dataclass_fields__})
-        run(args.locator_a,args.locator_b,args.output,model_a=args.model_a,model_b=args.model_b,all_models=args.all_models,options=options)
+        run(args.locator_a,args.locator_b,args.output,model_a=args.model_a,model_b=args.model_b,all_models=args.all_models,options=options,sequence=args.sequence)
     except (OSError,ValueError,KeyError,TypeError,zipfile.BadZipFile) as exc:
         print(f'ERROR — cannot assemble: {exc}',file=sys.stderr)
         return 1
