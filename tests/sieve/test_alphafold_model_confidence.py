@@ -72,7 +72,7 @@ class ConfidenceTests(unittest.TestCase):
             ids = {}
             analyze(root, fold_ids=ids)
             self.assertEqual(ids, {str(root): fold_id(42, ['A', 'A'])})
-            (root/'fold_model_1.cif').write_text(cif(('A', 'C')) + CIF[CIF.index('loop_'):])
+            (root/'fold_model_1.cif').write_text(cif(('A', 'C')) + CIF[CIF.index('loop_'):].replace('ALA B', 'CYS B'))
             with self.assertRaisesRegex(ValueError, 'composition differs'):
                 analyze(root, fold_ids={})
             (root/'fold_model_1.cif').write_text(CIF)

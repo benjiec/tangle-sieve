@@ -140,6 +140,8 @@ def assessment_status(*, alignment=False, cross_clashes=False, replacement=False
 
 
 def compare(first, second, options):
+    if any(first.modifications.values()) or any(second.modifications.values()):
+        raise ValueError('overlap chemistry for PTM-containing structures is not yet supported; modifications cannot be discarded')
     shared_a,shared_b=unique_shared(first,second)
     ca_a={a['number']:a for a in first.atoms[shared_a] if a['name']=='CA'}
     ca_b={a['number']:a for a in second.atoms[shared_b] if a['name']=='CA'}

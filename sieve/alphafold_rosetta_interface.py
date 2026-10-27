@@ -74,8 +74,10 @@ def analyze(locator, number, interface, directory, image, repack=True):
         if len(names) != 1:
             raise ValueError(f'expected exactly one model {number}: {locator}')
         content = fold.read(names[0])
-        sequences = chain_sequences(content)
-        identifier = identity_for_fold(fold, content)['fold_id']
+        identity = identity_for_fold(fold, content)
+        if identity.get('has_ptms'):
+            raise ValueError('Rosetta preparation for PTM-containing structures is not yet supported; modifications cannot be discarded')
+        identifier = identity['fold_id']
     structure = MMCIFParser(QUIET=True).get_structure('model', io.StringIO(content))
     if len(structure) != 1:
         raise ValueError('CIF must contain exactly one coordinate model')
@@ -86,7 +88,7 @@ def analyze(locator, number, interface, directory, image, repack=True):
         raise ValueError('Rosetta input requires single-character alphanumeric chain IDs')
     directory.mkdir()
     (directory / 'model.cif').write_text(content)
-    row = dict(fold_id=identifier, sequence_id=sequence_id(sequences.values()),
+    row = dict(fold_id=identifier, sequence_id=identity['sequence_id'],
                model_id=number, fold_locator=locator, interface=interface,
                score_function='ref2015', pack_input=repack, pack_separated=repack)
     command = ['docker', 'run', '--rm', '--network', 'none',

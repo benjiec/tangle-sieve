@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from itertools import combinations
 
 from Bio.PDB import MMCIFParser
+from Bio.Data.PDBData import protein_letters_3to1
 
 from sieve.alphafold_files import model_number
 
@@ -30,6 +31,7 @@ class Residue:
     token_index: int
     plddt: float
     ca: tuple[float, float, float]
+    token_indices: tuple[int, ...] = ()
 
 
 def parse_region(value):
@@ -97,9 +99,7 @@ def parse_model(cif_text, full_data):
     token_by_residue = {}
     for index, key in enumerate(zip(chain_ids, residue_ids)):
         key = (str(key[0]), int(key[1]))
-        if key in token_by_residue:
-            raise ValueError(f"duplicate token mapping for chain {key[0]} residue {key[1]}")
-        token_by_residue[key] = index
+        token_by_residue.setdefault(key, []).append(index)
     if not isinstance(pae, list) or len(pae) != len(chain_ids) or any(
         not isinstance(row, list) or len(row) != len(chain_ids) for row in pae
     ):
@@ -118,13 +118,23 @@ def parse_model(cif_text, full_data):
             if key not in token_by_residue:
                 raise ValueError(f"CIF residue {chain.id}:{number} has no token mapping")
             atom = residue["CA"]
-            observed_tokens.add(token_by_residue[key])
+            indices = token_by_residue[key]
+            if len(indices) > 1:
+                if residue.resname in protein_letters_3to1:
+                    raise ValueError(f"duplicate token mapping for chain {chain.id} residue {number}")
+                heavy_atoms = [a for a in residue if a.element not in ('H', 'D')]
+                if len(indices) != len(heavy_atoms):
+                    raise ValueError(f"PTM token count does not match heavy atoms for {chain.id}:{number}")
+            if any(i in observed_tokens for i in indices):
+                raise ValueError(f"ambiguous CIF residue mapping for {chain.id}:{number}")
+            observed_tokens.update(indices)
             chain_residues.append(Residue(
                 chain.id,
                 number,
-                token_by_residue[key],
+                indices[0],
                 float(atom.bfactor),
                 tuple(float(value) for value in atom.coord),
+                tuple(indices),
             ))
         residues[chain.id] = chain_residues
     missing = sorted(set(chain_ids) - set(residues))
@@ -164,8 +174,13 @@ def score_selections(chain1, chain2, selected1, selected2, pae, ranges1, ranges2
     interface2 = {r2.number: r2 for _, r2 in contacts}
     plddt1 = _mean([residue.plddt for residue in interface1.values()]) if all(r.plddt is not None for r in interface1.values()) else None
     plddt2 = _mean([residue.plddt for residue in interface2.values()]) if all(r.plddt is not None for r in interface2.values()) else None
-    norm12 = _mean([1.0 / (1.0 + (float(pae[r1.token_index][r2.token_index]) / 10.0) ** 2) for r1, r2 in contacts]) if pae is not None else None
-    norm21 = _mean([1.0 / (1.0 + (float(pae[r2.token_index][r1.token_index]) / 10.0) ** 2) for r1, r2 in contacts]) if pae is not None else None
+    def confidence(first, second):
+        # Normalize each token pair before averaging; every residue pair has equal weight.
+        return _mean([1.0 / (1.0 + (float(pae[i][j]) / 10.0) ** 2)
+                      for i in (first.token_indices or (first.token_index,))
+                      for j in (second.token_indices or (second.token_index,))])
+    norm12 = _mean([confidence(r1, r2) for r1, r2 in contacts]) if pae is not None else None
+    norm21 = _mean([confidence(r2, r1) for r1, r2 in contacts]) if pae is not None else None
     score12 = _pdockq2(norm12, plddt1) if pae is not None else None
     score21 = _pdockq2(norm21, plddt2) if pae is not None else None
     return {

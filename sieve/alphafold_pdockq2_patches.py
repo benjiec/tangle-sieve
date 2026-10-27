@@ -10,8 +10,9 @@ from pathlib import Path
 import zipfile
 
 from sieve.alphafold_confidence import model_confidence
-from sieve.alphafold_files import open_fold, fold_locator, read_seed
+from sieve.alphafold_files import open_fold, fold_locator, read_seed, read_job_request
 from sieve.alphafold_manifest import chain_sequences, fold_id, sequence_id
+from sieve.alphafold_composition import chain_compositions
 
 from sieve.alphafold_pdockq2 import (
     OUTPUT_COLUMNS, _distance, model_number, parse_model, score_selections,
@@ -181,7 +182,20 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None, s
                 raise ValueError(f'model {selected_model} not found in {path}')
         return models
 
+    requests = {}
+
+    def with_request(source, number, data):
+        request = requests.get((source, number))
+        if request is not None and 'sequences' in request:
+            data = dict(data, _job_request=request)
+        return data
+
     def record_scores(source, number, name, read, names):
+        if name is not None:
+            request_name = re.sub(r'summary_confidences_\d+\.json$', 'job_request.json', name)
+            model_name = re.sub(r'summary_confidences_(\d+)\.json$', r'model_\1.cif', name)
+            if request_name != name and request_name in names:
+                requests[(source, number)] = read_job_request(read, [model_name], names)
         if model_seeds is not None:
             seed = None
             if name is not None:
@@ -232,7 +246,7 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None, s
                 source = fold_locator(fold.source_path, fold.fold_path)
                 record_scores(source, number, summary_name(name, number), fold.read, fold.member_names)
                 yield (source, number,
-                       fold.read(name), json.loads(fold.read(data)))
+                       fold.read(name), with_request(source, number, json.loads(fold.read(data))))
         return
     path = Path(path)
     if path.is_dir():
@@ -250,7 +264,7 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None, s
                     raise ValueError(f'model {number} requires matching {data.name}')
                 record_scores(str(path.resolve()), number, summary_name(cif.name, number),
                               lambda name: (path / name).read_text(), [p.name for p in path.iterdir()])
-                yield str(path.resolve()), number, cif.read_text(), json.loads(data.read_text())
+                yield str(path.resolve()), number, cif.read_text(), with_request(str(path.resolve()), number, json.loads(data.read_text()))
             return
         if selected_model is not None:
             raise ValueError(f'model {selected_model} not found in {path}')
@@ -273,7 +287,7 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None, s
         record_scores(str(path.resolve()), number, str(summary) if summary is not None else None,
                       lambda name: Path(name).read_text(),
                       [str(p) for p in summary.parent.iterdir()] if summary is not None else [])
-        yield str(path.resolve()), number, path.read_text(), json.loads(Path(full_data).read_text())
+        yield str(path.resolve()), number, path.read_text(), with_request(str(path.resolve()), number, json.loads(Path(full_data).read_text()))
     elif path.suffix.lower() == '.zip':
         if full_data:
             raise ValueError('--full-data is only valid with CIF input')
@@ -288,7 +302,7 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None, s
                     raise ValueError(f'model {number} requires exactly one matching {data}')
                 record_scores(str(path.resolve()), number, summary_name(name, number),
                               archive.read, archive.namelist())
-                yield str(path.resolve()), number, archive.read(name).decode(), json.loads(archive.read(data))
+                yield str(path.resolve()), number, archive.read(name).decode(), with_request(str(path.resolve()), number, json.loads(archive.read(data)))
     else:
         raise ValueError('input must be a CIF, ZIP, or directory of extracted models or ZIPs')
 
@@ -300,9 +314,11 @@ def analyze(path, full_data=None, options=None, chains=None, summary_targets=Non
     for source, model, cif, data in input_models(path, full_data, model_scores=model_scores, model_seeds=seeds, selected_model=selected_model):
         if fold_ids is not None or sequence_ids is not None:
             try:
-                sequences = list(chain_sequences(cif).values())
+                sequences = list(chain_compositions(cif, data.get('_job_request')).values())
                 composition = sequence_id(sequences)
             except (ValueError, KeyError):
+                if '_entity_poly_seq.' in cif or data.get('_job_request', {}).get('sequences'):
+                    raise
                 sequences, composition = [], None
             if source in compositions:
                 previous = compositions[source]

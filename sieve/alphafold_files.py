@@ -38,7 +38,7 @@ def request_name(model_name):
     return re.sub(r'model_\d+\.cif$', 'job_request.json', str(model_name))
 
 
-def read_seed(read, models, names=None):
+def read_job_request(read, models, names=None):
     requests = {request_name(name) for name in models}
     if len(requests) != 1:
         raise ValueError('fold must have exactly one matching job-request file')
@@ -55,6 +55,12 @@ def read_seed(read, models, names=None):
         request = request[0]
     if not isinstance(request, dict):
         raise ValueError(f'invalid job request: {name}')
+    return request
+
+
+def read_seed(read, models, names=None):
+    request = read_job_request(read, models, names)
+    name = request_name(models[0])
     seeds = request.get('modelSeeds')
     if not isinstance(seeds, list) or len(seeds) != 1:
         raise ValueError(f'expected exactly one modelSeeds value in {name}')

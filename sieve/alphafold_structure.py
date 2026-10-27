@@ -3,15 +3,17 @@ import hashlib
 import io
 import json
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 
-from sieve.alphafold_files import Fold, model_number, open_fold, read_seed, request_name
+from sieve.alphafold_files import Fold, model_number, open_fold, read_seed, read_job_request, request_name
 
 ASSEMBLY_FORMAT = 'sieve-assembly-v1'
 COMPLEX_FILE = 'model0_complex.cif'
+
+from sieve.alphafold_composition import chain_compositions
 
 
 def canonical(value):
@@ -69,8 +71,9 @@ def assembly_metadata(fold):
         if meta['cif_sha256'] != digest(text):
             raise ValueError('assembled CIF content hash mismatch; regenerate after coordinate edits')
         from sieve.alphafold_manifest import chain_sequences, sequence_id
-        sequences = chain_sequences(text)
-        if sequence_id(sequences.values()) != meta['sequence_id']:
+        compositions = chain_compositions(text)
+        sequences = {c: value.sequence for c,value in compositions.items()}
+        if sequence_id(compositions.values()) != meta['sequence_id']:
             raise ValueError('assembly sequence ID mismatch')
         mappings = meta['chains']
         if set(mappings) != set(sequences) or any(mappings[c]['sequence'] != s for c,s in sequences.items()):
@@ -82,17 +85,25 @@ def assembly_metadata(fold):
         raise ValueError(f'invalid assembly provenance: {exc}') from exc
 
 
+def request_for_fold(fold):
+    models = [n for n in fold.models if request_name(n) != n]
+    if models and any(request_name(n) in fold.member_names for n in models):
+        return read_job_request(fold.read, models, fold.member_names)
+    return None
+
+
 def identity_for_fold(fold, content, *, require_seed=True):
     from sieve.alphafold_manifest import chain_sequences, sequence_id, fold_id
     meta = assembly_metadata(fold)
     if meta:
         return dict(fold_id=meta['fold_id'], sequence_id=meta['sequence_id'], source_type='assembled', seed=None)
-    sequences = chain_sequences(content)
+    compositions = chain_compositions(content, request_for_fold(fold))
     seed = None
     if require_seed or any(request_name(n) != n and request_name(n) in fold.member_names for n in fold.models):
         seed = read_seed(fold.read, fold.models, fold.member_names)
-    return dict(fold_id=fold_id(seed, sequences.values()) if seed is not None else None,
-                sequence_id=sequence_id(sequences.values()), source_type='alphafold' if seed is not None else 'cif', seed=seed)
+    return dict(fold_id=fold_id(seed, compositions.values()) if seed is not None else None,
+                sequence_id=sequence_id(compositions.values()), source_type='alphafold' if seed is not None else 'cif', seed=seed,
+                has_ptms=any(c.modifications for c in compositions.values()))
 
 
 @dataclass
@@ -107,6 +118,7 @@ class StructureInput:
     monomers: dict
     residue_origins: dict
     plddt_known: dict
+    modifications: dict = field(default_factory=dict)
 
 
 def load_structure(locator, number=0):
@@ -121,8 +133,9 @@ def load_structure(locator, number=0):
         content = fold.read(names[0])
         metadata = assembly_metadata(fold)
         identity = identity_for_fold(fold, content, require_seed=False)
+        compositions = chain_compositions(content, request_for_fold(fold))
         af = metadata is None and any(request_name(n) != n and request_name(n) in fold.member_names for n in fold.models)
-    sequences = chain_sequences(content)
+    sequences = {c: value.sequence for c,value in compositions.items()}
     data = MMCIF2Dict(io.StringIO(content))
     entities = dict(zip(data['_struct_asym.id'], data['_struct_asym.entity_id']))
     polymer = {}
@@ -165,4 +178,4 @@ def load_structure(locator, number=0):
     for c, values in atoms.items():
         if known[c] and any(not 0 <= a['bfactor'] <= 100 for a in values):
             raise ValueError(f'chain {c}: source pLDDT must be in [0, 100]')
-    return StructureInput(str(locator),number,content,metadata,identity,sequences,atoms,monomers,origins,known)
+    return StructureInput(str(locator),number,content,metadata,identity,sequences,atoms,monomers,origins,known,{c: value.modifications for c,value in compositions.items()})

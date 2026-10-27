@@ -18,9 +18,10 @@ preserved in full after `>` (excluding the line ending), without accession parsi
 No substring matching, alignment, or terminal-stop removal is performed.
 
 Sequences are read from CIF entity sequence tables and mapped to `_struct_asym`
-chain IDs. All models in a fold must agree. Only standard protein residues are
-currently supported; ambiguous/modified residues and chains without protein
-sequences cause errors rather than silently disappearing. Five models are typical,
+chain IDs. All models in a fold must agree on base sequences and PTMs. Modified residues
+are matched to the unmodified candidate FASTA sequence using the job request
+and CIF metadata. Ambiguous mappings and chains without protein sequences
+cause errors rather than silently disappearing. Five models are typical,
 but a different nonzero number is accepted. Duplicate model numbers are rejected.
 The manifest does not require confidence JSON or MSA files.
 
@@ -41,9 +42,10 @@ One row per fold location, with 16 columns:
   absolute directory path; ZIP folds use `SOURCE.zip::FOLD_PATH`.
 - `fold_id`: last eight lowercase hex characters of SHA-1 over UTF-8 compact JSON
   of `(seed, sorted_sequences_with_copies)`, e.g. `[42,["AC","AC","DE"]]`.
-- `sequence_id`: previous sequence-only fold hash: last eight lowercase hex
+- `sequence_id`: for unmodified folds, the previous sequence-only fold hash: last eight lowercase hex
   characters of SHA-1 over compact JSON of the sorted sequences with copies,
-  e.g. `["AC","AC","DE"]`. Both IDs are reference labels, not cache keys.
+  e.g. `["AC","AC","DE"]`. PTM-containing folds use the conditional payload
+  below for both IDs. Both IDs are reference labels, not cache keys.
 - `timestamp`: latest modification time among the fold's model CIF files.
 - `input 1 description`, `input 1 copies`, through `input 5 description`,
   `input 5 copies`: all ten columns are always present. Each input represents a
@@ -79,7 +81,55 @@ exactly one `modelSeeds` value. Nonnegative integer seeds and digit strings are
 accepted and normalized to integers, so `"42"` and `42` produce the same fold ID.
 Missing, invalid, or multiple seeds cause a fold error; processing continues with
 other folds. Duplicate job-request archive members are rejected. The manifest's
-sequence-only ID preserves the previous hash definition exactly.
+sequence ID preserves the previous hash definition exactly for unmodified folds.
+
+## PTM-aware identity
+
+When any chain has a PTM, the sequence hash input is compact JSON of
+`["ptm-v1", sorted_chain_records]`. Each record contains the unmodified sequence
+and its sorted list of `[position, CCD_code]` pairs. Positions are one-based.
+Every chain copy contributes a record, including unmodified copies. Chain names
+and the order of chains or modification entries do not affect the IDs. AF Server
+codes such as `CCD_SEP` are normalized to `SEP`. The fold hash uses
+`[seed, sequence_hash_input]`. Folds without PTMs retain exactly their previous
+sequence and fold IDs, including when the modification list is empty.
+
+AF Server `proteinChain` requests and AF3 `protein` requests are checked against
+CIF monomers, chain copies, and available atom residue metadata. Without request
+sequence metadata, a standard parent must be identifiable from CIF parent
+metadata or Biopython's residue mapping. Unknown or ambiguous parents, invalid
+positions, duplicate modification positions, and inconsistent models are errors.
+
+FASTA matching and input description/copy columns still use the base sequence;
+modified and unmodified copies of that sequence share the same description.
+Their different modification states nevertheless contribute separately to IDs.
+Cached rows are not refreshed: delete any previously cached PTM row to reprocess
+it. No manifest columns are added.
+
+Identity support does not establish support for PTM chemistry. Rosetta
+preparation and overlap assembly currently reject PTM-containing structures
+explicitly rather than discard modified residues. Patch analysis supports PTM
+confidence and geometry as described below.
+
+### PTM tokens in patch analysis
+
+A modified residue can have several confidence tokens. The patch parser retains
+all of them, accepting multiple tokens only for nonstandard residues whose token
+count matches their observed heavy-atom count. Duplicate tokens for standard
+residues and inconsistent mappings remain errors.
+
+Contacts and pLDDT retain the existing Cα-based definitions. For each contacting
+residue pair, the script averages `1 / (1 + (PAE / 10)^2)` over all token pairs,
+separately in each direction. It then averages those values across residue pairs,
+so an atom-tokenized residue does not receive extra weight. This is a documented
+extension of the scoring implementation, not a PTM-specific pDockQ2 calibration.
+Single-token residues retain the previous calculation.
+
+For PTM-containing models, the summary retains contact geometry, Cα pLDDT,
+confidence, and SASA burial with all modified atoms present. Modified residues
+appear as bracketed CCD codes, such as `[SEP]`. Hydropathy, charge, contact and
+shell chemistry, and secondary structure are explicitly unavailable for those
+models; they are not estimated by substituting the unmodified amino acid.
 
 ## Timestamp meaning
 

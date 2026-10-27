@@ -6,6 +6,7 @@ import os
 import shutil
 
 from Bio.PDB import MMCIFParser
+from Bio.Data.PDBData import protein_letters_3to1
 
 from sieve.interface_description import (
     DescriptionOptions, atom_interactions, neighborhood, protein_residues,
@@ -39,18 +40,22 @@ class PatchDescriptions:
         self.options = options or DescriptionOptions()
         self.dssp = dssp
         self.pairs = {}
+        self.modified = set()
         for key, cif in inputs.items():
             model = MMCIFParser(QUIET=True).get_structure('summary', io.StringIO(cif))[0]
             for chain in model:
+                if any(r.resname not in protein_letters_3to1 for r in protein_residues(chain)):
+                    self.modified.add(key)
                 seen = set()
                 for residue in protein_residues(chain):
                     if residue.id[2] != ' ' or residue.id[1] in seen:
                         raise ValueError('descriptors require unique residue numbers without insertion codes')
                     seen.add(residue.id[1])
-                    residue_name(residue)
+                    if residue.resname in protein_letters_3to1:
+                        residue_name(residue)
                     if any(not all(math.isfinite(float(v)) for v in atom.coord) for atom in residue):
                         raise ValueError('nonfinite atom coordinates')
-            codes, segments, status = secondary_structure(model, cif, dssp)
+            codes, segments, status = secondary_structure(model, cif, None if key in self.modified else dssp)
             self.models[key] = (model, codes, segments, status)
 
     def write_chains(self, source, stream):
@@ -61,11 +66,13 @@ class PatchDescriptions:
         for (src, model_id), (model, codes, segments, status) in self.models.items():
             if src != source:
                 continue
+            if (src, model_id) in self.modified:
+                print(f'  Model {model_id}: PTMs present; secondary structure unavailable in this descriptor path.', file=stream)
             for chain in model:
                 residues = protein_residues(chain)
                 if not residues:
                     continue
-                sequence = ''.join(residue_name(r) for r in residues)
+                sequence = ''.join(protein_letters_3to1.get(r.resname, f'[{r.resname}]') for r in residues)
                 parts = [s for s in segments if s['chain'] == chain.id]
                 constitution = ' → '.join(f"{s['label']}[{s['code']}]({s['start']}–{s['end']})" for s in parts) or 'unassigned'
                 counts = Counter(codes.get((chain.id, r.id[1]), '?') for r in residues)
@@ -73,14 +80,15 @@ class PatchDescriptions:
                 groups[sequence].append((model_id, chain.id, constitution, counts))
         for index, (sequence, entries) in enumerate(groups.items(), 1):
             chains = ', '.join(sorted({c for _, c, _, _ in entries}))
-            print(f'  Sequence group {index} | chains {chains} | {len(sequence)} residues', file=stream)
+            print(f'  Sequence group {index} | chains {chains} | {sum(entries[0][3].values())} residues', file=stream)
             variants = defaultdict(list)
             for model_id, chain, constitution, counts in entries:
                 variants[(constitution, tuple(sorted(counts.items())))].append(f"model {model_id if model_id != '' else 'unnumbered'} chain {chain}")
             for (constitution, counts), members in variants.items():
                 print(f"    {'; '.join(members)}", file=stream)
                 print(f'      {constitution}', file=stream)
-                print('      Composition: ' + ', '.join(f'{code} {count}/{len(sequence)} ({100*count/len(sequence):.1f}%)' for code, count in counts), file=stream)
+                nres = sum(count for _, count in counts)
+                print('      Composition: ' + ', '.join(f'{code} {count}/{nres} ({100*count/nres:.1f}%)' for code, count in counts), file=stream)
         print('  Codes: H alpha, G 3₁₀, I pi, E strand, B isolated beta bridge, P polyproline; T/S/– loop; ? unassigned.', file=stream)
         print(file=stream)
 
@@ -88,6 +96,9 @@ class PatchDescriptions:
         key = (row['source'], row['model'])
         model, codes, segments, _ = self.models[key]
         chains = (row['chain 1'], row['chain 2'])
+        if key in self.modified:
+            self.write_modified_patch(row, model, stream)
+            return
         pair_key = (*key, *chains)
         if pair_key not in self.pairs:
             self.pairs[pair_key] = (atom_interactions(model, chains, self.options),
@@ -135,3 +146,23 @@ class PatchDescriptions:
             print(f"       Salt candidate ({scope}): {chains[0]}:{x['aa_1']}{a}/{x['atom_1']}–{chains[1]}:{x['aa_2']}{b}/{x['atom_2']} {x['distance']:.2f} Å", file=stream)
         print(f'     Context: ±{self.options.flank} sequence residues; {self.options.radius:g} Å same-chain heavy-atom shell; shells exclude patch.', file=stream)
         print('     Chemistry is geometric evidence; nominal charge is not electrostatic potential.', file=stream)
+
+    def write_modified_patch(self, row, model, stream):
+        """Keep all modified atoms for SASA; do not substitute parent chemistry."""
+        chains = (row['chain 1'], row['chain 2'])
+        key = (row['source'], row['model'], *chains)
+        if key not in self.pairs:
+            self.pairs[key] = sasa_burial(model, chains, self.options.sasa_points)
+        burial = self.pairs[key]
+        print('     PTM scoring: mean normalized token-pair PAE per residue pair; not a PTM-calibrated pDockQ2.', file=stream)
+        print('     Local pLDDT (unique contacting Cα atoms): ' + ' | '.join(
+            f"{c} {number(row[f'interface pLDDT {i}'])}" for i,c in enumerate(chains,1)), file=stream)
+        for i,c in enumerate(chains,1):
+            selected = {int(n) for n in row[f'interface residues {i}'].split(',') if n}
+            sequence = ''.join(protein_letters_3to1.get(r.resname, f'[{r.resname}]')
+                               for r in protein_residues(model[c]) if r.id[1] in selected)
+            area = sum(burial[(c,n)]['buried_area'] for n in selected)
+            nonpolar = sum(burial[(c,n)]['buried_nonpolar_area'] for n in selected)
+            print(f'     {c} patch sequence (modified residues bracketed): {sequence}', file=stream)
+            print(f'       Buried area: {area:.1f} Å²; C/S contribution {nonpolar:.1f} Å²; PTM atoms retained.', file=stream)
+        print('     PTM-containing model: hydropathy, charge, contact chemistry, shell chemistry, and secondary structure unavailable.', file=stream)

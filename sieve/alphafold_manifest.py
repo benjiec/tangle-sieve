@@ -13,6 +13,7 @@ from Bio.Data.PDBData import protein_letters_3to1
 
 from sieve.alphafold_cache import read_cache, write_cache
 from sieve.alphafold_files import discover, fold_locator, model_number, read_seed
+from sieve.alphafold_composition import chain_compositions, hash_payload
 
 BASE_COLUMNS = ['source_path', 'fold_path', 'fold_locator', 'fold_id', 'sequence_id', 'timestamp', 'source_type']
 INPUT_COLUMNS = [f'input {i} {field}' for i in range(1, 6) for field in ('description', 'copies')]
@@ -77,57 +78,33 @@ def read_candidates(path, error):
 
 
 def sequence_id(sequences):
-    serialized = json.dumps(sorted(sequences), separators=(',', ':'), ensure_ascii=True)
+    serialized = json.dumps(hash_payload(sequences), separators=(',', ':'), ensure_ascii=True)
     return hashlib.sha1(serialized.encode('utf-8')).hexdigest()[-8:]
 
 
 def fold_id(seed, sequences):
-    serialized = json.dumps((seed, sorted(sequences)), separators=(',', ':'), ensure_ascii=True)
+    serialized = json.dumps((seed, hash_payload(sequences)), separators=(',', ':'), ensure_ascii=True)
     return hashlib.sha1(serialized.encode('utf-8')).hexdigest()[-8:]
 
 
-def chain_sequences(text):
-    """Use declared entity sequences rather than only residues with coordinates."""
-    cif = MMCIF2Dict(io.StringIO(text))
-
-    def table(*columns):
-        values = [cif.get(c, []) for c in columns]
-        if not values[0] or len({len(v) for v in values}) != 1:
-            raise ValueError('missing or inconsistent CIF fields: ' + ', '.join(columns))
-        return zip(*values)
-
-    entity_types = dict(table('_entity.id', '_entity.type'))
-    residues = defaultdict(dict)
-    for entity, number, monomer in table('_entity_poly_seq.entity_id', '_entity_poly_seq.num', '_entity_poly_seq.mon_id'):
-        number = int(number)
-        if number <= 0 or number in residues[entity]:
-            raise ValueError(f'ambiguous entity {entity} residue {number}')
-        if monomer not in protein_letters_3to1:
-            raise ValueError(f'entity {entity}: unsupported residue {monomer} at {number}; cannot extract an exact protein sequence')
-        residues[entity][number] = protein_letters_3to1[monomer]
-    chains = {}
-    for chain, entity in table('_struct_asym.id', '_struct_asym.entity_id'):
-        if chain in chains:
-            raise ValueError(f'duplicate CIF chain {chain}')
-        if entity_types.get(entity) != 'polymer' or entity not in residues:
-            raise ValueError(f'chain {chain}: no identifiable protein sequence (entity {entity})')
-        sequence = residues[entity]
-        if sorted(sequence) != list(range(1, len(sequence) + 1)):
-            raise ValueError(f'chain {chain}: nonconsecutive entity sequence numbering')
-        chains[chain] = ''.join(sequence[n] for n in sorted(sequence))
-    return chains
+def chain_sequences(text, request=None):
+    """Return base sequences for FASTA matching; retain PTMs separately for identity."""
+    return {chain: composition.sequence for chain, composition in chain_compositions(text, request).items()}
 
 
 def identify(fold, candidates):
     numbers = [model_number(n) for n in fold.models]
     if len(numbers) != len(set(numbers)):
         raise ValueError('multiple model sets or duplicate model numbers in one fold directory')
-    chains = None
+    from sieve.alphafold_structure import request_for_fold
+    request = request_for_fold(fold)
+    compositions = None
     for name in sorted(fold.models):
-        current = chain_sequences(fold.read(name))
-        if chains is not None and current != chains:
-            raise ValueError(f'chain sequences differ across models: {name}')
-        chains = current
+        current = chain_compositions(fold.read(name), request)
+        if compositions is not None and current != compositions:
+            raise ValueError(f'chain sequences differ across models (including PTMs): {name}')
+        compositions = current
+    chains = {c: value.sequence for c, value in (compositions or {}).items()}
     if not chains:
         raise ValueError('no chains found')
     missing = [(chain, sequence)

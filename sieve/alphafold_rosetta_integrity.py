@@ -27,9 +27,11 @@ def prepare(locator, number, directory):
         if len(names) != 1:
             raise ValueError(f'expected exactly one model {number}: {locator}')
         content = fold.read(names[0])
-        sequences = chain_sequences(content)
-        metadata = dict(fold_id=identity_for_fold(fold, content)['fold_id'],
-                        sequence_id=sequence_id(sequences.values()), model_id=number,
+        identity = identity_for_fold(fold, content)
+        if identity.get('has_ptms'):
+            raise ValueError('Rosetta preparation for PTM-containing structures is not yet supported; modifications cannot be discarded')
+        metadata = dict(fold_id=identity['fold_id'],
+                        sequence_id=identity['sequence_id'], model_id=number,
                         fold_locator=locator, score_function='ref2015')
     structure = MMCIFParser(QUIET=True).get_structure('model', io.StringIO(content))
     if len(structure) != 1:
