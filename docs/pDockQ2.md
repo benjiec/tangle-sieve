@@ -734,3 +734,13 @@ labeled inherited. With derived rows, the optional TSV adds `confidence origin`;
 AF-only TSV columns remain unchanged. Pairwise contacts, burial, chemistry and
 secondary structure retain their existing definitions; this does not add combined
 multichain patch scoring. See [assembly documentation](alphafold-overlap.md).
+
+
+### Phosphorylation in patch descriptions
+
+The patch summary supports SEP/TPO/PTR geometry, phosphate/basic contact
+candidates, and explicit −1/−2 phosphate charge scenarios. DSSP uses the original
+CIF; `--structure` reports assignment coverage for modified residues. Hydropathy
+remains unavailable for residue sets containing PTMs. See
+[PTM tokens and phosphorylation descriptors](alphafold-manifest.md#ptm-tokens-in-patch-analysis)
+for aggregation rules, chemical assumptions, and validation limits.

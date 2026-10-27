@@ -19,7 +19,10 @@ from sieve.channels import KYTE_DOOLITTLE_HYDROPATHY, NEUTRAL_PH_CHARGE
 
 POSITIVE = {'LYS': {'NZ'}, 'ARG': {'NE', 'NH1', 'NH2'}}
 NEGATIVE = {'ASP': {'OD1', 'OD2'}, 'GLU': {'OE1', 'OE2'}}
-VDW = {'C': 1.70, 'N': 1.55, 'O': 1.52, 'S': 1.80}
+VDW = {'C': 1.70, 'N': 1.55, 'O': 1.52, 'S': 1.80, 'P': 1.80}
+# CCD names: https://files.rcsb.org/ligands/view/{SEP,TPO,PTR}.cif
+PHOSPHORYLATED = frozenset(('SEP', 'TPO', 'PTR'))
+PHOSPHATE_OXYGENS = frozenset(('O1P', 'O2P', 'O3P'))
 HYDROPHOBIC = frozenset('AVILMFWYPC')
 BACKBONE = frozenset(('N', 'CA', 'C', 'O', 'OXT'))
 
@@ -54,16 +57,32 @@ def residue_name(residue):
     return aa
 
 
+def residue_label(residue):
+    """Keep unknown chemistry visible rather than substituting a parent residue."""
+    aa = seq1(residue.resname)
+    return aa if aa in KYTE_DOOLITTLE_HYDROPATHY else f'[{residue.resname}]'
+
+
 def composition(residues):
     residues = list(residues)
-    sequence = ''.join(residue_name(r) for r in residues)
-    count = len(sequence)
-    return {'residues': [r.id[1] for r in residues], 'sequence': sequence, 'count': count,
-            'mean_hydropathy': sum(KYTE_DOOLITTLE_HYDROPATHY[a] for a in sequence) / count if count else None,
-            'hydrophobic_fraction': sum(a in HYDROPHOBIC for a in sequence) / count if count else None,
-            'positive_count': sum(a in 'KR' for a in sequence), 'negative_count': sum(a in 'DE' for a in sequence),
-            'histidine_count': sequence.count('H'),
-            'nominal_sidechain_charge': sum(NEUTRAL_PH_CHARGE[a] for a in sequence)}
+    labels = [residue_label(r) for r in residues]
+    standard = [a for a in labels if len(a) == 1]
+    modified = len(residues) - len(standard)
+    phosphates = sum(r.resname in PHOSPHORYLATED for r in residues)
+    unknown = modified - phosphates
+    charge = sum(NEUTRAL_PH_CHARGE[a] for a in standard)
+    count = len(residues)
+    result = {'residues': [r.id[1] for r in residues], 'sequence': ''.join(labels), 'count': count,
+            'mean_hydropathy': sum(KYTE_DOOLITTLE_HYDROPATHY[a] for a in standard) / count if count and not modified else None,
+            'hydrophobic_fraction': sum(a in HYDROPHOBIC for a in standard) / count if count and not modified else None,
+            'positive_count': sum(a in 'KR' for a in standard), 'negative_count': sum(a in 'DE' for a in standard),
+            'histidine_count': standard.count('H'),
+            'nominal_sidechain_charge': charge if not modified else None}
+    if modified:
+        result.update(phosphate_count=phosphates, unknown_ptm_count=unknown,
+                      charge_phosphate_minus1=charge-phosphates if not unknown else None,
+                      charge_phosphate_minus2=charge-2*phosphates if not unknown else None)
+    return result
 
 
 def secondary_structure(model, cif, executable):
@@ -122,9 +141,12 @@ def sasa_burial(model, chains, points):
 def atom_interactions(model, chains, options):
     """Explicit geometric candidates, not bond energies or hydrogen-bond assignments."""
     result = []
-    first = [(r, a) for r in protein_residues(model[chains[0]]) for a in r if a.element != 'H']
-    second = [(r, a) for r in protein_residues(model[chains[1]]) for a in r if a.element != 'H']
+    first = [(r, a) for r in protein_residues(model[chains[0]]) for a in r if a.element not in ('H', 'D')]
+    second = [(r, a) for r in protein_residues(model[chains[1]]) for a in r if a.element not in ('H', 'D')]
     xyz = np.array([a.coord for _, a in second])
+    for _, atom in first + second:
+        if atom.element not in VDW:
+            raise ValueError(f'unsupported element for clash radii: {atom.element}')
     if not len(xyz):
         return result
     for r1, a in first:
@@ -135,9 +157,15 @@ def atom_interactions(model, chains, options):
             types = []
             salt = ((a.name in POSITIVE.get(r1.resname, ()) and b.name in NEGATIVE.get(r2.resname, ())) or
                     (b.name in POSITIVE.get(r2.resname, ()) and a.name in NEGATIVE.get(r1.resname, ())))
+            phosphate = ((r1.resname in PHOSPHORYLATED and a.element == 'O' and a.name in PHOSPHATE_OXYGENS and b.element == 'N' and
+                          b.name in POSITIVE.get(r2.resname, ())) or
+                         (r2.resname in PHOSPHORYLATED and b.element == 'O' and b.name in PHOSPHATE_OXYGENS and a.element == 'N' and
+                          a.name in POSITIVE.get(r1.resname, ())))
+            if phosphate and d <= options.salt_cutoff:
+                types.append('phosphate_basic_contact')
             if salt and d <= options.salt_cutoff:
                 types.append('salt_bridge_candidate')
-            if (residue_name(r1) in HYDROPHOBIC and residue_name(r2) in HYDROPHOBIC
+            if (residue_label(r1) in HYDROPHOBIC and residue_label(r2) in HYDROPHOBIC
                     and a.name not in BACKBONE and b.name not in BACKBONE
                     and a.element in ('C', 'S') and b.element in ('C', 'S') and d <= options.nonpolar_cutoff):
                 types.append('nonpolar_contact')
@@ -145,8 +173,8 @@ def atom_interactions(model, chains, options):
             if overlap > options.clash_overlap and not (a.name == 'SG' and b.name == 'SG' and 1.8 <= d <= 2.2):
                 types.append('steric_overlap_candidate')
             for kind in types:
-                result.append({'chain_1': chains[0], 'residue_1': r1.id[1], 'aa_1': residue_name(r1), 'atom_1': a.name,
-                               'chain_2': chains[1], 'residue_2': r2.id[1], 'aa_2': residue_name(r2), 'atom_2': b.name,
+                result.append({'chain_1': chains[0], 'residue_1': r1.id[1], 'aa_1': residue_label(r1), 'atom_1': a.name,
+                               'chain_2': chains[1], 'residue_2': r2.id[1], 'aa_2': residue_label(r2), 'atom_2': b.name,
                                'type': kind, 'distance': d, 'vdw_overlap': overlap if kind == 'steric_overlap_candidate' else None})
     return result
 
@@ -165,11 +193,11 @@ def neighborhood(chain, numbers, flank, radius):
     before -= selected_indices
     after -= selected_indices
     spatial = []
-    selected_atoms = np.array([a.coord for r in chosen for a in r if a.element != 'H'])
+    selected_atoms = np.array([a.coord for r in chosen for a in r if a.element not in ('H', 'D')])
     for r in residues:
         if r.id[1] in numbers or not len(selected_atoms):
             continue
-        if any(np.any(np.linalg.norm(selected_atoms-a.coord, axis=1) <= radius) for a in r if a.element != 'H'):
+        if any(np.any(np.linalg.norm(selected_atoms-a.coord, axis=1) <= radius) for a in r if a.element not in ('H', 'D')):
             spatial.append(r)
     return {'patch': composition(chosen),
             'upstream': composition(residues[i] for i in sorted(before)),

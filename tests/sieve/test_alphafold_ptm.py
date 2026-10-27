@@ -212,9 +212,9 @@ class PTMTests(unittest.TestCase):
         row.update(source='fold',model=0)
         out=io.StringIO();descriptions.write_patch(row,out)
         self.assertIn('[SEP]',out.getvalue());self.assertIn('PTM atoms retained',out.getvalue())
-        self.assertIn('chemistry',out.getvalue());self.assertNotIn('nominal charge +',out.getvalue())
+        self.assertIn('phosphate −1',out.getvalue());self.assertIn('mean hydropathy n/a',out.getvalue())
         out=io.StringIO();descriptions.write_chains('fold',out)
-        self.assertIn('secondary structure unavailable',out.getvalue())
+        self.assertIn('DSSP coverage at modified residues: 0/4 assigned',out.getvalue())
         self.assertIn('| 4 residues',out.getvalue())
         self.assertIn('4/4 (100.0%)',out.getvalue())
         bad=copy.deepcopy(full);bad['token_res_ids'][1]=1

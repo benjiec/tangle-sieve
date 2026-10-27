@@ -127,9 +127,51 @@ Single-token residues retain the previous calculation.
 
 For PTM-containing models, the summary retains contact geometry, Cα pLDDT,
 confidence, and SASA burial with all modified atoms present. Modified residues
-appear as bracketed CCD codes, such as `[SEP]`. Hydropathy, charge, contact and
-shell chemistry, and secondary structure are explicitly unavailable for those
-models; they are not estimated by substituting the unmodified amino acid.
+appear as bracketed CCD codes, such as `[SEP]`. DSSP runs on the original CIF;
+`--structure` reports how many modified residues received assignments. Unassigned
+residues remain `?`, and DSSP warnings remain visible.
+
+### Phosphorylation descriptors
+
+SEP, TPO, and PTR are recognized as phosphorylated residues. For each patch and
+sequence/spatial shell:
+
+- Ordinary-residue chemistry remains available. Hydropathy and hydrophobic
+  fraction are `n/a` only for sets containing modified residues; modified residues
+  are never assigned the parent amino acid's hydropathy.
+- Nominal charge is reported under two explicit scenarios: every phosphate is
+  −1, or every phosphate is −2, added to the existing ordinary-residue charges.
+  These are sensitivity scenarios, not inferred protonation states or a pH model.
+  Unknown PTMs make charge unavailable for the affected set. K/R, D/E, and H
+  counts refer to ordinary residues; phosphate charges are additional.
+- `Phosphate/basic contacts` count unique residue pairs whose observed terminal
+  phosphate O1P/O2P/O3P atoms approach Lys NZ or Arg NE/NH1/NH2 within 4 Å.
+  The nearest atom pair is printed when either endpoint belongs to the patch,
+  with `within patch` or `one endpoint in patch` scope. These are distance-only
+  candidates, not assigned hydrogen bonds or interaction energies. Ordinary
+  Asp/Glu salt-bridge candidates remain separately reported.
+- Steric-overlap screening includes phosphorus with a 1.80 Å radius. Unsupported
+  elements cause an explicit error instead of receiving a zero radius. Missing
+  phosphate atoms produce a warning; contacts use observed atoms only.
+- Nonpolar-contact classification still covers ordinary residues only. The
+  carbon/sulfur burial calculation retains all PTM atoms.
+
+Chemical names and atom definitions follow the wwPDB CCD entries for
+[SEP](https://files.rcsb.org/ligands/view/SEP.cif),
+[TPO](https://www.rcsb.org/ligand/TPO), and
+[PTR](https://files.rcsb.org/ligands/view/PTR.cif).
+The −1/−2 alternatives reflect the monoanionic/dianionic phosphate states studied
+in [phosphorylated model peptides](https://pubmed.ncbi.nlm.nih.gov/7529751/);
+this script does not estimate their populations in a protein.
+Secondary structure uses [DSSP](https://github.com/PDB-REDO/dssp), without residue
+renaming or coordinate changes. Coverage confirms assignments were returned,
+not that every assignment is experimentally correct.
+
+Validation on the supplied SEP archive with mkdssp 4.6.1 returned assignments
+for all six SEP residues in each of five models. That executable also emitted
+`Unknown compound: SEP`; the script preserves the warning. TPO/PTR chemistry
+rules have synthetic tests; their DSSP behavior still needs representative
+real structures for validation.
 
 ## Timestamp meaning
 

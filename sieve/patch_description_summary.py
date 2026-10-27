@@ -10,7 +10,7 @@ from Bio.Data.PDBData import protein_letters_3to1
 
 from sieve.interface_description import (
     DescriptionOptions, atom_interactions, neighborhood, protein_residues,
-    residue_name, sasa_burial, secondary_structure,
+    residue_name, sasa_burial, secondary_structure, PHOSPHORYLATED,
 )
 from sieve.alphafold_pdockq2_patches import ranges
 
@@ -28,6 +28,16 @@ def find_dssp(explicit=None):
 
 def number(value):
     return 'n/a' if value is None else f'{value:.2f}'
+
+
+def charge_text(values):
+    charge = values['nominal_sidechain_charge']
+    if charge is not None:
+        return f'{charge:+g}'
+    if values.get('unknown_ptm_count'):
+        return 'n/a (unsupported PTM)'
+    return (f"{values['charge_phosphate_minus1']:+g} (phosphate −1) / "
+            f"{values['charge_phosphate_minus2']:+g} (phosphate −2)")
 
 
 def residue_ranges(numbers):
@@ -55,7 +65,7 @@ class PatchDescriptions:
                         residue_name(residue)
                     if any(not all(math.isfinite(float(v)) for v in atom.coord) for atom in residue):
                         raise ValueError('nonfinite atom coordinates')
-            codes, segments, status = secondary_structure(model, cif, None if key in self.modified else dssp)
+            codes, segments, status = secondary_structure(model, cif, dssp)
             self.models[key] = (model, codes, segments, status)
 
     def write_chains(self, source, stream):
@@ -67,7 +77,10 @@ class PatchDescriptions:
             if src != source:
                 continue
             if (src, model_id) in self.modified:
-                print(f'  Model {model_id}: PTMs present; secondary structure unavailable in this descriptor path.', file=stream)
+                sites = [(c.id,r.id[1]) for c in model for r in protein_residues(c)
+                         if r.resname not in protein_letters_3to1]
+                print(f'  Model {model_id}: DSSP coverage at modified residues: '
+                      f'{sum(site in codes for site in sites)}/{len(sites)} assigned.', file=stream)
             for chain in model:
                 residues = protein_residues(chain)
                 if not residues:
@@ -97,8 +110,17 @@ class PatchDescriptions:
         model, codes, segments, _ = self.models[key]
         chains = (row['chain 1'], row['chain 2'])
         if key in self.modified:
-            self.write_modified_patch(row, model, stream)
-            return
+            print('     PTM scoring: mean normalized token-pair PAE per residue pair; not a PTM-calibrated pDockQ2.', file=stream)
+            print('     PTM atoms retained. Hydropathy is n/a for sets containing modified residues.', file=stream)
+            print('     Phosphate charge scenarios: −1 or −2 per SEP/TPO/PTR; protonation is not inferred.', file=stream)
+            print('     Phosphate/basic contacts are distance-only candidates, not assigned hydrogen bonds.', file=stream)
+            print('     Nonpolar-contact classification covers standard residues only; PTM carbon/sulfur burial is retained.', file=stream)
+            for c in chains:
+                for r in protein_residues(model[c]):
+                    if r.resname in PHOSPHORYLATED:
+                        missing = sorted({'P','O1P','O2P','O3P'} - {a.name for a in r})
+                        if missing:
+                            print(f'     WARNING: incomplete phosphate {c}:{r.resname}{r.id[1]}: missing {", ".join(missing)}; contacts use observed atoms only.', file=stream)
         pair_key = (*key, *chains)
         if pair_key not in self.pairs:
             self.pairs[pair_key] = (atom_interactions(model, chains, self.options),
@@ -111,7 +133,7 @@ class PatchDescriptions:
         for c in chains:
             context = neighborhood(model[c], selected[c], self.options.flank, self.options.radius)
             patch = context['patch']
-            charges[c] = patch['nominal_sidechain_charge']
+            charges[c] = patch
             parts = []
             for s in segments:
                 hits = selected[c].intersection(s['residues']) if s['chain'] == c else set()
@@ -123,18 +145,27 @@ class PatchDescriptions:
             print(f"     {c} patch sequence: {patch['sequence']} | secondary structure: {'; '.join(parts) or 'none'}", file=stream)
             for label in ('patch', 'upstream', 'downstream', 'sequence_shell', 'spatial_shell'):
                 values = context[label]
-                print(f"       {label}: n={values['count']} | mean hydropathy {number(values['mean_hydropathy'])} | nominal charge {values['nominal_sidechain_charge']:+g} | K/R {values['positive_count']}, D/E {values['negative_count']}, H {values['histidine_count']}", file=stream)
+                print(f"       {label}: n={values['count']} | mean hydropathy {number(values['mean_hydropathy'])} | nominal charge {charge_text(values)} | K/R {values['positive_count']}, D/E {values['negative_count']}, H {values['histidine_count']}", file=stream)
             area = sum(burial[(c,n)]['buried_area'] for n in selected[c])
             nonpolar = sum(burial[(c,n)]['buried_nonpolar_area'] for n in selected[c])
             print(f'       Buried area: {area:.1f} Å²; C/S contribution {nonpolar:.1f} Å²', file=stream)
-        print(f'     Nominal patch charge difference ({chains[0]} − {chains[1]}): {charges[chains[0]]-charges[chains[1]]:+g}', file=stream)
+        a, b = (charges[c] for c in chains)
+        if a['nominal_sidechain_charge'] is not None and b['nominal_sidechain_charge'] is not None:
+            delta = f"{a['nominal_sidechain_charge']-b['nominal_sidechain_charge']:+g}"
+        elif not a.get('unknown_ptm_count',0) and not b.get('unknown_ptm_count',0):
+            delta = '; '.join(f"{a.get(f'charge_phosphate_minus{n}',a['nominal_sidechain_charge']) - b.get(f'charge_phosphate_minus{n}',b['nominal_sidechain_charge']):+g} (phosphate −{n})" for n in (1,2))
+        else:
+            delta = 'n/a (unsupported PTM)'
+        print(f'     Nominal patch charge difference ({chains[0]} − {chains[1]}): {delta}', file=stream)
         features = [x for x in interactions if x['residue_1'] in selected[chains[0]] and x['residue_2'] in selected[chains[1]]]
         counts = Counter((x['type'], x['residue_1'], x['residue_2']) for x in features)
         totals = Counter(kind for kind, _, _ in counts)
         print('     Contact chemistry (unique residue pairs): ' + ' | '.join(f'{kind} {totals[kind]}' for kind in ('nonpolar_contact','salt_bridge_candidate','steric_overlap_candidate')), file=stream)
+        if key in self.modified:
+            print(f"     Phosphate/basic contacts (unique residue pairs within patch): {totals['phosphate_basic_contact']}", file=stream)
         salts = {}
         for x in interactions:
-            if x['type'] != 'salt_bridge_candidate':
+            if x['type'] not in ('salt_bridge_candidate', 'phosphate_basic_contact'):
                 continue
             a, b = x['residue_1'], x['residue_2']
             if a not in selected[chains[0]] and b not in selected[chains[1]]:
@@ -143,26 +174,7 @@ class PatchDescriptions:
                 salts[(a,b)] = x
         for (a,b), x in sorted(salts.items()):
             scope = 'within patch' if a in selected[chains[0]] and b in selected[chains[1]] else 'one endpoint in patch'
-            print(f"       Salt candidate ({scope}): {chains[0]}:{x['aa_1']}{a}/{x['atom_1']}–{chains[1]}:{x['aa_2']}{b}/{x['atom_2']} {x['distance']:.2f} Å", file=stream)
+            label = 'Phosphate/basic candidate' if x['type'] == 'phosphate_basic_contact' else 'Salt candidate'
+            print(f"       {label} ({scope}): {chains[0]}:{x['aa_1']}{a}/{x['atom_1']}–{chains[1]}:{x['aa_2']}{b}/{x['atom_2']} {x['distance']:.2f} Å", file=stream)
         print(f'     Context: ±{self.options.flank} sequence residues; {self.options.radius:g} Å same-chain heavy-atom shell; shells exclude patch.', file=stream)
         print('     Chemistry is geometric evidence; nominal charge is not electrostatic potential.', file=stream)
-
-    def write_modified_patch(self, row, model, stream):
-        """Keep all modified atoms for SASA; do not substitute parent chemistry."""
-        chains = (row['chain 1'], row['chain 2'])
-        key = (row['source'], row['model'], *chains)
-        if key not in self.pairs:
-            self.pairs[key] = sasa_burial(model, chains, self.options.sasa_points)
-        burial = self.pairs[key]
-        print('     PTM scoring: mean normalized token-pair PAE per residue pair; not a PTM-calibrated pDockQ2.', file=stream)
-        print('     Local pLDDT (unique contacting Cα atoms): ' + ' | '.join(
-            f"{c} {number(row[f'interface pLDDT {i}'])}" for i,c in enumerate(chains,1)), file=stream)
-        for i,c in enumerate(chains,1):
-            selected = {int(n) for n in row[f'interface residues {i}'].split(',') if n}
-            sequence = ''.join(protein_letters_3to1.get(r.resname, f'[{r.resname}]')
-                               for r in protein_residues(model[c]) if r.id[1] in selected)
-            area = sum(burial[(c,n)]['buried_area'] for n in selected)
-            nonpolar = sum(burial[(c,n)]['buried_nonpolar_area'] for n in selected)
-            print(f'     {c} patch sequence (modified residues bracketed): {sequence}', file=stream)
-            print(f'       Buried area: {area:.1f} Å²; C/S contribution {nonpolar:.1f} Å²; PTM atoms retained.', file=stream)
-        print('     PTM-containing model: hydropathy, charge, contact chemistry, shell chemistry, and secondary structure unavailable.', file=stream)
