@@ -79,6 +79,14 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(rows[0]['fold_id'],fold_id(42,['AAAA','CCCC']))
             self.assertEqual(rows[0]['candidate DD family face 1'],'NA')
             self.assertEqual(rows[0]['dd enabled'],'True')
+            self.assertEqual(rows[0]['dd helix presence threshold'],'3')
+            self.assertEqual(rows[0]['dd loop presence threshold'],'1')
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(SCRIPT.main(args+['--dd-helix-presence-threshold','4',
+                                                  '--dd-loop-presence-threshold','2']),0)
+            with output.open() as stream:alias_rows=list(csv.DictReader(stream,delimiter='\t'))
+            self.assertEqual(alias_rows[0]['dd helix presence threshold'],'4')
+            self.assertEqual(alias_rows[0]['dd loop presence threshold'],'2')
             with contextlib.redirect_stdout(io.StringIO()) as stdout:
                 self.assertEqual(SCRIPT.main(args+['--distance-cutoff','.1']),0)
             with output.open() as stream:self.assertEqual(list(csv.DictReader(stream,delimiter='\t')),[])
@@ -89,3 +97,5 @@ class ExportTests(unittest.TestCase):
             for value in ('0','1.1','nan'):
                 with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
                     SCRIPT.main(args+['--dd-helix-presence-threshold',value])
+                with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                    SCRIPT.main(args+['--dd-loop-presence-threshold',value])

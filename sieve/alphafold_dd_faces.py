@@ -3,7 +3,6 @@
 Structural elements follow https://pmc.ncbi.nlm.nih.gov/articles/PMC2908332/.
 Coverage is a screening heuristic, not a canonical topology assignment.
 """
-import math
 
 FACES = {
     'Ia': ('H1', 'H4'), 'Ib': ('H2', 'H3'),
@@ -12,13 +11,14 @@ FACES = {
 }
 
 
-def validate_threshold(threshold):
-    if not math.isfinite(threshold) or not 0 < threshold <= 1:
-        raise ValueError('--dd-helix-presence-threshold must be greater than 0 and at most 1')
+def validate_threshold(threshold, name='helix'):
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
+        raise ValueError(f'--dd-{name}-presence-threshold must be a positive integer residue count')
 
 
-def candidate_faces(chain, selected, codes, segments, threshold=.5):
+def candidate_faces(chain, selected, codes, segments, threshold=3, loop_threshold=1):
     validate_threshold(threshold)
+    validate_threshold(loop_threshold, 'loop')
     helices = sorted((s for s in segments if s['chain'] == chain and s['code'] == 'H'),
                      key=lambda s: s['start'])
     if len(helices) != 6:
@@ -35,6 +35,6 @@ def candidate_faces(chain, selected, codes, segments, threshold=.5):
         if any(not elements[e] for e in required):
             continue
         coverage = [len(selected & elements[e])/len(elements[e]) for e in required]
-        if min(coverage) >= threshold:
+        if all(len(selected & elements[e]) >= (threshold if e.startswith('H') else loop_threshold) for e in required):
             ranked.append((-min(coverage), -sum(coverage)/len(coverage), order, face))
     return '; '.join(row[-1] for row in sorted(ranked)) or 'none'

@@ -46,8 +46,10 @@ def residue_ranges(numbers):
 
 
 class PatchDescriptions:
-    def __init__(self, inputs, dssp, options=None, *, dd=False, dd_threshold=.5):
+    def __init__(self, inputs, dssp, options=None, *, dd=False, dd_threshold=3, dd_loop_threshold=1):
         validate_threshold(dd_threshold)
+        validate_threshold(dd_loop_threshold, 'loop')
+        self.dd_loop_threshold = dd_loop_threshold
         self.dd, self.dd_threshold = dd, dd_threshold
         self.details = {}
         self.models = {}
@@ -166,7 +168,7 @@ class PatchDescriptions:
         for i,c in enumerate(chains,1):
             metrics.update({f'interface structure {i}': structures[c],
                             f'patch {i} hydropathy mean': contexts[c]['patch']['mean_hydropathy'],
-                            f'candidate DD family face {i}': candidate_faces(c,selected[c],codes,segments,self.dd_threshold) if self.dd else None})
+                            f'candidate DD family face {i}': candidate_faces(c,selected[c],codes,segments,self.dd_threshold,self.dd_loop_threshold) if self.dd else None})
         details = dict(metrics=metrics,contexts=contexts,structures=structures,areas=areas,cs=cs,
                        selected=selected,interactions=interactions,totals=totals)
         self.details[cache_key] = details

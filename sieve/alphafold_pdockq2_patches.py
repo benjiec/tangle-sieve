@@ -468,7 +468,7 @@ METRIC_COLUMNS = ['interface structure 1','interface structure 2',
     'candidate DD family face 1','candidate DD family face 2']
 PATCH_COLUMNS = ['sequence_id','fold_id',
     *[EXPORT_RENAMES.get(c,c) for c in OUTPUT_COLUMNS+EXTRA_COLUMNS if c not in EXPORT_DROPPED],
-    *METRIC_COLUMNS, 'dd enabled','dd helix presence threshold','confidence origin']
+    *METRIC_COLUMNS, 'dd enabled','dd helix presence threshold','dd loop presence threshold','confidence origin']
 
 
 def write_patches(rows, stream):

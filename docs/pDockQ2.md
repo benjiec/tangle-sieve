@@ -56,7 +56,8 @@ processed in sorted order; subdirectories are not searched.
 | `--output` | optional | TSV path; recomputed and overwritten, no cache; omit for stdout summary only |
 | `--silent` | off | Suppress stdout; retain TSV output and stderr diagnostics |
 | `--dd` | off | Enable provisional six-helix DD face candidates |
-| `--dd-helix-presence-threshold` | 0.5 | Minimum required-element coverage, >0 through 1 |
+| `--dd-helix-presence-threshold` | 3 | Minimum contacting residue count per required helix; positive integer |
+| `--dd-loop-presence-threshold` | 1 | Minimum contacting residue count per required loop; positive integer |
 | `--chains A B` | all pairs | Analyze one distinct pair; summarize sites on the second argument; output chain order is lexical |
 | `--distance-cutoff` | 8.0 Å | Inclusive cutoff for interchain contacts and all graph edges |
 | `--max-bridge-residues` | 1 | Maximum vertex-separator cardinality; 0 disables splitting |
@@ -354,7 +355,7 @@ multiple or split patches differ. No qualifying leaves produces a header-only TS
 | `nominal patch charge difference` | Side 1 minus side 2; numeric for ordinary residues, labeled −1/−2 phosphate scenarios when needed, `NA` for unsupported chemistry |
 | `patch 1 hydropathy mean`, `patch 2 hydropathy mean` | Means over unique contacting residues; `NA` for sets containing PTMs |
 | `candidate DD family face 1/2` | Ranked heuristic labels with `--dd`; `NA` when disabled/ineligible; `none` when eligible but no face qualifies |
-| `dd enabled`, `dd helix presence threshold` | DD settings for this run |
+| `dd enabled`, `dd helix presence threshold`, `dd loop presence threshold` | DD settings for this run |
 | `confidence origin` | Inherited confidence note for assembled models; otherwise `NA` |
 | `distance cutoff`, `max bridge residues`, `min residues per chain`, `min contacts`, `max separator checks` | Patch-detection parameters |
 
@@ -378,7 +379,7 @@ and library warnings remain on stderr.
 
 ```sh
 sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py locator \
-  --silent --output patches.tsv --dd --dd-helix-presence-threshold 0.5
+  --silent --output patches.tsv --dd --dd-helix-presence-threshold 3 --dd-loop-presence-threshold 1
 ```
 
 ### Candidate DD faces
@@ -400,20 +401,22 @@ empty loops or structured insertions cannot satisfy a loop requirement.
 | IIIa | H3 |
 | IIIb | H1–H2 loop, H3–H4 loop |
 
-For every required element, coverage is contacting patch residues divided by
-all residues in that element. Each must reach `--dd-helix-presence-threshold`
-(default 0.5; strictly greater than 0 and at most 1). The same threshold applies
-to loops. Qualifying labels are ordered by minimum required-element coverage,
+Each required helix must contain at least `--dd-helix-presence-threshold`
+contacting patch residues (default 3). Each required loop must contain at least
+`--dd-loop-presence-threshold` contacting residues (default 1). Both are positive
+integer counts, not fractions; elements shorter than their threshold cannot
+qualify. Qualifying labels are still ordered by minimum required-element
+fractional coverage (contacting residues divided by element length),
 then mean coverage; remaining ties use Ia, Ib, IIa, IIb, IIIa, IIIb order.
 This ordering is not a likelihood or calibrated probability.
 
 Element identities follow the [PIDDosome structural study](https://pmc.ncbi.nlm.nih.gov/articles/PMC2908332/)
 and [DD assembly description](https://pmc.ncbi.nlm.nih.gov/articles/PMC3320699/).
-Using whole helices/loops, sequential H labels, and a 50% cutoff are explicit
+Using whole helices/loops, sequential H labels, and these residue-count cutoffs are explicit
 implementation approximations. Six helices do not establish canonical topology
 or the orientation of the contacted helix surface. Chains containing multiple
 domains or fragmented/fused helices may fail or be misclassified. Validate labels
-against known structural face assignments and check stability at 0.3/0.5/0.7
+against known structural face assignments and check stability under alternative helix and loop count thresholds
 before using them as evidence. No reference-based classification is performed.
 
 ## Human-readable standard-output summary
