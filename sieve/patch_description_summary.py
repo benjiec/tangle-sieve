@@ -13,6 +13,7 @@ from sieve.interface_description import (
     residue_name, sasa_burial, secondary_structure, PHOSPHORYLATED,
 )
 from sieve.alphafold_pdockq2_patches import ranges
+from sieve.alphafold_dd_faces import candidate_faces, validate_threshold
 
 
 def find_dssp(explicit=None):
@@ -45,7 +46,10 @@ def residue_ranges(numbers):
 
 
 class PatchDescriptions:
-    def __init__(self, inputs, dssp, options=None):
+    def __init__(self, inputs, dssp, options=None, *, dd=False, dd_threshold=.5):
+        validate_threshold(dd_threshold)
+        self.dd, self.dd_threshold = dd, dd_threshold
+        self.details = {}
         self.models = {}
         self.options = options or DescriptionOptions()
         self.dssp = dssp
@@ -105,6 +109,69 @@ class PatchDescriptions:
         print('  Codes: H alpha, G 3₁₀, I pi, E strand, B isolated beta bridge, P polyproline; T/S/– loop; ? unassigned.', file=stream)
         print(file=stream)
 
+    def describe(self, row):
+        """One descriptor calculation shared by TSV and human-readable summaries."""
+        key = (row['source'], row['model'])
+        chains = (row['chain 1'], row['chain 2'])
+        cache_key = (*key, *chains, row['interface residues 1'], row['interface residues 2'])
+        if cache_key in self.details:
+            return self.details[cache_key]
+        model, codes, segments, _ = self.models[key]
+        pair_key = (*key, *chains)
+        if pair_key not in self.pairs:
+            self.pairs[pair_key] = (atom_interactions(model, chains, self.options),
+                                   sasa_burial(model, chains, self.options.sasa_points))
+        interactions, burial = self.pairs[pair_key]
+        selected = {c: {int(n) for n in row[f'interface residues {i}'].split(',') if n}
+                    for i,c in enumerate(chains,1)}
+        contexts = {c: neighborhood(model[c], selected[c], self.options.flank, self.options.radius) for c in chains}
+        structures = {}
+        for c in chains:
+            parts = []
+            for s in segments:
+                hits = selected[c].intersection(s['residues']) if s['chain'] == c else set()
+                if hits:
+                    parts.append(f"{s['label']}[{s['code']}]:{residue_ranges(hits)}")
+            missing = sorted(n for n in selected[c] if (c,n) not in codes)
+            if missing:
+                parts.append(f'unassigned:{residue_ranges(missing)}')
+            structures[c] = '; '.join(parts) or None
+        areas = {c: sum(burial[(c,n)]['buried_area'] for n in selected[c]) for c in chains}
+        cs = {c: sum(burial[(c,n)]['buried_nonpolar_area'] for n in selected[c]) for c in chains}
+        features = [x for x in interactions if x['residue_1'] in selected[chains[0]] and x['residue_2'] in selected[chains[1]]]
+        totals = Counter(kind for kind,_,_ in {(x['type'],x['residue_1'],x['residue_2']) for x in features})
+        salts = {}
+        for x in features:
+            if x['type'] == 'salt_bridge_candidate':
+                pair = (x['residue_1'],x['residue_2'])
+                if pair not in salts or x['distance'] < salts[pair]['distance']:
+                    salts[pair] = x
+        a,b = (contexts[c]['patch'] for c in chains)
+        if a['nominal_sidechain_charge'] is not None and b['nominal_sidechain_charge'] is not None:
+            delta = a['nominal_sidechain_charge']-b['nominal_sidechain_charge']
+        elif not a.get('unknown_ptm_count',0) and not b.get('unknown_ptm_count',0):
+            delta = '; '.join(f"{a.get(f'charge_phosphate_minus{n}',a['nominal_sidechain_charge']) - b.get(f'charge_phosphate_minus{n}',b['nominal_sidechain_charge']):+g} (phosphate −{n})" for n in (1,2))
+        else:
+            delta = None
+        total_area = sum(areas.values())
+        metrics = {'total buried surface area': total_area,
+                   'total C/S contribution percent': 100*sum(cs.values())/total_area if total_area > 0 else None,
+                   'nonpolar contacts': totals['nonpolar_contact'],
+                   'salt bridge candidates': totals['salt_bridge_candidate'],
+                   'steric overlap candidates': totals['steric_overlap_candidate'],
+                   'phosphate/basic contacts': totals['phosphate_basic_contact'],
+                   'salt bridge candidate heavy-atom distance min': min((x['distance'] for x in salts.values()),default=None),
+                   'salt bridge residues': '; '.join(f"{chains[0]}:{x['aa_1']}{a}/{x['atom_1']}–{chains[1]}:{x['aa_2']}{b}/{x['atom_2']} ({x['distance']:.3f} Å)" for (a,b),x in sorted(salts.items())) or None,
+                   'nominal patch charge difference': delta}
+        for i,c in enumerate(chains,1):
+            metrics.update({f'interface structure {i}': structures[c],
+                            f'patch {i} hydropathy mean': contexts[c]['patch']['mean_hydropathy'],
+                            f'candidate DD family face {i}': candidate_faces(c,selected[c],codes,segments,self.dd_threshold) if self.dd else None})
+        details = dict(metrics=metrics,contexts=contexts,structures=structures,areas=areas,cs=cs,
+                       selected=selected,interactions=interactions,totals=totals)
+        self.details[cache_key] = details
+        return details
+
     def write_patch(self, row, stream):
         key = (row['source'], row['model'])
         model, codes, segments, _ = self.models[key]
@@ -121,45 +188,26 @@ class PatchDescriptions:
                         missing = sorted({'P','O1P','O2P','O3P'} - {a.name for a in r})
                         if missing:
                             print(f'     WARNING: incomplete phosphate {c}:{r.resname}{r.id[1]}: missing {", ".join(missing)}; contacts use observed atoms only.', file=stream)
-        pair_key = (*key, *chains)
-        if pair_key not in self.pairs:
-            self.pairs[pair_key] = (atom_interactions(model, chains, self.options),
-                                    sasa_burial(model, chains, self.options.sasa_points))
-        interactions, burial = self.pairs[pair_key]
-        selected = {c: {n for n in map(int, row[f'interface residues {i}'].split(','))} if row[f'interface residues {i}'] else set() for i, c in enumerate(chains, 1)}
+        details = self.describe(row)
+        interactions, selected = details['interactions'], details['selected']
         origin = 'Inherited source pLDDT' if row.get('confidence origin') else 'Local pLDDT'
         print(f'     {origin} (unique contacting residues): ' + ' | '.join(f"{c} {number(row[f'interface pLDDT {i}'])}" for i, c in enumerate(chains, 1)), file=stream)
-        charges = {}
         for c in chains:
-            context = neighborhood(model[c], selected[c], self.options.flank, self.options.radius)
+            context = details['contexts'][c]
             patch = context['patch']
-            charges[c] = patch
-            parts = []
-            for s in segments:
-                hits = selected[c].intersection(s['residues']) if s['chain'] == c else set()
-                if hits:
-                    parts.append(f"{s['label']}[{s['code']}]:{residue_ranges(hits)}")
-            missing = sorted(n for n in selected[c] if (c,n) not in codes)
-            if missing:
-                parts.append(f'unassigned:{residue_ranges(missing)}')
-            print(f"     {c} patch sequence: {patch['sequence']} | secondary structure: {'; '.join(parts) or 'none'}", file=stream)
+            print(f"     {c} patch sequence: {patch['sequence']} | secondary structure: {details['structures'][c] or 'none'}", file=stream)
+            if self.dd:
+                print(f"       Candidate DD family face: {details['metrics'][f'candidate DD family face {chains.index(c)+1}'] or 'NA'} (six-helix coverage heuristic)", file=stream)
             for label in ('patch', 'upstream', 'downstream', 'sequence_shell', 'spatial_shell'):
                 values = context[label]
                 print(f"       {label}: n={values['count']} | mean hydropathy {number(values['mean_hydropathy'])} | nominal charge {charge_text(values)} | K/R {values['positive_count']}, D/E {values['negative_count']}, H {values['histidine_count']}", file=stream)
-            area = sum(burial[(c,n)]['buried_area'] for n in selected[c])
-            nonpolar = sum(burial[(c,n)]['buried_nonpolar_area'] for n in selected[c])
+            area = details['areas'][c]
+            nonpolar = details['cs'][c]
             print(f'       Buried area: {area:.1f} Å²; C/S contribution {nonpolar:.1f} Å²', file=stream)
-        a, b = (charges[c] for c in chains)
-        if a['nominal_sidechain_charge'] is not None and b['nominal_sidechain_charge'] is not None:
-            delta = f"{a['nominal_sidechain_charge']-b['nominal_sidechain_charge']:+g}"
-        elif not a.get('unknown_ptm_count',0) and not b.get('unknown_ptm_count',0):
-            delta = '; '.join(f"{a.get(f'charge_phosphate_minus{n}',a['nominal_sidechain_charge']) - b.get(f'charge_phosphate_minus{n}',b['nominal_sidechain_charge']):+g} (phosphate −{n})" for n in (1,2))
-        else:
-            delta = 'n/a (unsupported PTM)'
+        delta = details['metrics']['nominal patch charge difference']
+        delta = f'{delta:+g}' if isinstance(delta,(int,float)) else delta or 'n/a (unsupported PTM)'
         print(f'     Nominal patch charge difference ({chains[0]} − {chains[1]}): {delta}', file=stream)
-        features = [x for x in interactions if x['residue_1'] in selected[chains[0]] and x['residue_2'] in selected[chains[1]]]
-        counts = Counter((x['type'], x['residue_1'], x['residue_2']) for x in features)
-        totals = Counter(kind for kind, _, _ in counts)
+        totals = details['totals']
         print('     Contact chemistry (unique residue pairs): ' + ' | '.join(f'{kind} {totals[kind]}' for kind in ('nonpolar_contact','salt_bridge_candidate','steric_overlap_candidate')), file=stream)
         if key in self.modified:
             print(f"     Phosphate/basic contacts (unique residue pairs within patch): {totals['phosphate_basic_contact']}", file=stream)

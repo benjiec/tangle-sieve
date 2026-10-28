@@ -24,8 +24,9 @@ class PatchCommandTests(unittest.TestCase):
             self.assertEqual(SCRIPT.main(args), 0)
             before = output.read_text()
             rows = list(csv.DictReader(io.StringIO(before), delimiter='\t'))
-            self.assertEqual([r['scope'] for r in rows], ['full', 'patch'])
-            self.assertEqual(rows[1]['interface residues 1'], '1')
+            self.assertEqual([r['scope'] for r in rows], ['patch'])
+            self.assertEqual(rows[0]['patch 1 residues'], '1')
+            self.assertEqual(rows[0]['interface structure 1'], 'unassigned:1')
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 SCRIPT.main(args + ['--chains', 'A', 'X'])
             self.assertEqual(output.read_text(), before)

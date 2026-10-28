@@ -20,7 +20,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('input', help='fold_locator, CIF, ZIP, directory, or - to read locators/result TSV from stdin')
     parser.add_argument('--full-data', help='matching confidence JSON, required for CIF')
-    parser.add_argument('--output', help='optional patch TSV (recomputed; no cache); summary always printed')
+    parser.add_argument('--output', help='optional patch TSV (recomputed; no cache); summary printed unless --silent')
+    parser.add_argument('--silent', action='store_true', help='suppress stdout summaries; errors and warnings remain on stderr')
+    parser.add_argument('--dd', action='store_true', help='enable provisional six-helix DD face candidates')
+    parser.add_argument('--dd-helix-presence-threshold', type=float, default=.5, help='required helix/loop residue coverage, >0 through 1 (default 0.5)')
     parser.add_argument('--chains', nargs=2, metavar=('CHAIN1', 'CHAIN2'))
     parser.add_argument('--distance-cutoff', type=float, default=8.0)
     parser.add_argument('--max-bridge-residues', type=int, default=1)
@@ -36,6 +39,8 @@ def main(argv=None):
     dssp_group.add_argument('--no-dssp', action='store_true', help='omit secondary structure; retain other descriptors')
     args = parser.parse_args(argv)
     try:
+        from sieve.alphafold_dd_faces import validate_threshold
+        validate_threshold(args.dd_helix_presence_threshold)
         requests = list(read_patch_inputs(sys.stdin)) if args.input == '-' else [PatchInput(args.input)]
         output = Path(args.output).resolve() if args.output else None
         if output is not None:
@@ -60,9 +65,19 @@ def main(argv=None):
                     fold_ids=fold_ids, sequence_ids=sequence_ids, selected_model=request.model_id)
                 descriptions = PatchDescriptions(inputs, None if args.no_dssp else find_dssp(args.dssp),
                     DescriptionOptions(cutoff=args.distance_cutoff, flank=args.sequence_flank,
-                                       radius=args.spatial_radius, sasa_points=args.sasa_points))
-                write_summary(current_rows, targets, summary, descriptions, structure=args.structure,
-                              model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids, chains=args.chains)
+                                       radius=args.spatial_radius, sasa_points=args.sasa_points),
+                    dd=args.dd, dd_threshold=args.dd_helix_presence_threshold)
+                if not args.silent:
+                    write_summary(current_rows, targets, summary, descriptions, structure=args.structure,
+                                  model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids, chains=args.chains)
+                if output is not None:
+                    for row in current_rows:
+                        if row['scope'] != 'patch' or row['status'] != 'leaf':
+                            continue
+                        row.update(descriptions.describe(row)['metrics'])
+                        row.update(sequence_id=sequence_ids.get(row['source']), fold_id=fold_ids.get(row['source']))
+                        row['dd enabled'] = args.dd
+                        row['dd helix presence threshold'] = args.dd_helix_presence_threshold
                 rows.extend(current_rows)
             except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
                 if request.record_number is not None:
@@ -71,7 +86,8 @@ def main(argv=None):
         if output is not None:
             with output.open('w', newline='') as stream:
                 write_patches(rows, stream)
-        sys.stdout.write(summary.getvalue())
+        if not args.silent:
+            sys.stdout.write(summary.getvalue())
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
         parser.error(str(error))
     return 0

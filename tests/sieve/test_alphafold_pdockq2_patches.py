@@ -135,8 +135,9 @@ class PatchTests(unittest.TestCase):
         residues, pae = self.fixture()
         output = io.StringIO()
         write_patches(detect_patches(residues, pae), output)
-        self.assertIn('algorithm version', output.getvalue())
-        self.assertIn('separator residues', output.getvalue())
+        self.assertNotIn('algorithm version', output.getvalue())
+        self.assertIn('interchain CA distance min', output.getvalue())
+        self.assertNotIn('separator residues', output.getvalue())
 
 
 CIF = '''data_test

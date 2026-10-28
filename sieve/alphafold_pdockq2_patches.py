@@ -418,7 +418,7 @@ def write_summary(rows, targets, stream, descriptions=None, *, structure=False, 
                   f'(at most 10% residue overlap on chain {chains[1]}):', file=stream)
         else:
             print(f'Top 5 distinct sites on the last CIF chain ({", ".join(last_chains)}), across models (at most 10% last-chain residue overlap):', file=stream)
-        candidates = [r for r in rows if r['source'] == source and r['scope'] == 'patch'
+        candidates = [r for r in rows if r['source'] == source and r['scope'] == 'patch' and r['status'] == 'leaf'
                       and targets.get((source, r['model'])) in (r['chain 1'], r['chain 2'])
                       and (chains is None or {r['chain 1'], r['chain 2']} == set(chains))]
         if any(r['pDockQ2 max'] is None for r in candidates):
@@ -450,11 +450,41 @@ def write_summary(rows, targets, stream, descriptions=None, *, structure=False, 
             ), file=stream)
 
 
+# Export schema is independent of internal graph/hierarchy fields.
+EXPORT_RENAMES = {
+    **{f'residue count {i}': f'patch {i} residues' for i in (1,2)},
+    **{f'contact distance {stat}': f'interchain CA distance {stat}'
+       for stat in ('min','max','median','mean')},
+    **{f'nearest contact distance {stat} {i}': f'nearest interchain CA distance {stat} {i}'
+       for i in (1,2) for stat in ('min','max','median','mean')},
+}
+EXPORT_DROPPED = {'interface residues 1','interface residues 2','algorithm version',
+                  'parent id','depth','graph residues','separator residues','discarded residues'}
+METRIC_COLUMNS = ['interface structure 1','interface structure 2',
+    'total buried surface area','total C/S contribution percent',
+    'nonpolar contacts','salt bridge candidates','steric overlap candidates','phosphate/basic contacts',
+    'salt bridge candidate heavy-atom distance min','salt bridge residues',
+    'nominal patch charge difference','patch 1 hydropathy mean','patch 2 hydropathy mean',
+    'candidate DD family face 1','candidate DD family face 2']
+PATCH_COLUMNS = ['sequence_id','fold_id',
+    *[EXPORT_RENAMES.get(c,c) for c in OUTPUT_COLUMNS+EXTRA_COLUMNS if c not in EXPORT_DROPPED],
+    *METRIC_COLUMNS, 'dd enabled','dd helix presence threshold','confidence origin']
+
+
 def write_patches(rows, stream):
-    columns = OUTPUT_COLUMNS + EXTRA_COLUMNS
-    if any('confidence origin' in row for row in rows):
-        columns = columns + ['confidence origin']
-    writer = csv.DictWriter(stream, fieldnames=columns, delimiter='\t', lineterminator='\n')
+    """Export only final leaf patches; internal reference/split rows remain available."""
+    leaves = [r for r in rows if r['scope']=='patch' and r['status']=='leaf']
+    groups = {}
+    for row in leaves:
+        groups.setdefault((row.get('source'),row.get('model'),row['chain 1'],row['chain 2']),[]).append(row)
+    ranks = {}
+    for group in groups.values():
+        for rank,row in enumerate(sorted(group,key=lambda r:r['rank']),1):
+            ranks[id(row)] = rank
+    writer = csv.DictWriter(stream, fieldnames=PATCH_COLUMNS, delimiter='\t', lineterminator='\n')
     writer.writeheader()
-    for row in rows:
-        writer.writerow({k: 'NA' if v is None else f'{v:.6f}' if isinstance(v, float) else v for k, v in row.items()})
+    for row in leaves:
+        exported = {EXPORT_RENAMES.get(k,k):v for k,v in row.items() if k not in EXPORT_DROPPED}
+        exported['rank'] = ranks[id(row)]
+        writer.writerow({k: 'NA' if exported.get(k) is None else f'{exported[k]:.6f}' if isinstance(exported[k],float)
+                         else exported[k] for k in PATCH_COLUMNS})

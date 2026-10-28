@@ -54,6 +54,9 @@ processed in sorted order; subdirectories are not searched.
 | positional input | required | CIF, ZIP, or directory of ZIPs |
 | `--full-data` | none | Matching full-data JSON; required only for CIF input |
 | `--output` | optional | TSV path; recomputed and overwritten, no cache; omit for stdout summary only |
+| `--silent` | off | Suppress stdout; retain TSV output and stderr diagnostics |
+| `--dd` | off | Enable provisional six-helix DD face candidates |
+| `--dd-helix-presence-threshold` | 0.5 | Minimum required-element coverage, >0 through 1 |
 | `--chains A B` | all pairs | Analyze one distinct pair; summarize sites on the second argument; output chain order is lexical |
 | `--distance-cutoff` | 8.0 Å | Inclusive cutoff for interchain contacts and all graph edges |
 | `--max-bridge-residues` | 1 | Maximum vertex-separator cardinality; 0 disables splitting |
@@ -323,38 +326,95 @@ graph behavior, not a claim that either separator is a biological boundary.
 
 ## TSV column specification
 
-A full-interface reference is reported for every analyzed chain pair, even
-when no patch qualifies. It includes all interchain contacts before splitting
-and has no patch rank.
+Only final **leaf patches** are exported and considered for the top-five summary.
+Full-interface references and intermediate split parents remain internal to the
+algorithm. A single unsplit component can coincide with the full interface, but
+multiple or split patches differ. No qualifying leaves produces a header-only TSV.
 
 | Columns | Meaning |
 |---|---|
-| `source`, `model` | Absolute input CIF/ZIP path and model number (blank if CIF filename has no model number) |
-| `scope` | `full` reference or `patch` |
+| `sequence_id`, `fold_id` | Shared composition and seed-aware identity; `NA` if unavailable |
+| `source`, `model` | Input locator/path and model number |
+| `scope`, `status` | Always `patch`, `leaf` in the export |
 | `chain 1`, `chain 2` | Canonically ordered chain IDs |
-| `region 1`, `region 2` | Compact ranges of selected graph nodes on each chain; gaps remain gaps |
-| `contact count` | Remaining interchain residue-pair count |
-| `interface residues 1`, `interface residues 2` | Exact sorted residue numbers contributing contacts |
-| `interface pLDDT 1`, `interface pLDDT 2` | Means over those unique contacting residues |
-| `normalized PAE 1 to 2`, `normalized PAE 2 to 1` | Means of PAE weights, not mean PAE in Å |
-| `pDockQ2 1 to 2`, `pDockQ2 2 to 1`, `pDockQ2 max` | Directional scores and their maximum within this row |
-| `algorithm version` | Specification/algorithm version |
-| `patch id`, `parent id`, `depth` | Preorder IDs p1,p2,...; root has blank parent and depth 0; reference ID is `full` |
-| `status` | `reference`, `split`, or `leaf` |
-| `rank` | Across all qualifying parent/child patches in this model/chain pair; blank for reference |
-| `graph residues` | Chain-qualified selected graph vertices, including nodes no longer in interchain contacts |
-| `separator residues` | Nodes removed to produce this row's children; blank for leaves |
-| `discarded residues` | Nonqualifying fragments removed during this row's split, excluding the separator |
-| `residue count 1`, `residue count 2` | Counts of actual contacting residues |
-| `contact distance min/max/median/mean` | All-contact-pair distance statistics in Å |
-| `nearest contact distance min/max/median/mean 1/2` | Per-residue nearest-contact statistics for each chain in Å |
-| `distance cutoff`, `max bridge residues`, `min residues per chain`, `min contacts`, `max separator checks` | Invocation parameters repeated for reproducibility |
+| `region 1`, `region 2` | Selected graph-node ranges; gaps remain gaps |
+| `interface structure 1`, `interface structure 2` | DSSP elements and contacting residue ranges, as in stdout; missing assignments labeled `unassigned` |
+| `patch 1 residues`, `patch 2 residues` | Unique contacting residue counts |
+| `contact count` | Interchain Cα contact pairs |
+| `interface pLDDT 1/2`, `normalized PAE 1 to 2/2 to 1`, `pDockQ2 1 to 2/2 to 1`, `pDockQ2 max` | Existing confidence statistics |
+| `patch id`, `rank` | Existing preorder patch ID; rank among exported leaves within model/chain pair |
+| `interchain CA distance min/max/median/mean` | Interchain Cα–Cα contact-pair distances, Å |
+| `nearest interchain CA distance min/max/median/mean 1/2` | Per-residue nearest Cα-contact distributions, Å |
+| `total buried surface area` | Sum of selected-residue burial on both chains, Å²; not divided by two |
+| `total C/S contribution percent` | 100 × summed C/S burial / summed total burial; `NA` if denominator is zero |
+| `nonpolar contacts`, `salt bridge candidates`, `steric overlap candidates` | Unique residue-pair counts, with both endpoints in the patch |
+| `phosphate/basic contacts` | Separate unique residue-pair count for phosphate/basic geometric candidates |
+| `salt bridge candidate heavy-atom distance min` | Minimum distance among within-patch ordinary salt candidates, Å; `NA` if absent |
+| `salt bridge residues` | Semicolon-separated chain/residue/atom pairs, using the nearest atom pair per residue pair, with distance; `NA` if absent |
+| `nominal patch charge difference` | Side 1 minus side 2; numeric for ordinary residues, labeled −1/−2 phosphate scenarios when needed, `NA` for unsupported chemistry |
+| `patch 1 hydropathy mean`, `patch 2 hydropathy mean` | Means over unique contacting residues; `NA` for sets containing PTMs |
+| `candidate DD family face 1/2` | Ranked heuristic labels with `--dd`; `NA` when disabled/ineligible; `none` when eligible but no face qualifies |
+| `dd enabled`, `dd helix presence threshold` | DD settings for this run |
+| `confidence origin` | Inherited confidence note for assembled models; otherwise `NA` |
+| `distance cutoff`, `max bridge residues`, `min residues per chain`, `min contacts`, `max separator checks` | Patch-detection parameters |
 
-Ranking uses decreasing maximum pDockQ2, then decreasing contact count, then
-lexical `graph residues`. TSV rows retain tree order, not rank order. Scores
-are ranked before formatting to six decimals, so apparently tied printed
-scores can have different ranks. Parent and child rows overlap deliberately;
-never sum their contact counts as independent sites.
+Algorithm version, parent ID, depth, graph/separator/discarded residue lists,
+and raw interface-residue columns are omitted from the export. Descriptor
+calculations are shared between stdout and TSV. The stdout salt-candidate list
+also includes nearby candidates with only one endpoint in the patch, explicitly
+labeled; those contextual candidates do not contribute to TSV counts or distances.
+Phosphate/basic contacts are not counted as ordinary Asp/Glu salt candidates.
+
+Leaf rank uses decreasing pDockQ2, then contact count and deterministic residue
+ordering. TSV rows retain traversal order, not rank order. Values are formatted
+to six decimal places after ranking. Changing settings always recomputes results
+and replaces `--output`; there is no cache.
+
+### Silent output
+
+`--silent` suppresses stdout, including model and structure summaries. `--output`
+still writes the enriched TSV. With no output path, no file is created. Errors
+and library warnings remain on stderr.
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py locator \
+  --silent --output patches.tsv --dd --dd-helix-presence-threshold 0.5
+```
+
+### Candidate DD faces
+
+`--dd` enables a **screening heuristic**, not a validated DD topology classifier.
+Exactly six DSSP `H` segments are required on a chain, provisionally numbered
+H1–H6 in sequence order. Five/seven helices are not repaired or merged. Missing
+assignments inside that span make the chain ineligible. G/I helices are not
+counted as H segments. A required loop is the complete intervening sequence
+between its two H segments and must contain only DSSP `-`, `T`, or `S` codes;
+empty loops or structured insertions cannot satisfy a loop requirement.
+
+| Candidate | Required elements |
+|---|---|
+| Ia | H1, H4 |
+| Ib | H2, H3 |
+| IIa | H4, H4–H5 loop |
+| IIb | H5–H6 loop, H6 |
+| IIIa | H3 |
+| IIIb | H1–H2 loop, H3–H4 loop |
+
+For every required element, coverage is contacting patch residues divided by
+all residues in that element. Each must reach `--dd-helix-presence-threshold`
+(default 0.5; strictly greater than 0 and at most 1). The same threshold applies
+to loops. Qualifying labels are ordered by minimum required-element coverage,
+then mean coverage; remaining ties use Ia, Ib, IIa, IIb, IIIa, IIIb order.
+This ordering is not a likelihood or calibrated probability.
+
+Element identities follow the [PIDDosome structural study](https://pmc.ncbi.nlm.nih.gov/articles/PMC2908332/)
+and [DD assembly description](https://pmc.ncbi.nlm.nih.gov/articles/PMC3320699/).
+Using whole helices/loops, sequential H labels, and a 50% cutoff are explicit
+implementation approximations. Six helices do not establish canonical topology
+or the orientation of the contacted helix surface. Chains containing multiple
+domains or fragmented/fused helices may fail or be misclassified. Validate labels
+against known structural face assignments and check stability at 0.3/0.5/0.7
+before using them as evidence. No reference-based classification is performed.
 
 ## Human-readable standard-output summary
 
@@ -436,8 +496,8 @@ biological accuracy.
 
 ## Contact-distance statistics
 
-Each TSV row includes `contact distance min`, `contact distance max`,
-`contact distance median`, and `contact distance mean`, all in Å. The stdout
+Each TSV row includes `interchain CA distance min`, `interchain CA distance max`,
+`interchain CA distance median`, and `interchain CA distance mean`, all in Å. The stdout
 summary prints the same statistics to three decimal places (TSV: six).
 These describe exactly the **interchain Cα–Cα residue pairs included in that
 row's pDockQ2 score**, with each pair counted once and equally weighted.
@@ -463,11 +523,11 @@ The partner chain is the other chain of the current pair, not all other chains
 combined. Child patches use their own remaining partners after bridge removal.
 
 The TSV reports both directions using columns
-`nearest contact distance min 1`, `nearest contact distance max 1`,
-`nearest contact distance median 1`, `nearest contact distance mean 1`,
+`nearest interchain CA distance min 1`, `nearest interchain CA distance max 1`,
+`nearest interchain CA distance median 1`, `nearest interchain CA distance mean 1`,
 and the corresponding columns ending in `2`. Side 1/2 means `chain 1`/`chain 2`,
 not CIF order. Stdout selects whichever side is the last CIF chain. The existing
-`contact distance ...` columns are unchanged and stdout labels them **All
+`interchain CA distance ...` columns and stdout labels them **All
 interchain contact pairs**. Both use blanks for zero observations; for one
 residue all four nearest-contact statistics equal its minimum distance.
 
@@ -569,7 +629,7 @@ area used by the patch stdout summary. These calculations do not change pDockQ2.
 `alphafold-pdockq2-patches.py` now includes structural descriptors by default.
 The usual CIF plus `--full-data`, ZIP, and directory inputs still work. No second
 reference structure, alignment, output archive, or report directory is needed.
-The optional `--output` TSV retains its existing columns and all patch rows.
+The optional `--output` TSV exports enriched leaf-patch rows; see the column specification above.
 
 Before the full-interface scores, the summary groups chains by exact modeled
 amino-acid sequence within each input. Each group lists its chain IDs and length,
@@ -679,7 +739,7 @@ and nested fold locators. Missing files, fields, or null values print
 `n/a (unavailable)`; invalid score values or malformed JSON produce an error.
 These scores are reported as supplied, not calculated from PAE. For a renamed
 standalone CIF, a numbered `*_full_data_N.json` path can identify its adjacent
-summary file. The patch TSV schema is unchanged.
+summary file. The patch TSV includes both IDs; see the column specification above.
 
 The per-chain secondary structure/composition summary prints only with
 `--structure`. Patch-level descriptions still print by default. Existing
@@ -702,7 +762,7 @@ and skips folds without one.
 
 The full-interface pDockQ2 section is no longer printed. Per-model ipTM/pTM,
 optional `--structure` summaries, and the top distinct patch results remain.
-Full-interface rows are still calculated and included in the optional TSV output.
+Full-interface rows remain internal and are not exported; only leaf patches are written.
 
 ## Read locators or result rows from stdin
 
@@ -730,8 +790,7 @@ to all models. Piped scores/IDs do not replace source metadata.
 Directories and ZIP locators produced by `alphafold-overlap.py` support geometric
 patch analysis without a joint PAE matrix. PAE-dependent scores and pDockQ2 print
 `NA`; ranking uses contact count and deterministic ties. Known source pLDDT is
-labeled inherited. With derived rows, the optional TSV adds `confidence origin`;
-AF-only TSV columns remain unchanged. Pairwise contacts, burial, chemistry and
+labeled inherited. The TSV always includes `confidence origin`, populated for derived rows and `NA` otherwise. Pairwise contacts, burial, chemistry and
 secondary structure retain their existing definitions; this does not add combined
 multichain patch scoring. See [assembly documentation](alphafold-overlap.md).
 
