@@ -355,6 +355,7 @@ multiple or split patches differ. No qualifying leaves produces a header-only TS
 | `nominal patch charge difference` | Side 1 minus side 2; numeric for ordinary residues, labeled −1/−2 phosphate scenarios when needed, `NA` for unsupported chemistry |
 | `patch 1 hydropathy mean`, `patch 2 hydropathy mean` | Means over unique contacting residues; `NA` for sets containing PTMs |
 | `candidate DD family face 1/2` | Ranked heuristic labels with `--dd`; `NA` when disabled/ineligible; `none` when eligible but no face qualifies |
+| `candidate DD interface` | Complementary face classification: `Canonical`, `Variant`, `Atypical`, `None`, or `NA`; rules below |
 | `dd enabled`, `dd helix presence threshold`, `dd loop presence threshold` | DD settings for this run |
 | `confidence origin` | Inherited confidence note for assembled models; otherwise `NA` |
 | `distance cutoff`, `max bridge residues`, `min residues per chain`, `min contacts`, `max separator checks` | Patch-detection parameters |
@@ -418,6 +419,17 @@ then mean coverage; remaining ties use Ia, Ib, IIa, IIb, IIIa, IIIb order.
 This ordering is not a likelihood or calibrated probability.
 Partial labels expose threshold edge cases; classifications still depend on
 the contact distance cutoff.
+
+`candidate DD interface` considers all candidates on both sides. Complementary
+pairs are Ia/Ib, IIa/IIb, and IIIa/IIIb in either orientation. Any full
+complementary pair produces `Canonical`; otherwise a complementary pair with
+one or both faces marked `(partial)` produces `Variant`. Candidates without a
+complementary pair produce `Atypical`, including incompatible partial faces.
+If either side is `none`, the result is the literal string `None`. If either
+side is unavailable/ineligible (including DD disabled), the result is `NA`,
+which takes precedence over `None`. These categories describe element coverage,
+not validated interface geometry: even `Canonical` requires structural
+comparison to establish the correct relative orientation.
 
 Element identities follow the [PIDDosome structural study](https://pmc.ncbi.nlm.nih.gov/articles/PMC2908332/)
 and [DD assembly description](https://pmc.ncbi.nlm.nih.gov/articles/PMC3320699/).

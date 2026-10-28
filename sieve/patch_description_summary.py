@@ -13,7 +13,7 @@ from sieve.interface_description import (
     residue_name, sasa_burial, secondary_structure, PHOSPHORYLATED,
 )
 from sieve.alphafold_pdockq2_patches import ranges
-from sieve.alphafold_dd_faces import candidate_faces, validate_threshold
+from sieve.alphafold_dd_faces import candidate_faces, candidate_interface, validate_threshold
 
 
 def find_dssp(explicit=None):
@@ -169,6 +169,8 @@ class PatchDescriptions:
             metrics.update({f'interface structure {i}': structures[c],
                             f'patch {i} hydropathy mean': contexts[c]['patch']['mean_hydropathy'],
                             f'candidate DD family face {i}': candidate_faces(c,selected[c],codes,segments,self.dd_threshold,self.dd_loop_threshold) if self.dd else None})
+        metrics['candidate DD interface'] = candidate_interface(
+            metrics['candidate DD family face 1'], metrics['candidate DD family face 2'])
         details = dict(metrics=metrics,contexts=contexts,structures=structures,areas=areas,cs=cs,
                        selected=selected,interactions=interactions,totals=totals)
         self.details[cache_key] = details

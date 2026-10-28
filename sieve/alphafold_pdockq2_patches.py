@@ -465,7 +465,7 @@ METRIC_COLUMNS = ['interface structure 1','interface structure 2',
     'nonpolar contacts','salt bridge candidates','steric overlap candidates','phosphate/basic contacts',
     'salt bridge candidate heavy-atom distance min','salt bridge residues',
     'nominal patch charge difference','patch 1 hydropathy mean','patch 2 hydropathy mean',
-    'candidate DD family face 1','candidate DD family face 2']
+    'candidate DD family face 1','candidate DD family face 2','candidate DD interface']
 PATCH_COLUMNS = ['sequence_id','fold_id',
     *[EXPORT_RENAMES.get(c,c) for c in OUTPUT_COLUMNS+EXTRA_COLUMNS if c not in EXPORT_DROPPED],
     *METRIC_COLUMNS, 'dd enabled','dd helix presence threshold','dd loop presence threshold','confidence origin']

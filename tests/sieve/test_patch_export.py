@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from sieve.alphafold_manifest import sequence_id, fold_id
 from sieve.alphafold_pdockq2_patches import write_patches, detect_patches, Options
@@ -41,6 +42,15 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(metrics['nominal patch charge difference'],0)
         self.assertEqual(metrics['patch 1 hydropathy mean'],1.8)
         self.assertIsNone(metrics['candidate DD family face 1'])
+        self.assertIsNone(metrics['candidate DD interface'])
+        descriptions.dd=True
+        descriptions.details.clear()
+        with patch('sieve.patch_description_summary.candidate_faces', side_effect=['Ia','Ib (partial)']):
+            enriched=dict(row,**descriptions.describe(row)['metrics'])
+        out=io.StringIO();write_patches([enriched],out)
+        exported=list(csv.DictReader(io.StringIO(out.getvalue()),delimiter='\t'))
+        self.assertEqual(exported[0]['candidate DD interface'],'Variant')
+        descriptions.dd=False
         descriptions.details.clear()
         descriptions.pairs[('fold',0,'A','B')]=([],{(c,1):dict(buried_area=0,buried_nonpolar_area=0) for c in 'AB'})
         metrics=descriptions.describe(row)['metrics']
@@ -78,6 +88,7 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(rows[0]['sequence_id'],sequence_id(['AAAA','CCCC']))
             self.assertEqual(rows[0]['fold_id'],fold_id(42,['AAAA','CCCC']))
             self.assertEqual(rows[0]['candidate DD family face 1'],'NA')
+            self.assertEqual(rows[0]['candidate DD interface'],'NA')
             self.assertEqual(rows[0]['dd enabled'],'True')
             self.assertEqual(rows[0]['dd helix presence threshold'],'3')
             self.assertEqual(rows[0]['dd loop presence threshold'],'1')

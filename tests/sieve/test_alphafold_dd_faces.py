@@ -1,5 +1,5 @@
 import unittest
-from sieve.alphafold_dd_faces import candidate_faces, validate_threshold
+from sieve.alphafold_dd_faces import candidate_faces, candidate_interface, validate_threshold
 
 
 def structure(count=6):
@@ -14,6 +14,30 @@ def structure(count=6):
 
 
 class DDFaceTests(unittest.TestCase):
+    def test_interface_complements_both_orientations(self):
+        for a,b in (('Ia','Ib'),('IIa','IIb'),('IIIa','IIIb')):
+            for first,second in ((a,b),(b,a)):
+                for p,q in ((False,False),(True,False),(False,True),(True,True)):
+                    with self.subTest(first=first,second=second,p=p,q=q):
+                        self.assertEqual(candidate_interface(
+                            first+(' (partial)' if p else ''),
+                            second+(' (partial)' if q else '')),
+                            'Variant' if p or q else 'Canonical')
+
+    def test_interface_multiple_candidates_and_precedence(self):
+        for a,b,expected in (
+                ('Ia (partial); IIa','Ib; IIb','Canonical'),
+                ('IIIa; Ia','IIb; Ib (partial)','Variant'),
+                ('Ia (partial)','IIb','Atypical'),
+                ('Ia','Ia','Atypical'),
+                ('Ia; IIIa','IIa; IIb','Atypical'),
+                ('none','Ia','None'), ('none','none','None'),
+                (None,'Ia',None), ('NA','Ia',None),
+                (None,'none',None), ('NA','none',None), (None,None,None)):
+            for first,second in ((a,b),(b,a)):
+                with self.subTest(first=first,second=second):
+                    self.assertEqual(candidate_interface(first,second),expected)
+
     def test_exact_six_and_missing_assignments(self):
         for n in (0,5,7):
             c,s=structure(n);self.assertIsNone(candidate_faces('A',set(range(1,50)),c,s))
