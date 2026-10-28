@@ -46,17 +46,16 @@ def candidate_faces(chain, selected, codes, segments, threshold=3, loop_threshol
     elements = {f'H{i}': set(s['residues']) for i,s in enumerate(helices,1)}
     for i in range(1,6):
         interval = set(range(helices[i-1]['end']+1, helices[i]['start']))
-        # Do not call another structured segment (e.g. G or E) a canonical loop.
-        elements[f'L{i}{i+1}'] = interval if all(codes.get((chain,n)) in ('-', 'T', 'S') for n in interval) else set()
+        # Treat 3_10 helices as connector residues, but exclude other structures.
+        elements[f'L{i}{i+1}'] = interval if all(codes.get((chain,n)) in ('-', 'T', 'S', 'G') for n in interval) else set()
     ranked = []
     for order,(face,required) in enumerate(FACES.items()):
-        if any(not elements[e] for e in required):
-            continue
-        coverage = [len(selected & elements[e])/len(elements[e]) for e in required]
+        coverage = [len(selected & elements[e])/len(elements[e]) if elements[e] else 0
+                    for e in required]
         counts = [len(selected & elements[e]) for e in required]
         passed = [count >= (threshold if e.startswith('H') else loop_threshold)
                   for e, count in zip(required, counts)]
-        if all(counts) and any(passed):
+        if any(counts):
             partial = not all(passed)
             label = f'{face} (partial)' if partial else face
             ranked.append((partial, -min(coverage), -sum(coverage)/len(coverage), order, label))

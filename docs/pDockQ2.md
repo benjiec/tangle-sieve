@@ -390,8 +390,11 @@ Exactly six DSSP `H` segments are required on a chain, provisionally numbered
 H1–H6 in sequence order. Five/seven helices are not repaired or merged. Missing
 assignments inside that span make the chain ineligible. G/I helices are not
 counted as H segments. A required loop is the complete intervening sequence
-between its two H segments and must contain only DSSP `-`, `T`, or `S` codes;
-empty loops or structured insertions cannot satisfy a loop requirement.
+between its two H segments and must contain only DSSP `-`, `T`, `S`, or `G` codes.
+For this heuristic, 3₁₀ (`G`) residues count as loop/connector residues, including
+connectors consisting entirely of `G`. They retain their original DSSP labels
+in structure descriptions. Empty connectors or other structured insertions
+(such as `E`, `B`, or `I`) cannot satisfy a loop requirement.
 
 | Candidate | Required elements |
 |---|---|
@@ -407,11 +410,13 @@ contacting patch residues (default 3). Each required loop must contain at least
 `--dd-loop-presence-threshold` contacting residues (default 1). Both are positive
 integer counts, not fractions. A full match requires every required element to
 meet its threshold. A label followed by `(partial)` requires at least one
-contacting residue in every required element, at least one element meeting its
-threshold, and at least one falling below it. If any element has zero contacts,
-or none meets its threshold, the face is omitted. Elements shorter than their
-threshold can contribute to partial matches but cannot pass that threshold.
-The single-element IIIa face cannot be partial under this rule.
+contacting residue in any required element when the full criteria are unmet.
+Other required elements may have zero contacts, and no element needs to meet
+its threshold. Faces with no eligible contacts are omitted. Empty or excluded
+connectors contribute zero coverage but do not prevent a partial match through
+another component. Elements shorter than their threshold can contribute to
+partial matches. The single-element IIIa face is partial when H3 has contacts
+but falls below its threshold.
 
 Full matches precede partial matches. Within each group, labels are ordered by minimum required-element
 fractional coverage (contacting residues divided by element length),
