@@ -404,11 +404,20 @@ empty loops or structured insertions cannot satisfy a loop requirement.
 Each required helix must contain at least `--dd-helix-presence-threshold`
 contacting patch residues (default 3). Each required loop must contain at least
 `--dd-loop-presence-threshold` contacting residues (default 1). Both are positive
-integer counts, not fractions; elements shorter than their threshold cannot
-qualify. Qualifying labels are still ordered by minimum required-element
+integer counts, not fractions. A full match requires every required element to
+meet its threshold. A label followed by `(partial)` requires at least one
+contacting residue in every required element, at least one element meeting its
+threshold, and at least one falling below it. If any element has zero contacts,
+or none meets its threshold, the face is omitted. Elements shorter than their
+threshold can contribute to partial matches but cannot pass that threshold.
+The single-element IIIa face cannot be partial under this rule.
+
+Full matches precede partial matches. Within each group, labels are ordered by minimum required-element
 fractional coverage (contacting residues divided by element length),
 then mean coverage; remaining ties use Ia, Ib, IIa, IIb, IIIa, IIIb order.
 This ordering is not a likelihood or calibrated probability.
+Partial labels expose threshold edge cases; classifications still depend on
+the contact distance cutoff.
 
 Element identities follow the [PIDDosome structural study](https://pmc.ncbi.nlm.nih.gov/articles/PMC2908332/)
 and [DD assembly description](https://pmc.ncbi.nlm.nih.gov/articles/PMC3320699/).

@@ -35,6 +35,11 @@ def candidate_faces(chain, selected, codes, segments, threshold=3, loop_threshol
         if any(not elements[e] for e in required):
             continue
         coverage = [len(selected & elements[e])/len(elements[e]) for e in required]
-        if all(len(selected & elements[e]) >= (threshold if e.startswith('H') else loop_threshold) for e in required):
-            ranked.append((-min(coverage), -sum(coverage)/len(coverage), order, face))
+        counts = [len(selected & elements[e]) for e in required]
+        passed = [count >= (threshold if e.startswith('H') else loop_threshold)
+                  for e, count in zip(required, counts)]
+        if all(counts) and any(passed):
+            partial = not all(passed)
+            label = f'{face} (partial)' if partial else face
+            ranked.append((partial, -min(coverage), -sum(coverage)/len(coverage), order, label))
     return '; '.join(row[-1] for row in sorted(ranked)) or 'none'

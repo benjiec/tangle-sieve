@@ -4,6 +4,8 @@ import re
 import sys
 from collections import Counter
 
+from tangle import open_file_to_read
+
 from sieve.alphafold_manifest import INPUT_COLUMNS
 from sieve.alphafold_result_format import ResultRecord, write_result
 from sieve.alphafold_results import HIGHEST_CHOICES, REQUIRED_COLUMNS, confidence_rows, selection_score
@@ -11,7 +13,7 @@ from sieve.alphafold_results import HIGHEST_CHOICES, REQUIRED_COLUMNS, confidenc
 
 def read_names(path):
     # Only remove line terminators: spaces are part of the full FASTA header.
-    with open(path, encoding='utf-8') as stream:
+    with open_file_to_read(path) as stream:
         return {name for line in stream if (name := line.rstrip('\r\n'))}
 
 

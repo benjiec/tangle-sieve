@@ -326,6 +326,14 @@ sieve-py ~/git/tangle/sieve/scripts/alphafold-find.py manifest.tsv sequence_name
   --cross --max-chains 6 --max-unique-inputs 2 --highest
 ```
 
+Use `-` for the names file to read stdin:
+
+```sh
+cat sequence_names.txt | sieve-py ~/git/tangle/sieve/scripts/alphafold-find.py manifest.tsv - --highest
+```
+
+The shared `open_file_to_read` reader also accepts gzip-compressed names files.
+
 The names file contains one full FASTA header per line, without the leading `>`.
 Matching is exact and case-sensitive; spaces are preserved, and only line endings
 are removed. Empty lines and repeated names are ignored. An empty names file or

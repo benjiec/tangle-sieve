@@ -11,7 +11,7 @@ from sieve.alphafold_results import HIGHEST_CHOICES
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('manifest', help='manifest TSV')
-    parser.add_argument('sequence_names', help='exact full FASTA headers, one per line, without >')
+    parser.add_argument('sequence_names', help='file of exact full FASTA headers, one per line, without >; - reads stdin')
     parser.add_argument('--cross', action='store_true', help='require every input name to be listed')
     parser.add_argument('--max-chains', type=int, help='maximum total chain copies (inclusive)')
     parser.add_argument('--max-unique-inputs', type=int, help='maximum distinct input names (inclusive)')

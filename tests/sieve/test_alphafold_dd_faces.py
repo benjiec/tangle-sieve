@@ -46,7 +46,32 @@ class DDFaceTests(unittest.TestCase):
     def test_independent_loop_count_and_short_elements(self):
         c,s=structure()
         self.assertEqual(candidate_faces('A',{19,20,21,23},c,s), 'IIa')
-        self.assertEqual(candidate_faces('A',{19,20,21,23},c,s,3,2), 'none')
+        self.assertEqual(candidate_faces('A',{19,20,21,23},c,s,3,2), 'IIa (partial)')
         self.assertEqual(candidate_faces('A',{19,20,21,23,24},c,s,3,2), 'IIa')
         self.assertEqual(candidate_faces('A',{5,6,17,18},c,s,3,3), 'none')
-        self.assertEqual(candidate_faces('A',set(range(1,35)),c,s,5,1), 'IIIb')
+        self.assertEqual(candidate_faces('A',set(range(1,35)),c,s,5,1), 'IIIb; IIa (partial); IIb (partial)')
+
+    def test_partial_helix_and_full_before_partial(self):
+        c,s=structure()
+        self.assertEqual(candidate_faces('A',{1,2,3,19},c,s), 'Ia (partial)')
+        # Full IIb has lower fractional coverage than partial Ia, but ranks first.
+        selected={1,2,3,4,19,20,29,31,32,33}
+        self.assertEqual(candidate_faces('A',selected,c,s), 'IIb; Ia (partial)')
+
+    def test_partial_requires_all_present_and_one_passing(self):
+        c,s=structure()
+        for selected in ({1,2,3}, {1,2,19,20}, {13,14}, set()):
+            self.assertEqual(candidate_faces('A',selected,c,s), 'none')
+
+    def test_partial_loops_and_single_element(self):
+        c,s=structure()
+        self.assertEqual(candidate_faces('A',{5,6,17},c,s,3,2), 'IIIb (partial)')
+        self.assertEqual(candidate_faces('A',{5,17},c,s,3,2), 'none')
+        self.assertEqual(candidate_faces('A',{13,14},c,s), 'none')
+        self.assertEqual(candidate_faces('A',{13,14,15},c,s), 'IIIa')
+
+    def test_partial_ties_and_threshold_one(self):
+        c,s=structure()
+        selected={1,2,3,19,7,8,9,13}
+        self.assertEqual(candidate_faces('A',selected,c,s), 'Ia (partial); Ib (partial)')
+        self.assertEqual(candidate_faces('A',{1,19},c,s,1), 'Ia')

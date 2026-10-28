@@ -127,3 +127,27 @@ class FindTests(unittest.TestCase):
         a=self.row('a',[('B',1)]);self.write([a])
         with self.manifest.open('a') as stream:stream.write('incomplete\n')
         with self.assertRaisesRegex(ValueError,'incomplete'):self.execute()
+
+    def test_names_from_stdin_preserves_headers_and_stream(self):
+        a=self.row('stdin-match',[(' A full header ',1)])
+        b=self.row('stdin-other',[('A full header',1)])
+        self.write([a,b])
+        script=load_script(Path(__file__).resolve().parents[2]/'scripts/alphafold-find.py')
+        stdin=io.StringIO(' A full header \r\n\n A full header \n')
+        with patch('sys.stdin',stdin), patch('sys.stdout',new_callable=io.StringIO) as output:
+            self.assertEqual(script.main([str(self.manifest),'-']),0)
+        self.assertFalse(stdin.closed)
+        rows=list(csv.reader(io.StringIO(output.getvalue()),delimiter='\t'))
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0][0],a['fold_locator'])
+        with patch('sys.stdin',io.StringIO()), patch('sys.stdout',new_callable=io.StringIO) as output:
+            self.assertEqual(script.main([str(self.manifest),'-']),0)
+        self.assertEqual(output.getvalue(),'')
+
+    def test_gzip_names_using_shared_reader(self):
+        import gzip
+        a=self.row('gzip-match',[('B',1)]);self.write([a])
+        compressed=self.root/'names.gz'
+        with gzip.open(compressed,'wt',encoding='utf-8') as stream:stream.write('B\n')
+        self.assertEqual(run(self.manifest,compressed,self.out,self.err),0)
+        self.assertIn(a['fold_locator'],self.out.getvalue())
