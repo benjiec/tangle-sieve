@@ -317,3 +317,49 @@ Result listing supports these directories and ZIP locators, printing `NA` for
 ipTM/pTM/seed. `--highest` excludes these unscored rows. See
 [overlap and derived complexes](alphafold-overlap.md) for creation, recursive use,
 provenance, and artifact verification.
+
+## Find folds by candidate names
+
+```sh
+sieve-py ~/git/tangle/sieve/scripts/alphafold-find.py manifest.tsv sequence_names.txt
+sieve-py ~/git/tangle/sieve/scripts/alphafold-find.py manifest.tsv sequence_names.txt \
+  --cross --max-chains 6 --max-unique-inputs 2 --highest
+```
+
+The names file contains one full FASTA header per line, without the leading `>`.
+Matching is exact and case-sensitive; spaces are preserved, and only line endings
+are removed. Empty lines and repeated names are ignored. An empty names file or
+no matches produces no output. Names absent from the manifest do not cause errors.
+
+By default, a fold qualifies if any input description is listed. `--cross`
+requires every input description to be listed; it does not require every listed
+name to occur in each fold. Self-interactions qualify. Optional positive integer
+limits are inclusive and can be combined with each other and `--cross`:
+
+- `--max-chains N`: sum of all input copy counts must be at most N.
+- `--max-unique-inputs N`: number of distinct full descriptions must be at most N.
+
+Neither limit has a default restriction. A×3 + B×3 has six chains and two unique
+inputs. A×2 has two chains and one unique input, whether A appears in one column
+with two copies or two columns with one copy each.
+
+Output is the shared headerless five-column TSV: `fold_locator`, `fold_id`,
+`model_id`, `ipTM`, `pTM`, suitable for piping into the patch and Rosetta scripts.
+Each locator is processed once even if multiple names or repeated manifest rows
+match. Different locators remain separate, including those with the same fold ID.
+Contradictory IDs or aggregated input compositions for one locator are errors.
+
+Without `--highest`, every model in each qualifying fold is output, in manifest
+order then numeric model order; missing confidence values are `NA`.
+`--highest [ipTM|pTM|ipTM8_pTM2]` outputs one best model per sequence ID across
+qualifying folds. Omitting the value selects `0.8*ipTM + 0.2*pTM`. Models missing
+values required by the selected metric are ineligible; a sequence ID with no
+eligible model produces no row. Ties keep the first manifest fold, then the lowest
+model number. Sequence-ID groups are output in their first qualifying manifest
+occurrence order.
+
+The entire manifest is validated before folds are opened or results written.
+All five description/copies column pairs are required. Unused pairs must be blank;
+used pairs must contain a description and a positive integer copy count. Errors
+reading individual folds/models go to stderr; other results continue and the
+exit status is nonzero. Normal output has no headers, summaries, or titles.
