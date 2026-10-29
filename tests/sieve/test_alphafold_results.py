@@ -32,8 +32,8 @@ class ResultsTests(unittest.TestCase):
     def manifest_rows(self, rows):
         with self.manifest.open('w', newline='') as stream:
             writer = csv.writer(stream, delimiter='\t')
-            writer.writerow(['fold_locator', 'fold_id', 'sequence_id'])
-            writer.writerows(rows)
+            writer.writerow(['fold_locator', 'fold_id', 'sequence_id', 'input description', 'input chain'])
+            writer.writerows([*row, 'test sequence', 'A'] for row in rows)
 
     def directory(self, name, members):
         folder = self.root/name
@@ -259,3 +259,12 @@ class ResultsTests(unittest.TestCase):
         self.assertEqual(run(self.manifest, 'b911edee', self.out, self.err, include_seed=True), 1)
         self.assertEqual(self.out.getvalue(), '')
         self.assertIn('expected exactly one seed job-request file', self.err.getvalue())
+
+    def test_chain_rows_emit_models_once(self):
+        folder=self.directory('copies',{'fold_model_0.cif':'','fold_model_1.cif':''})
+        self.manifest_rows([(folder,'12345678','b911edee')])
+        with self.manifest.open('a') as stream:
+            stream.write(f'{folder}\t12345678\tb911edee\ttest sequence\tB\n')
+            stream.write(f'{folder}\t12345678\tb911edee\ttest sequence\tC\n')
+        self.assertEqual(self.run_results(),0)
+        self.assertEqual(len(self.out.getvalue().splitlines()),2)

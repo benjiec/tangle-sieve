@@ -32,7 +32,7 @@ errors occurred, otherwise 0. Errors and a final count go to stderr.
 
 ## TSV columns
 
-One row per fold location, with 16 columns:
+One row per chain, with nine columns. Fold metadata repeats on every chain row:
 
 - `source_path`: absolute extracted fold directory, or outermost filesystem ZIP.
 - `fold_path`: directory within that source, `.` at its root. Nested archive
@@ -47,21 +47,25 @@ One row per fold location, with 16 columns:
   e.g. `["AC","AC","DE"]`. PTM-containing folds use the conditional payload
   below for both IDs. Both IDs are reference labels, not cache keys.
 - `timestamp`: latest modification time among the fold's model CIF files.
-- `input 1 description`, `input 1 copies`, through `input 5 description`,
-  `input 5 copies`: all ten columns are always present. Each input represents a
-  distinct sequence, with its full FASTA header and chain copy count in one model.
-  Inputs are ordered by sequence lexically, matching the previous row ordering.
-  Unused pairs are blank. More than five distinct sequences is a fold error;
-  the fold is skipped without truncation. Individual chain IDs are no longer stored.
+- `source_type`: `alphafold` or `assembled`.
+- `input description`: full FASTA header for this chain's base sequence.
+- `input chain`: CIF author chain ID, matching the patch TSV's chain IDs.
+  CIF label IDs are mapped explicitly to author IDs; ambiguous or missing
+  mappings are errors. Mappings and sequence/PTM assignments must agree across
+  models. No chain IDs are invented. Rows within a fold are sorted by chain ID.
+
+Three copies produce three rows with distinct chain IDs and the same description.
+There is no five-input limit. Sequence and fold hash algorithms are unchanged.
+Old wide manifests must be removed and regenerated; they cannot supply chain IDs.
 
 Standard TSV quoting preserves tabs and quotes within FASTA headers.
 
 ## Checkpoints and reruns
 
 The two location fields identify a cache entry. After each successful fold, its
-row is committed using a temporary file and atomic replacement.
+entire set of chain rows is committed using a temporary file and atomic replacement.
 Completed folds are skipped solely by the two paths. Changes to FASTA sequences,
-headers, or model files do not refresh cached rows. Delete the row for a fold's
+headers, or model files do not refresh cached rows. Delete all rows for a fold's
 two paths to force reprocessing, or use a fresh TSV. FASTA validation still runs
 first on every invocation; invalid FASTA leaves the TSV untouched.
 
@@ -103,7 +107,7 @@ positions, duplicate modification positions, and inconsistent models are errors.
 FASTA matching and input description/copy columns still use the base sequence;
 modified and unmodified copies of that sequence share the same description.
 Their different modification states nevertheless contribute separately to IDs.
-Cached rows are not refreshed: delete any previously cached PTM row to reprocess
+Cached rows are not refreshed: delete all rows for a previously cached PTM fold to reprocess
 it. No manifest columns are added.
 
 Identity support does not establish support for PTM chemistry. Rosetta
@@ -209,7 +213,7 @@ containing these delimiters are not supported by this representation.
 sieve-py ~/git/tangle/sieve/scripts/alphafold-list-results.py manifest.tsv b911edee
 ```
 
-Selects rows with the exact `sequence_id` and prints headerless TSV to stdout:
+Groups chain rows by locator, selects folds with the exact `sequence_id` and prints headerless TSV to stdout:
 `fold_locator`, `fold_id`, `model_id`, `ipTM`, `pTM`. Folds retain manifest order;
 models are sorted numerically. IDs and locators are copied from the manifest,
 without recomputing hashes. Distinct fold locations remain separate.
@@ -309,9 +313,8 @@ an empty or partial valid stream.
 
 Directories written by `alphafold-overlap.py` can be registered through the same
 manifest command. Their `source_type` is `assembled`; AF rows are `alphafold`.
-Current-format manifests without this column are upgraded while preserving cached
-rows and IDs. Assembly IDs come from validated provenance, not a synthetic seed.
-The sequence-ID algorithm and five-distinct-sequence limit are unchanged.
+Incomplete or old wide manifests must be regenerated. Assembly IDs come from validated provenance, not a synthetic seed.
+The sequence-ID algorithm is unchanged; there is no distinct-sequence limit.
 
 Result listing supports these directories and ZIP locators, printing `NA` for
 ipTM/pTM/seed. `--highest` excludes these unscored rows. See
@@ -344,18 +347,17 @@ requires every input description to be listed; it does not require every listed
 name to occur in each fold. Self-interactions qualify. Optional positive integer
 limits are inclusive and can be combined with each other and `--cross`:
 
-- `--max-chains N`: sum of all input copy counts must be at most N.
+- `--max-chains N`: number of chain rows must be at most N.
 - `--max-unique-inputs N`: number of distinct full descriptions must be at most N.
 
 Neither limit has a default restriction. A×3 + B×3 has six chains and two unique
-inputs. A×2 has two chains and one unique input, whether A appears in one column
-with two copies or two columns with one copy each.
+inputs. A×2 occupies two chain rows and has one unique input.
 
 Output is the shared headerless five-column TSV: `fold_locator`, `fold_id`,
 `model_id`, `ipTM`, `pTM`, suitable for piping into the patch and Rosetta scripts.
-Each locator is processed once even if multiple names or repeated manifest rows
+Each locator is processed once even if multiple names or chain rows
 match. Different locators remain separate, including those with the same fold ID.
-Contradictory IDs or aggregated input compositions for one locator are errors.
+Conflicting fold metadata or duplicate chain IDs within a locator are errors.
 
 Without `--highest`, every model in each qualifying fold is output, in manifest
 order then numeric model order; missing confidence values are `NA`.
@@ -367,7 +369,7 @@ model number. Sequence-ID groups are output in their first qualifying manifest
 occurrence order.
 
 The entire manifest is validated before folds are opened or results written.
-All five description/copies column pairs are required. Unused pairs must be blank;
-used pairs must contain a description and a positive integer copy count. Errors
+The input description and input chain columns are required and nonempty.
+Each locator/chain pair must be unique, even for identical repeated rows. Errors
 reading individual folds/models go to stderr; other results continue and the
 exit status is nonzero. Normal output has no headers, summaries, or titles.

@@ -22,21 +22,9 @@ from sieve.alphafold_structure import open_structure_fold as open_result_fold, a
 def selected_folds(manifest, sequence_id):
     if not re.fullmatch('[0-9a-f]{8}', sequence_id):
         raise ValueError('sequence ID must be eight lowercase hexadecimal characters')
-    with open(manifest, encoding='utf-8', newline='') as stream:
-        reader = csv.DictReader(stream, delimiter='\t')
-        columns = reader.fieldnames
-        if (columns is None or len(set(columns)) != len(columns) or
-                any(c not in columns for c in REQUIRED_COLUMNS)):
-            raise ValueError('manifest requires unique fold_locator, fold_id, and sequence_id columns')
-        selected = []
-        for row in reader:
-            if None in row or any(not row.get(c) for c in REQUIRED_COLUMNS):
-                raise ValueError(f'incomplete or malformed manifest row at line {reader.line_num}')
-            if any(not re.fullmatch('[0-9a-f]{8}', row[c]) for c in ('fold_id', 'sequence_id')):
-                raise ValueError(f'invalid manifest ID at line {reader.line_num}')
-            if row['sequence_id'] == sequence_id:
-                selected.append(row)
-    return selected
+    from sieve.alphafold_manifest import read_manifest_groups
+    return [rows[0] for rows in read_manifest_groups(manifest).values()
+            if rows[0]['sequence_id'] == sequence_id]
 
 
 def confidence_rows(locator, error, *, include_seed=False):

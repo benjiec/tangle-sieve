@@ -23,6 +23,8 @@ def cif(sequences=('AC', 'AC', 'DE')):
     text += ''.join(f'{chr(64+i)} {i}\n' for i in range(1, len(sequences)+1))
     text += '#\nloop_\n_entity_poly_seq.entity_id\n_entity_poly_seq.num\n_entity_poly_seq.mon_id\n'
     text += ''.join(f'{i} {n} {names[a]}\n' for i, seq in enumerate(sequences, 1) for n, a in enumerate(seq, 1))
+    text += '#\nloop_\n_atom_site.label_asym_id\n_atom_site.auth_asym_id\n_atom_site.label_seq_id\n_atom_site.label_comp_id\n'
+    text += ''.join(f'{chr(64+i)} {chr(64+i)} {n} {names[a]}\n' for i,seq in enumerate(sequences,1) for n,a in enumerate(seq,1))
     return text+'#\n'
 
 
@@ -100,11 +102,9 @@ class ManifestTests(unittest.TestCase):
         self.fold()
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]['input 1 copies'], '2')
-        self.assertEqual(rows[0]['input 2 copies'], '1')
-        self.assertEqual(rows[0]['input 1 description'], 'first full header')
-        self.assertEqual(rows[0]['input 5 copies'], '')
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([r['input chain'] for r in rows], ['A','B','C'])
+        self.assertEqual([r['input description'] for r in rows], ['first full header']*2+['second full header'])
         self.fasta.write_text('>new full header\nAC\n>second\nDE\n>added\nAA\n')
         with patch('sieve.alphafold_manifest.identify', side_effect=AssertionError):
             self.assertEqual(self.run_manifest(), 0)
@@ -131,10 +131,10 @@ class ManifestTests(unittest.TestCase):
         self.fold('good')
         self.assertEqual(self.run_manifest(), 1)
         self.assertIn('ERROR: AA not found in ', self.log.getvalue())
-        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(len(self.rows()), 3)
         self.fasta.write_text(self.fasta.read_text()+'>missing\nAA\n')
         self.assertEqual(self.run_manifest(), 0)
-        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(self.rows()), 4)
         self.assertIn('cached: 1', self.log.getvalue())
 
     def test_missing_sequences_each_start_error_line(self):
@@ -187,7 +187,7 @@ class ManifestTests(unittest.TestCase):
         (self.inputs / '._junk.zip').write_text('ignored')
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 9)
         self.assertEqual(len({r['fold_id'] for r in rows}), 1)
         self.assertEqual({r['fold_path'] for r in rows}, {'.', 'inside.zip!/deep', 'other'})
 
@@ -196,7 +196,7 @@ class ManifestTests(unittest.TestCase):
         (self.inputs / 'bad.zip').write_text('bad')
         (self.inputs / 'nested.zip').write_bytes(archive_bytes({'bad.zip': b'bad', 'ok/fold_model_0.cif': cif()}))
         self.assertEqual(self.run_manifest(), 1)
-        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(self.rows()), 6)
 
     def test_duplicate_model_number(self):
         folder = self.fold()
@@ -227,7 +227,7 @@ class ManifestTests(unittest.TestCase):
         (bad / 'fold_job_request.json').write_text('{}')
         self.assertEqual(self.run_manifest(), 1)
         self.assertIn('no recognized model CIF', self.log.getvalue())
-        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(len(self.rows()), 3)
 
     def test_checkpoint_survives_later_interruption(self):
         from sieve.alphafold_manifest import identify
@@ -242,9 +242,9 @@ class ManifestTests(unittest.TestCase):
         with patch('sieve.alphafold_manifest.identify', side_effect=interrupted):
             with self.assertRaises(KeyboardInterrupt):
                 self.run_manifest()
-        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(len(self.rows()), 3)
         self.assertEqual(self.run_manifest(), 0)
-        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(self.rows()), 6)
 
     def test_failed_atomic_replace_keeps_previous_manifest(self):
         self.fold('a')
@@ -256,18 +256,13 @@ class ManifestTests(unittest.TestCase):
                 self.run_manifest()
         self.assertEqual(self.output.read_bytes(), original)
 
-    def test_five_inputs_and_overflow(self):
-        seqs = ('A', 'C', 'D', 'E', 'AA')
-        self.fasta.write_text(''.join(f'>description {seq}\n{seq}\n' for seq in (*seqs, 'CC')))
-        self.fold('five', (*seqs, 'A'))
-        self.fold('six', (*seqs, 'CC'))
-        self.assertEqual(self.run_manifest(), 1)
-        row = self.rows()[0]
-        self.assertEqual(len(row), 17)
-        self.assertEqual(row['source_type'], 'alphafold')
-        self.assertEqual(row['input 1 copies'], '2')
-        self.assertTrue(row['input 5 description'])
-        self.assertIn('6 distinct sequences; maximum is 5', self.log.getvalue())
+    def test_more_than_five_inputs(self):
+        seqs = ('A', 'C', 'D', 'E', 'AA', 'CC')
+        self.fasta.write_text(''.join(f'>description {seq}\n{seq}\n' for seq in seqs))
+        self.fold('six', (*seqs, 'A'))
+        self.assertEqual(self.run_manifest(), 0)
+        self.assertEqual(len(self.rows()), 7)
+        self.assertEqual(len(self.rows()[0]), 9)
 
     def test_directory_timestamp_latest_model_and_cache_frozen(self):
         folder = self.fold()
@@ -302,11 +297,11 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(self.run_manifest(), 0)
         self.assertEqual(self.rows()[0]['timestamp'], '2020-02-03T04:05:06')
 
-    def test_rejects_duplicate_or_incomplete_wide_cache(self):
+    def test_rejects_duplicate_or_incomplete_tall_cache(self):
         self.fold()
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
-        for bad_rows in ([rows[0], rows[0]], [dict(rows[0], **{'input 2 copies': ''})]):
+        for bad_rows in ([rows[0], rows[0]], [dict(rows[0], **{'input chain': ''})]):
             with self.output.open('w', newline='') as stream:
                 writer = csv.DictWriter(stream, fieldnames=COLUMNS, delimiter='\t')
                 writer.writeheader()
@@ -335,12 +330,12 @@ class ManifestTests(unittest.TestCase):
             with self.subTest(data=data):
                 request.write_text(json.dumps(data))
                 self.assertEqual(self.run_manifest(), 1)
-                self.assertEqual(len(self.rows()), 1)
+                self.assertEqual(len(self.rows()), 3)
         request.unlink()
         self.assertEqual(self.run_manifest(), 1)
         request.write_text(json.dumps([{'modelSeeds': [42]}]))
         self.assertEqual(self.run_manifest(), 0)
-        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(self.rows()), 6)
         self.assertEqual(len({r['fold_id'] for r in self.rows()}), 1)
 
     def test_seed_changes_fold_id_only(self):
@@ -350,7 +345,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(self.run_manifest(), 0)
         rows = self.rows()
         self.assertEqual(rows[0]['sequence_id'], rows[1]['sequence_id'])
-        self.assertNotEqual(rows[0]['fold_id'], rows[1]['fold_id'])
+        self.assertNotEqual(rows[0]['fold_id'], rows[3]['fold_id'])
 
     def test_model_filter(self):
         self.assertEqual(model_number('dir/fold_model_4.cif'), 4)
@@ -360,3 +355,49 @@ class ManifestTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class TallManifestTests(unittest.TestCase):
+    def test_author_mapping_matches_patch_parser(self):
+        from Bio.PDB import MMCIFIO
+        from Bio.PDB.MMCIF2Dict import MMCIF2Dict
+        from sieve.alphafold_manifest import author_chain_ids
+        from sieve.alphafold_pdockq2 import parse_model
+        from tests.sieve.test_alphafold_overlap import fixture
+        text=fixture([('A','AAAA',[0,0,0]),('B','CCCC',[6,0,0])])
+        data=MMCIF2Dict(io.StringIO(text))
+        data['_atom_site.auth_asym_id']=['X' if c=='A' else 'YZ' for c in data['_atom_site.label_asym_id']]
+        writer=MMCIFIO();writer.set_dict(data);stream=io.StringIO();writer.save(stream)
+        text=stream.getvalue()
+        mapping=author_chain_ids(text,chain_sequences(text))
+        residues,_=parse_model(text,dict(token_chain_ids=['X']*4+['YZ']*4,
+            token_res_ids=[1,2,3,4]*2,pae=[[1]*8 for _ in range(8)]))
+        self.assertEqual(mapping,{'A':'X','B':'YZ'})
+        self.assertEqual(set(mapping.values()),set(residues))
+        data['_atom_site.auth_asym_id']=['X']*len(data['_atom_site.auth_asym_id'])
+        writer.set_dict(data);stream=io.StringIO();writer.save(stream)
+        with self.assertRaisesRegex(ValueError,'ambiguous'):
+            author_chain_ids(stream.getvalue(),{'A':None,'B':None})
+
+    def test_mapping_differs_across_models(self):
+        case=ManifestTests();case.setUp()
+        try:
+            folder=case.fold()
+            model=folder/'fold_model_1.cif'
+            model.write_text(model.read_text().replace('A A 1','A X 1').replace('A A 2','A X 2'))
+            self.assertEqual(case.run_manifest(),1)
+            self.assertIn('chain IDs differ across models',case.log.getvalue())
+            self.assertFalse(case.output.exists())
+        finally:case.doCleanups()
+
+    def test_grouping_noncontiguous_rows_and_validation(self):
+        from sieve.alphafold_manifest import group_manifest_rows
+        base=dict(fold_locator='/one',fold_id='12345678',sequence_id='aaaaaaaa',
+                  **{'input chain':'A','input description':'same header'})
+        other=dict(base,fold_locator='/two')
+        second=dict(base,**{'input chain':'B'})
+        groups=group_manifest_rows([base,other,second])
+        self.assertEqual(list(groups),['/one','/two'])
+        self.assertEqual(len(groups['/one']),2)
+        for bad in (base,dict(second,sequence_id='bbbbbbbb'),dict(second,timestamp='different'),
+                    dict(second,**{'input description':''}),dict(second,**{'input chain':''})):
+            with self.assertRaises(ValueError):group_manifest_rows([base,bad])

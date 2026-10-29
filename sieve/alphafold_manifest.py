@@ -1,22 +1,21 @@
 """Validated sequence manifests with per-location, atomic TSV checkpoints."""
+import csv
 import hashlib
 import io
 import json
 import re
 import sys
 import zipfile
-from collections import defaultdict
 from pathlib import Path
 
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
-from Bio.Data.PDBData import protein_letters_3to1
 
 from sieve.alphafold_cache import read_cache, write_cache
-from sieve.alphafold_files import discover, fold_locator, model_number, read_seed
+from sieve.alphafold_files import discover, fold_locator, model_number
 from sieve.alphafold_composition import chain_compositions, hash_payload
 
 BASE_COLUMNS = ['source_path', 'fold_path', 'fold_locator', 'fold_id', 'sequence_id', 'timestamp', 'source_type']
-INPUT_COLUMNS = [f'input {i} {field}' for i in range(1, 6) for field in ('description', 'copies')]
+INPUT_COLUMNS = ['input description', 'input chain']
 COLUMNS = BASE_COLUMNS + INPUT_COLUMNS
 
 
@@ -99,8 +98,14 @@ def identify(fold, candidates):
     from sieve.alphafold_structure import request_for_fold
     request = request_for_fold(fold)
     compositions = None
+    author_chains = None
     for name in sorted(fold.models):
-        current = chain_compositions(fold.read(name), request)
+        text = fold.read(name)
+        current = chain_compositions(text, request)
+        mapping = author_chain_ids(text, current)
+        if author_chains is not None and mapping != author_chains:
+            raise ValueError(f'chain IDs differ across models: {name}')
+        author_chains = mapping
         if compositions is not None and current != compositions:
             raise ValueError(f'chain sequences differ across models (including PTMs): {name}')
         compositions = current
@@ -111,53 +116,88 @@ def identify(fold, candidates):
                for chain, sequence in chains.items() if sequence not in candidates]
     if missing:
         raise MissingSequences(missing)
-    grouped = defaultdict(list)
-    for chain, sequence in chains.items():
-        grouped[sequence].append(chain)
     from sieve.alphafold_structure import identity_for_fold
     identity = identity_for_fold(fold, fold.read(fold.models[0]))
-    return make_row(fold.source_path, fold.fold_path, identity['fold_id'], identity['sequence_id'],
-                    fold.timestamp, [(candidates[seq], len(ids)) for seq, ids in sorted(grouped.items())],
+    return make_rows(fold.source_path, fold.fold_path, identity['fold_id'], identity['sequence_id'],
+                    fold.timestamp, [(candidates[seq], author_chains[chain]) for chain, seq in
+                                     sorted(chains.items(), key=lambda item: author_chains[item[0]])],
                     source_type=identity['source_type'])
 
 
-def make_row(source, member, identifier, sequence_identifier, timestamp, inputs, source_type='alphafold'):
-    if len(inputs) > 5:
-        raise ValueError(f'fold contains {len(inputs)} distinct sequences; maximum is 5')
-    row = dict.fromkeys(COLUMNS, '')
-    row.update(source_path=source, fold_path=member, fold_locator=fold_locator(source, member),
-               fold_id=identifier, sequence_id=sequence_identifier, timestamp=timestamp, source_type=source_type)
-    for index, (description, copies) in enumerate(inputs, 1):
-        row[f'input {index} description'] = description
-        row[f'input {index} copies'] = str(copies)
-    return row
+def author_chain_ids(text, compositions):
+    """Map CIF label chains to author chains used by the patch MMCIFParser."""
+    data = MMCIF2Dict(io.StringIO(text))
+    labels = data.get('_atom_site.label_asym_id', [])
+    authors = data.get('_atom_site.auth_asym_id', [])
+    if not labels or len(labels) != len(authors):
+        raise ValueError('CIF lacks complete label/author chain mapping')
+    mapping = {}
+    reverse = {}
+    for label, author in zip(labels, authors):
+        if author in ('', '.', '?'):
+            raise ValueError('CIF has missing author chain ID')
+        if label in mapping and mapping[label] != author:
+            raise ValueError('ambiguous CIF label/author chain mapping')
+        if author in reverse and reverse[author] != label:
+            raise ValueError('ambiguous CIF author chain ID shared by label chains')
+        mapping[label] = author
+        reverse[author] = label
+    if set(compositions) - set(mapping):
+        raise ValueError('CIF lacks author chain mapping for a sequence')
+    return {chain: mapping[chain] for chain in compositions}
+
+
+def make_rows(source, member, identifier, sequence_identifier, timestamp, inputs, source_type='alphafold'):
+    base = dict(source_path=source, fold_path=member, fold_locator=fold_locator(source, member),
+                fold_id=identifier, sequence_id=sequence_identifier, timestamp=timestamp, source_type=source_type)
+    return [dict(base, **{'input description': description, 'input chain': chain})
+            for description, chain in inputs]
+
+
+def group_manifest_rows(rows):
+    """Validate and group tall rows by locator, preserving first-seen fold order."""
+    grouped = {}
+    for row in rows:
+        if None in row or any(value is None for value in row.values()):
+            raise ValueError('incomplete or malformed manifest row')
+        required = ('fold_locator', 'fold_id', 'sequence_id', *INPUT_COLUMNS)
+        if any(not row.get(c, '').strip() for c in required):
+            raise ValueError('incomplete manifest row: missing ID, locator, description, or chain')
+        if any(not re.fullmatch('[0-9a-f]{8}', row[c]) for c in ('fold_id', 'sequence_id')):
+            raise ValueError('invalid manifest ID')
+        locator = row['fold_locator']
+        group = grouped.setdefault(locator, [])
+        if group and any(row.get(c) != group[0].get(c) for c in BASE_COLUMNS):
+            raise ValueError(f'contradictory manifest metadata for locator {locator}')
+        if any(r['input chain'] == row['input chain'] for r in group):
+            raise ValueError(f'duplicate manifest chain {row["input chain"]} at {locator}')
+        group.append(row)
+    return grouped
+
+
+def read_manifest_groups(path):
+    with open(path, encoding='utf-8', newline='') as stream:
+        reader = csv.DictReader(stream, delimiter='\t', strict=True)
+        columns = reader.fieldnames
+        required = ('fold_locator', 'fold_id', 'sequence_id', *INPUT_COLUMNS)
+        if (columns is None or len(set(columns)) != len(columns)
+                or any(c not in columns for c in required)):
+            raise ValueError('manifest uses an older or incomplete format; remove it and regenerate with input description and input chain')
+        return group_manifest_rows(reader)
 
 
 def validate_cache(rows):
     cached = {}
-    for row in rows:
-        if any(row.get(c) is None for c in COLUMNS):
+    for group in group_manifest_rows(rows).values():
+        row = group[0]
+        if any(c not in row for c in COLUMNS):
             raise ValueError('cache contains an incomplete row')
-        if row.get('source_type') not in ('alphafold', 'assembled'):
+        if row['source_type'] not in ('alphafold', 'assembled'):
             raise ValueError('invalid manifest source_type')
         key = (row['source_path'], row['fold_path'])
-        if key in cached:
-            raise ValueError(f'duplicate cached fold: {key}')
-        if any(not re.fullmatch('[0-9a-f]{8}', row[c]) for c in ('fold_id', 'sequence_id')):
-            raise ValueError(f'invalid cached fold ID at {key}')
-        ended = False
-        count = 0
-        for index in range(1, 6):
-            description, copies = row[f'input {index} description'], row[f'input {index} copies']
-            if description == '' and copies == '':
-                ended = True
-            elif ended or not description.strip() or not copies.isdigit() or int(copies) < 1:
-                raise ValueError(f'invalid cached input {index} at {key}')
-            else:
-                count += 1
-        if not count:
-            raise ValueError(f'cached fold has no inputs: {key}')
-        cached[key] = row
+        if row['fold_locator'] != fold_locator(*key) or key in cached:
+            raise ValueError('inconsistent cached locator')
+        cached[key] = group
     return cached
 
 
@@ -165,10 +205,13 @@ def load_manifest(path):
     columns, rows = read_cache(path, ['source_path', 'fold_path', 'fold_id'])
     if columns is None:
         return {}, False
-    if any(c not in columns for c in COLUMNS if c != 'source_type'):
-        raise ValueError('manifest uses an older or incomplete format; remove it and regenerate with both fold_id and sequence_id')
-    converted = [{c: row.get(c, 'alphafold' if c == 'source_type' else None) for c in COLUMNS} for row in rows]
-    return validate_cache(converted), columns != COLUMNS
+    if len(set(columns)) != len(columns) or any(c not in columns for c in COLUMNS):
+        raise ValueError('manifest uses an older or incomplete format; remove it and regenerate with input description and input chain')
+    return validate_cache(rows), False
+
+
+def checkpoint(output, cached):
+    write_cache(output, COLUMNS, (row for group in cached.values() for row in group))
 
 
 def run(input_path, fasta_path, output_path, stderr=None):
@@ -187,17 +230,16 @@ def run(input_path, fasta_path, output_path, stderr=None):
     candidates = read_candidates(fasta_path, error)
     if errors:
         return 1
-    cached, migrate = load_manifest(output)
-    if migrate:
-        write_cache(output, COLUMNS, cached.values())
+    cached, _ = load_manifest(output)
     processed = skipped = found = 0
     for fold in discover(input_path, error):
         found += 1
         key = (fold.source_path, fold.fold_path)
         if key in cached:
-            if not cached[key]['timestamp']:
-                cached[key]['timestamp'] = fold.timestamp
-                write_cache(output, COLUMNS, cached.values())
+            if not cached[key][0]['timestamp']:
+                for row in cached[key]:
+                    row['timestamp'] = fold.timestamp
+                checkpoint(output, cached)
             skipped += 1
             continue
         try:
@@ -210,7 +252,7 @@ def run(input_path, fasta_path, output_path, stderr=None):
             error(f'{fold.source_path}::{fold.fold_path}: {exc}')
             continue
         cached[key] = updated
-        write_cache(output, COLUMNS, cached.values())
+        checkpoint(output, cached)
         processed += 1
     if not found and not errors:
         error(f'{input_path}: no folds found')

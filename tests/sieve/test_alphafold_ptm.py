@@ -129,7 +129,7 @@ class PTMTests(unittest.TestCase):
         output=self.root/'manifest.tsv';errors=io.StringIO()
         self.assertEqual(run(folder,fasta,output,errors),0,errors.getvalue())
         with output.open() as stream:row=next(csv.DictReader(stream,delimiter='\t'))
-        self.assertEqual(row['input 1 description'],'base sequence header');self.assertEqual(row['input 1 copies'],'2')
+        self.assertEqual(row['input description'],'base sequence header');self.assertEqual(row['input chain'],'A')
         expected=sequence_id(chain_compositions(cif(self.specs),self.request).values())
         self.assertEqual(row['sequence_id'],expected)
         with open_structure_fold(folder) as fold:

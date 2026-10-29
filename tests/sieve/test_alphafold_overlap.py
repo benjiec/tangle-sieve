@@ -159,7 +159,7 @@ class OverlapTests(unittest.TestCase):
         manifest_path=self.root/'manifest.tsv'
         self.assertEqual(manifest(out,fasta,manifest_path,io.StringIO()),0)
         cached,_=load_manifest(manifest_path)
-        self.assertEqual(next(iter(cached.values()))['source_type'],'assembled')
+        self.assertEqual(next(iter(cached.values()))[0]['source_type'],'assembled')
         text=io.StringIO()
         self.assertEqual(results(manifest_path,meta['sequence_id'],text,io.StringIO(),include_seed=True),0)
         self.assertTrue(text.getvalue().endswith('\t0\tNA\tNA\tNA\n'))
@@ -188,7 +188,7 @@ class OverlapTests(unittest.TestCase):
         self.assertIn('Inherited source pLDDT',printed.getvalue())
         self.assertIn('pDockQ2 NA',printed.getvalue())
 
-    def test_legacy_manifest_upgrade(self):
+    def test_incomplete_manifest_rejected(self):
         out,meta=self.assemble()
         fasta=self.root/'candidates.faa';fasta.write_text('>a\nAAAA\n>c\nCCCC\n>d\nDDDD\n')
         path=self.root/'cache.tsv'
@@ -197,11 +197,10 @@ class OverlapTests(unittest.TestCase):
         old_id=rows[0]['fold_id'];columns=[c for c in rows[0] if c!='source_type']
         with path.open('w') as stream:
             w=csv.DictWriter(stream,columns,delimiter='\t',extrasaction='ignore');w.writeheader();w.writerows(rows)
-        self.assertEqual(manifest(out,fasta,path,io.StringIO()),0)
-        cached,_=load_manifest(path)
-        self.assertEqual(len(cached),2)
-        self.assertEqual(cached[(str(self.a.resolve()),'.')]['fold_id'],old_id)
-        self.assertEqual(cached[(str(self.a.resolve()),'.')]['source_type'],'alphafold')
+        original=path.read_bytes()
+        with self.assertRaisesRegex(ValueError,'remove it and regenerate'):
+            manifest(out,fasta,path,io.StringIO())
+        self.assertEqual(path.read_bytes(),original)
 
     def test_all_models_error_report_and_atomic_failure(self):
         (self.a/'fold_model_1.cif').write_text('broken')

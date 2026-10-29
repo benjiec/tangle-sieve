@@ -27,14 +27,21 @@ class FindTests(unittest.TestCase):
             (folder/f'fold_summary_confidences_{model}.json').write_text(json.dumps(values))
         row = dict.fromkeys(INPUT_COLUMNS, '')
         row.update(fold_locator=str(folder), fold_id=fold, sequence_id=sequence)
-        for i,(description,copies) in enumerate(inputs,1):
-            row[f'input {i} description'],row[f'input {i} copies'] = description,str(copies)
+        row['_inputs'] = inputs
         return row
 
     def write(self, rows):
         with self.manifest.open('w', newline='') as stream:
             writer=csv.DictWriter(stream,fieldnames=['fold_locator','fold_id','sequence_id',*INPUT_COLUMNS],delimiter='\t')
-            writer.writeheader(); writer.writerows(rows)
+            writer.writeheader()
+            for row in rows:
+                chain = 0
+                for description,copies in row.get('_inputs', [(row.get('input description',''),1)]):
+                    for _ in range(copies):
+                        current={k:v for k,v in row.items() if k != '_inputs'}
+                        current['input description']=row.get('input description') or description
+                        current['input chain']=row.get('input chain') or chr(65+chain)
+                        writer.writerow(current);chain += 1
 
     def execute(self, **kwargs):
         code=run(self.manifest,self.names,self.out,self.err,**kwargs)
@@ -45,7 +52,7 @@ class FindTests(unittest.TestCase):
         b=self.row('b',[('A full header',1),('A full header',1)])
         c=self.row('c',[('A full header',3),('B',3)])
         d=self.row('d',[('B',1),('C',1)])
-        self.write([a,b,c,d,a])
+        self.write([a,b,c,d])
         cases=[({},[a,b,c,d]),({'cross':True},[a,b,c]),
                ({'max_chains':2},[a,b,d]),({'max_unique_inputs':1},[a,b]),
                ({'cross':True,'max_chains':6,'max_unique_inputs':2},[a,b,c]),
@@ -88,8 +95,8 @@ class FindTests(unittest.TestCase):
 
     def test_validation_before_fold_reads_and_conflicting_duplicates(self):
         a=self.row('a',[('B',1)])
-        bads=[dict(a,fold_id='bad'),dict(a,**{'input 1 copies':'0'}),
-              dict(a,**{'input 1 copies':'1.5'}),dict(a,**{'input 1 description':''})]
+        bads=[dict(a,fold_id='bad'),dict(a,sequence_id='bad'),
+              dict(a,**{'input chain':'A'})]
         for bad in bads:
             self.write([a,bad])
             with patch('sieve.alphafold_find.confidence_rows') as read:
@@ -110,11 +117,10 @@ class FindTests(unittest.TestCase):
                 self.assertEqual(script.main([str(self.manifest),str(self.names),*flags]),0)
                 self.assertEqual(len(output.getvalue().splitlines()),count)
 
-    def test_equivalent_duplicate_layout_and_highest_tie(self):
+    def test_multiple_chain_rows_and_highest_tie(self):
         a=self.row('a',[('B',2)])
-        duplicate=dict(a,**{'input 1 copies':'1','input 2 description':'B','input 2 copies':'1'})
         b=self.row('b',[('B',2)])
-        self.write([a,duplicate,b])
+        self.write([a,b])
         code,rows=self.execute(highest='ipTM')
         self.assertEqual(code,0);self.assertEqual(len(rows),1)
         self.assertEqual(rows[0][0],a['fold_locator'])
