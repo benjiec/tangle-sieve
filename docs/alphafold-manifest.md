@@ -339,8 +339,10 @@ The shared `open_file_to_read` reader also accepts gzip-compressed names files.
 
 The names file contains one full FASTA header per line, without the leading `>`.
 Matching is exact and case-sensitive; spaces are preserved, and only line endings
-are removed. Empty lines and repeated names are ignored. An empty names file or
-no matches produces no output. Names absent from the manifest do not cause errors.
+are removed. Empty lines and repeated names are ignored. An empty names file produces no output. Every requested name must occur in the
+manifest before filters are applied. Each missing name is reported to stderr;
+the command exits nonzero without reading models or emitting results. Names
+present in the manifest but excluded by filters are not errors.
 
 By default, a fold qualifies if any input description is listed. `--cross`
 requires every input description to be listed; it does not require every listed

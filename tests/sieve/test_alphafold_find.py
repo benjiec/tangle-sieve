@@ -17,7 +17,7 @@ class FindTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.manifest = self.root/'manifest.tsv'
-        self.names = self.root/'names.txt'; self.names.write_text('A full header\nB\n')
+        self.names = self.root/'names.txt'; self.names.write_text('B\n')
         self.out, self.err = io.StringIO(), io.StringIO()
 
     def row(self, name, inputs, sequence='aaaaaaaa', fold='11111111', scores=None):
@@ -48,6 +48,7 @@ class FindTests(unittest.TestCase):
         return code,list(csv.reader(io.StringIO(self.out.getvalue()),delimiter='\t'))
 
     def test_filters_self_cross_duplicates_and_limits(self):
+        self.names.write_text('A full header\nB\n')
         a=self.row('a',[('A full header',2)])
         b=self.row('b',[('A full header',1),('A full header',1)])
         c=self.row('c',[('A full header',3),('B',3)])
@@ -157,3 +158,33 @@ class FindTests(unittest.TestCase):
         with gzip.open(compressed,'wt',encoding='utf-8') as stream:stream.write('B\n')
         self.assertEqual(run(self.manifest,compressed,self.out,self.err),0)
         self.assertIn(a['fold_locator'],self.out.getvalue())
+
+    def test_missing_names_report_all_before_model_reads(self):
+        self.write([self.row('valid',[('B',1)])])
+        self.names.write_text('B\nmissing Z\nmissing A\nmissing Z\n')
+        with patch('sieve.alphafold_find.confidence_rows') as read:
+            code,rows=self.execute(cross=True,max_chains=1,highest='ipTM')
+            read.assert_not_called()
+        self.assertEqual((code,rows),(1,[]))
+        self.assertEqual(self.err.getvalue().splitlines(),[
+            "ERROR: sequence name not found in manifest: 'missing A'",
+            "ERROR: sequence name not found in manifest: 'missing Z'"])
+
+    def test_present_names_excluded_by_filters_are_not_errors(self):
+        self.write([self.row('large',[('B',3),('C',1)])])
+        for options in ({'cross':True},{'max_chains':2},{'max_unique_inputs':1}):
+            self.assertEqual(self.execute(**options),(0,[]))
+        self.assertEqual(self.err.getvalue(),'')
+
+    def test_missing_names_exact_match_empty_manifest_and_stdin(self):
+        self.write([self.row('exact',[('B',1)])])
+        self.names.write_text('b\n B \n')
+        self.assertEqual(self.execute(),(1,[]))
+        self.write([])
+        self.names.write_text('B\n')
+        self.assertEqual(self.execute(),(1,[]))
+        script=load_script(Path(__file__).resolve().parents[2]/'scripts/alphafold-find.py')
+        with patch('sys.stdin',io.StringIO('missing\n')), patch('sys.stdout',io.StringIO()) as out, patch('sys.stderr',io.StringIO()) as err:
+            self.assertEqual(script.main([str(self.manifest),'-']),1)
+            self.assertEqual(out.getvalue(),'')
+            self.assertIn('missing',err.getvalue())

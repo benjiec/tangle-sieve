@@ -9,6 +9,12 @@ from sieve.alphafold_result_format import ResultRecord, write_result
 from sieve.alphafold_results import HIGHEST_CHOICES, confidence_rows, selection_score
 
 
+class MissingNames(ValueError):
+    def __init__(self, names):
+        self.names = sorted(names)
+        super().__init__('sequence names not found in manifest: ' + ', '.join(repr(n) for n in self.names))
+
+
 def read_names(path):
     # Only remove line terminators: spaces are part of the full FASTA header.
     with open_file_to_read(path) as stream:
@@ -19,8 +25,13 @@ def selected_folds(manifest, names, *, cross=False, max_chains=None, max_unique_
     for label, value in [('max-chains', max_chains), ('max-unique-inputs', max_unique_inputs)]:
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
             raise ValueError(f'--{label} must be a positive integer')
+    groups = read_manifest_groups(manifest)
+    available = {row['input description'] for rows in groups.values() for row in rows}
+    missing = set(names) - available
+    if missing:
+        raise MissingNames(missing)
     selected = []
-    for rows in read_manifest_groups(manifest).values():
+    for rows in groups.values():
         inputs = {row['input description'] for row in rows}
         if not inputs.intersection(names) or (cross and not inputs.issubset(names)):
             continue
@@ -39,8 +50,13 @@ def run(manifest, names_file, stdout=None, stderr=None, *, cross=False,
     if highest is not None and highest not in HIGHEST_CHOICES:
         raise ValueError(f'invalid highest metric: {highest}')
     # Validate the entire manifest before opening any fold or writing results.
-    folds = selected_folds(manifest, read_names(names_file), cross=cross,
-                           max_chains=max_chains, max_unique_inputs=max_unique_inputs)
+    try:
+        folds = selected_folds(manifest, read_names(names_file), cross=cross,
+                               max_chains=max_chains, max_unique_inputs=max_unique_inputs)
+    except MissingNames as exc:
+        for name in exc.names:
+            print(f'ERROR: sequence name not found in manifest: {name!r}', file=stderr)
+        return 1
     failed = False
     def error(message):
         nonlocal failed
