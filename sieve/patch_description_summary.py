@@ -2,6 +2,7 @@
 from collections import Counter, defaultdict
 import math
 
+from Bio.PDB import NeighborSearch
 from Bio.Data.PDBData import protein_letters_3to1
 
 from sieve.interface_description import (
@@ -29,6 +30,22 @@ def charge_text(values):
 
 def residue_ranges(numbers):
     return ','.join(str(a) if a == b else f'{a}–{b}' for a, b in ranges(numbers))
+
+
+def salt_patch_residues(chain, selected, radius):
+    """Residues touching the original same-chain patch within radius (heavy atoms)."""
+    residues = protein_residues(chain)
+    def heavy(residue):
+        return [atom for atom in residue if atom.element.upper() not in ('H', 'D')]
+    atoms = [atom for residue in residues if residue.id[1] in selected for atom in heavy(residue)]
+    eligible = set(selected)
+    if not atoms:
+        return eligible
+    search = NeighborSearch(atoms)
+    for residue in residues:
+        if any(search.search(atom.coord, radius) for atom in heavy(residue)):
+            eligible.add(residue.id[1])
+    return eligible
 
 
 class PatchDescriptions:
@@ -121,7 +138,10 @@ class PatchDescriptions:
             structures[c] = '; '.join(parts) or None
         areas = {c: sum(burial[(c,n)]['buried_area'] for n in selected[c]) for c in chains}
         cs = {c: sum(burial[(c,n)]['buried_nonpolar_area'] for n in selected[c]) for c in chains}
-        features = [x for x in interactions if x['residue_1'] in selected[chains[0]] and x['residue_2'] in selected[chains[1]]]
+        salt_selected = {c: salt_patch_residues(model[c], selected[c], self.options.salt_patch_radius) for c in chains}
+        features = [x for x in interactions
+                    if x['residue_1'] in (salt_selected if x['type']=='salt_bridge_candidate' else selected)[chains[0]]
+                    and x['residue_2'] in (salt_selected if x['type']=='salt_bridge_candidate' else selected)[chains[1]]]
         totals = Counter(kind for kind,_,_ in {(x['type'],x['residue_1'],x['residue_2']) for x in features})
         salts = {}
         for x in features:
@@ -150,7 +170,7 @@ class PatchDescriptions:
             metrics.update({f'interface structure {i}': structures[c],
                             f'patch {i} hydropathy mean': contexts[c]['patch']['mean_hydropathy']})
         details = dict(metrics=metrics,contexts=contexts,structures=structures,areas=areas,cs=cs,
-                       selected=selected,interactions=interactions,totals=totals)
+                       selected=selected,salts=salts,interactions=interactions,totals=totals)
         self.details[cache_key] = details
         return details
 
@@ -191,18 +211,22 @@ class PatchDescriptions:
         print('     Contact chemistry (unique residue pairs): ' + ' | '.join(f'{kind} {totals[kind]}' for kind in ('nonpolar_contact','salt_bridge_candidate','steric_overlap_candidate')), file=stream)
         if key in self.modified:
             print(f"     Phosphate/basic contacts (unique residue pairs within patch): {totals['phosphate_basic_contact']}", file=stream)
-        salts = {}
+        salts = {(a,b,'salt_bridge_candidate'): x for (a,b),x in details['salts'].items()}
         for x in interactions:
-            if x['type'] not in ('salt_bridge_candidate', 'phosphate_basic_contact'):
+            if x['type'] != 'phosphate_basic_contact':
                 continue
             a, b = x['residue_1'], x['residue_2']
             if a not in selected[chains[0]] and b not in selected[chains[1]]:
                 continue
-            if (a,b) not in salts or x['distance'] < salts[(a,b)]['distance']:
-                salts[(a,b)] = x
-        for (a,b), x in sorted(salts.items()):
+            pair = (a,b,x['type'])
+            if pair not in salts or x['distance'] < salts[pair]['distance']:
+                salts[pair] = x
+        for (a,b,kind), x in sorted(salts.items()):
             scope = 'within patch' if a in selected[chains[0]] and b in selected[chains[1]] else 'one endpoint in patch'
+            if kind == 'salt_bridge_candidate' and scope != 'within patch':
+                scope = f'within {self.options.salt_patch_radius:g} Å of same-chain patch; counted'
             label = 'Phosphate/basic candidate' if x['type'] == 'phosphate_basic_contact' else 'Salt candidate'
             print(f"       {label} ({scope}): {chains[0]}:{x['aa_1']}{a}/{x['atom_1']}–{chains[1]}:{x['aa_2']}{b}/{x['atom_2']} {x['distance']:.2f} Å", file=stream)
+        print(f'     Salt candidates include endpoints within {self.options.salt_patch_radius:g} Å of their same-chain patch (heavy atoms).', file=stream)
         print(f'     Context: ±{self.options.flank} sequence residues; {self.options.radius:g} Å same-chain heavy-atom shell; shells exclude patch.', file=stream)
         print('     Chemistry is geometric evidence; nominal charge is not electrostatic potential.', file=stream)

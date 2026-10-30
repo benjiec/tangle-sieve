@@ -49,6 +49,49 @@ class ExportTests(unittest.TestCase):
         self.assertIsNone(metrics['salt bridge candidate heavy-atom distance min'])
         self.assertIsNone(metrics['salt bridge residues'])
 
+    def test_salt_proximity_scope_boundary_and_dedup(self):
+        import copy
+        import numpy as np
+        from sieve.patch_description_summary import salt_patch_residues
+        from sieve.interface_description import DescriptionOptions
+        descriptions=PatchDescriptions({('fold',0):CIF},None)
+        model=descriptions.models[('fold',0)][0]
+        for chain in model:
+            original=chain[1]
+            for atom in original:atom.coord=np.array([0.,0.,0.])
+            for n,z in ((2,3.5),(3,7.0),(4,3.5001)):
+                residue=copy.deepcopy(original);residue.id=(' ',n,' ')
+                for atom in residue:atom.coord=np.array([0.,0.,z])
+                chain.add(residue)
+            self.assertEqual(salt_patch_residues(chain,{1},3.5),{1,2})
+            self.assertEqual(salt_patch_residues(chain,set(),3.5),set())
+            self.assertEqual(salt_patch_residues(chain,{1},3.4),{1})
+            # Nearby hydrogen/deuterium must not bring residue 3 into the shell.
+            from Bio.PDB.Atom import Atom
+            for element in ('H','D'):
+                chain[3].add(Atom(element,np.array([0.,0.,0.]),0,1,' ',element,99,element=element))
+            self.assertEqual(salt_patch_residues(chain,{1},3.5),{1,2})
+        residues,pae=parse_model(CIF,DATA)
+        row=detect_patches(residues,pae,Options(min_residues_per_chain=1,min_contacts=1))[-1]
+        row.update(source='fold',model=0)
+        base=dict(type='salt_bridge_candidate',residue_1=1,residue_2=2,
+                  aa_1='K',aa_2='D',atom_1='NZ',atom_2='OD1',distance=3.)
+        interactions=[base,dict(base,atom_2='OD2',distance=2.7),dict(base,residue_1=2),
+                      dict(base,residue_2=3,distance=2.),dict(base,type='nonpolar_contact')]
+        burial={(c,1):dict(buried_area=0,buried_nonpolar_area=0) for c in 'AB'}
+        descriptions.pairs[('fold',0,'A','B')]=(interactions,burial)
+        metrics=descriptions.describe(row)['metrics']
+        self.assertEqual(metrics['salt bridge candidates'],2)
+        self.assertEqual(metrics['salt bridge candidate heavy-atom distance min'],2.7)
+        self.assertEqual(metrics['nonpolar contacts'],0)
+        self.assertNotIn('D3',metrics['salt bridge residues'])
+        output=io.StringIO();descriptions.write_patch(row,output)
+        self.assertIn('salt_bridge_candidate 2',output.getvalue())
+        self.assertEqual(output.getvalue().count('Salt candidate ('),2)
+        self.assertIn('within 3.5 Å of same-chain patch; counted',output.getvalue())
+        for invalid in (0,-1,float('nan'),float('inf')):
+            with self.assertRaises(ValueError):DescriptionOptions(salt_patch_radius=invalid)
+
     def test_export_only_leaves_and_removes_internal_fields(self):
         residues,pae=parse_model(CIF,DATA)
         rows=detect_patches(residues,pae,Options(min_residues_per_chain=1,min_contacts=1))

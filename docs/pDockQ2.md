@@ -345,9 +345,9 @@ multiple or split patches differ. No qualifying leaves produces a header-only TS
 | `nearest interchain CA distance min/max/median/mean 1/2` | Per-residue nearest Cα-contact distributions, Å |
 | `total buried surface area` | Sum of selected-residue burial on both chains, Å²; not divided by two |
 | `total C/S contribution percent` | 100 × summed C/S burial / summed total burial; `NA` if denominator is zero |
-| `nonpolar contacts`, `salt bridge candidates`, `steric overlap candidates` | Unique residue-pair counts, with both endpoints in the patch |
+| `nonpolar contacts`, `salt bridge candidates`, `steric overlap candidates` | Unique residue-pair counts; salt candidates include the same-chain 3.5 Å proximity region; other counts require both endpoints in the patch |
 | `phosphate/basic contacts` | Separate unique residue-pair count for phosphate/basic geometric candidates |
-| `salt bridge candidate heavy-atom distance min` | Minimum distance among within-patch ordinary salt candidates, Å; `NA` if absent |
+| `salt bridge candidate heavy-atom distance min` | Minimum distance among counted ordinary salt candidates, Å; `NA` if absent |
 | `salt bridge residues` | Semicolon-separated chain/residue/atom pairs, using the nearest atom pair per residue pair, with distance; `NA` if absent |
 | `nominal patch charge difference` | Side 1 minus side 2; numeric for ordinary residues, labeled −1/−2 phosphate scenarios when needed, `NA` for unsupported chemistry |
 | `patch 1 hydropathy mean`, `patch 2 hydropathy mean` | Means over unique contacting residues; `NA` for sets containing PTMs |
@@ -356,9 +356,17 @@ multiple or split patches differ. No qualifying leaves produces a header-only TS
 
 Algorithm version, parent ID, depth, graph/separator/discarded residue lists,
 and raw interface-residue columns are omitted from the export. Descriptor
-calculations are shared between stdout and TSV. The stdout salt-candidate list
-also includes nearby candidates with only one endpoint in the patch, explicitly
-labeled; those contextual candidates do not contribute to TSV counts or distances.
+calculations are shared between stdout and TSV. Ordinary salt candidates count
+when each endpoint residue is either in its own chain's patch or has any heavy
+atom within 3.5 Å (inclusive) of an original patch heavy atom on that same chain.
+The code parameter `DescriptionOptions.salt_patch_radius` defaults to 3.5 Å,
+independent of the charged-atom salt detection cutoff. Hydrogen and deuterium
+are excluded; proximity is not transitive. Both endpoints may be outside the
+patch if each meets this condition. Count each residue pair once and retain its
+nearest charged-atom pair for the list and minimum distance. Stdout lists the
+same counted ordinary salt candidates and labels proximity inclusions. This
+changes no patch membership, hashes, or other metrics. Phosphate/basic context
+listing retains its existing scope.
 Phosphate/basic contacts are not counted as ordinary Asp/Glu salt candidates.
 
 Leaf rank uses decreasing pDockQ2, then contact count and deterministic residue
@@ -622,9 +630,9 @@ Each of the existing top-five distinct sites now also reports:
 - Patch buried area per chain and its carbon/sulfur contribution, in Å².
 - Unique residue-pair counts for nonpolar contacts, candidate salt bridges, and
   candidate steric overlaps. Atom pairs are deduplicated within each type.
-- Interchain salt-bridge candidates touching the patch, with the shortest charged
-  atom pair per residue pair. Labels distinguish both endpoints inside the patch
-  from one endpoint outside the Cα-defined patch. This is not a search for
+- Interchain salt-bridge candidates within the patch or its same-chain 3.5 Å
+  heavy-atom proximity region, with the shortest charged atom pair per residue
+  pair. Labels distinguish within-patch and proximity inclusions. This is not a search for
   intrachain salt bridges or arbitrary nearby charged residues.
 - The difference between the two patches' nominal net charges (chain 1 minus
   chain 2). The separate signed charges are the primary quantities; their

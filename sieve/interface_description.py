@@ -36,9 +36,10 @@ class DescriptionOptions:
     salt_cutoff: float = 4.0
     nonpolar_cutoff: float = 4.5
     clash_overlap: float = 0.6
+    salt_patch_radius: float = 3.5
 
     def __post_init__(self):
-        for field in ('cutoff', 'radius', 'salt_cutoff', 'nonpolar_cutoff', 'clash_overlap'):
+        for field in ('cutoff', 'radius', 'salt_cutoff', 'nonpolar_cutoff', 'clash_overlap', 'salt_patch_radius'):
             if not math.isfinite(getattr(self, field)) or getattr(self, field) <= 0:
                 raise ValueError(f'{field} must be finite and positive')
         if (not isinstance(self.flank, int) or not isinstance(self.sasa_points, int)

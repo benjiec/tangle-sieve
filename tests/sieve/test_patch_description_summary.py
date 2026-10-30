@@ -47,9 +47,9 @@ class DescriptionSummaryTests(unittest.TestCase):
         output=io.StringIO(); descriptions.write_patch(row,output)
         text=output.getvalue()
         self.assertIn('salt_bridge_candidate 1',text)
-        self.assertEqual(text.count('Salt candidate ('),2)
+        self.assertEqual(text.count('Salt candidate ('),1)
         self.assertIn('within patch',text)
-        self.assertIn('one endpoint in patch',text)
+        self.assertNotIn('one endpoint in patch',text)
         self.assertIn('/OD2 3.00 Å',text)
 
 if __name__=='__main__': unittest.main()
