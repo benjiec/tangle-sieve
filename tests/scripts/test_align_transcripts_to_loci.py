@@ -88,10 +88,24 @@ class TestAlignTranscriptsToLoci(unittest.TestCase):
             path = Path(directory) / "input.fa"
             path.write_text(">rna description\nacgu\n")
             self.assertEqual(self.script.read_fasta(str(path)), [("rna", "ACGT")])
-            for text in ["", ">empty\n", ">x\nACGT\n>x\nACGT\n", ">x\nAC-G\n"]:
+            for text in ["", ">empty\n", ">x\nAC-G\n"]:
                 path.write_text(text)
                 with self.subTest(text=text), self.assertRaises(ValueError):
                     self.script.read_fasta(str(path))
+
+    def test_duplicate_fasta_ids_retain_first_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "input.fa"
+            for header in ("rna first", "rna second"):
+                for sequence in ("ACGT", "TTTT"):
+                    with self.subTest(header=header, sequence=sequence):
+                        path.write_text(
+                            f">rna first\nacgu\n>{header}\n{sequence}\n>other\nGGCC\n"
+                        )
+                        self.assertEqual(
+                            self.script.read_fasta(str(path)),
+                            [("rna", "ACGT"), ("other", "GGCC")],
+                        )
 
     def test_appends_with_one_header_including_empty_and_gzip_files(self):
         for suffix in (".tsv", ".tsv.gz"):

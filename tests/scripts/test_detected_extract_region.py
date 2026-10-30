@@ -134,13 +134,20 @@ class TestDetectedExtractRegionScript(unittest.TestCase):
             with open(output, encoding="utf-8") as stream:
                 self.assertEqual(stream.read(), ">p1_PF00023_4_9\nBCDEFGHI\n")
 
-    def test_rejects_duplicate_fasta_accessions(self):
+    def test_duplicate_fasta_accessions_retain_first_record(self):
         with tempfile.TemporaryDirectory() as tmpd:
             fasta = os.path.join(tmpd, "input.faa")
-            with open(fasta, "w", encoding="utf-8") as stream:
-                stream.write(">p1 first\nABC\n>p1 second\nDEF\n")
-            with self.assertRaisesRegex(ValueError, "Duplicate FASTA accession: p1"):
-                self.script.read_unique_fasta(fasta)
+            for header in ("p1 first", "p1 second"):
+                for sequence in ("ABC", "DEF"):
+                    with self.subTest(header=header, sequence=sequence):
+                        with open(fasta, "w", encoding="utf-8") as stream:
+                            stream.write(
+                                f">p1 first\nABC\n>{header}\n{sequence}\n>p2\nGHI\n"
+                            )
+                        self.assertEqual(
+                            self.script.read_unique_fasta(fasta),
+                            {"p1": "ABC", "p2": "GHI"},
+                        )
 
     def test_indices_and_offsets(self):
         cases = [

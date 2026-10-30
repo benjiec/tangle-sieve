@@ -113,8 +113,8 @@ class PipelineTests(unittest.TestCase):
         manifest = self.root/'manifest.tsv'
         with manifest.open('w', newline='') as stream:
             writer = csv.writer(stream, delimiter='\t')
-            writer.writerow(['fold_locator', 'fold_id', 'sequence_id'])
-            writer.writerow([str(self.folder), '12345678', 'b911edee'])
+            writer.writerow(['fold_locator', 'fold_id', 'sequence_id', 'input description', 'input chain'])
+            writer.writerow([str(self.folder), '12345678', 'b911edee', 'test sequence', 'A'])
         producer = subprocess.Popen([sys.executable, str(SCRIPTS/'alphafold-list-results.py'),
                                      str(manifest), 'b911edee', '--highest'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
