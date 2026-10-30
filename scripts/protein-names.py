@@ -46,7 +46,7 @@ def read_names(genome, accessions):
     return names
 
 
-def protein_names(accessions):
+def protein_names(accessions, allow_multiple):
     if not accessions:
         return {}
     path = _existing_path(Defaults.area_sequence_manifest_tsv())
@@ -67,7 +67,8 @@ def protein_names(accessions):
     for genome in sorted(genomes):
         for accession, name in read_names(genome, genomes[genome]).items():
             if accession in names and names[accession] != name:
-                raise ValueError(f"Conflicting protein names for {accession} across genomes")
+                if not allow_multiple:
+                    raise ValueError(f"Conflicting protein names for {accession} across genomes")
             names[accession] = name
     return names
 
@@ -75,11 +76,12 @@ def protein_names(accessions):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("accessions_file", help="text file with one accession per line, or '-' for stdin")
+    parser.add_argument("--allow-multiple", help="allow multiple names across genomes and use arbitrary one", default=False)
     args = parser.parse_args(argv)
     try:
         with open_file_to_read(args.accessions_file) as source:
             accessions = [line.strip() for line in source if line.strip()]
-        names = protein_names(accessions)
+        names = protein_names(accessions, args.allow_multiple)
     except (OSError, ValueError) as error:
         print(f"{parser.prog}: {error}", file=sys.stderr)
         return 1
