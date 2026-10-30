@@ -76,7 +76,7 @@ def protein_names(accessions, allow_multiple):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("accessions_file", help="text file with one accession per line, or '-' for stdin")
-    parser.add_argument("--allow-multiple", help="allow multiple names across genomes and use arbitrary one", default=False)
+    parser.add_argument("--allow-multiple", help="allow multiple names across genomes and use arbitrary one", default=False, action='store_true')
     args = parser.parse_args(argv)
     try:
         with open_file_to_read(args.accessions_file) as source:
