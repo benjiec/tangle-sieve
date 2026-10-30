@@ -11,7 +11,7 @@ class DescriptionSummaryTests(unittest.TestCase):
     def test_identical_sequence_different_structures_not_collapsed(self):
         segments=[{'chain':'A','label':'alpha1','code':'H','start':1,'end':1,'residues':[1]},
                   {'chain':'B','label':'beta1','code':'E','start':1,'end':1,'residues':[1]}]
-        with patch('sieve.patch_description_summary.secondary_structure', return_value=({('A',1):'H',('B',1):'E'},segments,{})):
+        with patch('sieve.alphafold_secondary.secondary_structure', return_value=({('A',1):'H',('B',1):'E'},segments,{})):
             descriptions=PatchDescriptions({('one',0):CIF,('two',0):CIF},'fake')
         output=io.StringIO(); descriptions.write_chains('one',output)
         text=output.getvalue()
@@ -57,18 +57,18 @@ if __name__=='__main__': unittest.main()
 class ExecutableDiscoveryTests(unittest.TestCase):
     def test_precedence_and_missing(self):
         from sieve.patch_description_summary import find_dssp
-        with patch.dict('os.environ', {'SIEVE_DSSP':'/env/mkdssp'}, clear=True), patch('sieve.patch_description_summary.shutil.which', side_effect=lambda value: value) as which:
+        with patch.dict('os.environ', {'SIEVE_DSSP':'/env/mkdssp'}, clear=True), patch('sieve.alphafold_secondary.shutil.which', side_effect=lambda value: value) as which:
             self.assertEqual(find_dssp('/explicit/mkdssp'),'/explicit/mkdssp')
             which.assert_called_once_with('/explicit/mkdssp')
             self.assertEqual(find_dssp(),'/env/mkdssp')
-        with patch.dict('os.environ', {}, clear=True), patch('sieve.patch_description_summary.shutil.which', return_value=None) as which:
+        with patch.dict('os.environ', {}, clear=True), patch('sieve.alphafold_secondary.shutil.which', return_value=None) as which:
             self.assertIsNone(find_dssp())
             which.assert_called_once_with('mkdssp')
 
     def test_invalid_and_empty_configuration_do_not_fall_back(self):
         from sieve.patch_description_summary import find_dssp
         for value in ('', '/missing/mkdssp'):
-            with patch.dict('os.environ', {'SIEVE_DSSP':value}, clear=True), patch('sieve.patch_description_summary.shutil.which', return_value=None):
+            with patch.dict('os.environ', {'SIEVE_DSSP':value}, clear=True), patch('sieve.alphafold_secondary.shutil.which', return_value=None):
                 with self.assertRaisesRegex(ValueError,'SIEVE_DSSP'):
                     find_dssp()
                 with self.assertRaisesRegex(ValueError,'--dssp'):

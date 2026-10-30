@@ -1,30 +1,16 @@
 """Human-readable structural descriptors for the existing patch summary."""
 from collections import Counter, defaultdict
-import io
 import math
-import os
-import shutil
 
-from Bio.PDB import MMCIFParser
 from Bio.Data.PDBData import protein_letters_3to1
 
 from sieve.interface_description import (
     DescriptionOptions, atom_interactions, neighborhood, protein_residues,
-    residue_name, sasa_burial, secondary_structure, PHOSPHORYLATED,
+    residue_name, sasa_burial, PHOSPHORYLATED,
 )
 from sieve.alphafold_pdockq2_patches import ranges
-from sieve.alphafold_dd_faces import candidate_faces, candidate_interface, validate_threshold
+from sieve.alphafold_secondary import find_dssp, load_secondary
 
-
-def find_dssp(explicit=None):
-    configured = explicit if explicit is not None else os.environ.get('SIEVE_DSSP')
-    if configured is not None:
-        executable = shutil.which(os.path.expanduser(configured)) if configured else None
-        if executable is None:
-            source = '--dssp' if explicit is not None else 'SIEVE_DSSP'
-            raise ValueError(f'{source} does not identify an executable: {configured!r}')
-        return executable
-    return shutil.which('mkdssp')
 
 
 def number(value):
@@ -46,11 +32,7 @@ def residue_ranges(numbers):
 
 
 class PatchDescriptions:
-    def __init__(self, inputs, dssp, options=None, *, dd=False, dd_threshold=3, dd_loop_threshold=1):
-        validate_threshold(dd_threshold)
-        validate_threshold(dd_loop_threshold, 'loop')
-        self.dd_loop_threshold = dd_loop_threshold
-        self.dd, self.dd_threshold = dd, dd_threshold
+    def __init__(self, inputs, dssp, options=None):
         self.details = {}
         self.models = {}
         self.options = options or DescriptionOptions()
@@ -58,7 +40,7 @@ class PatchDescriptions:
         self.pairs = {}
         self.modified = set()
         for key, cif in inputs.items():
-            model = MMCIFParser(QUIET=True).get_structure('summary', io.StringIO(cif))[0]
+            model, codes, segments, status = load_secondary(cif, dssp)
             for chain in model:
                 if any(r.resname not in protein_letters_3to1 for r in protein_residues(chain)):
                     self.modified.add(key)
@@ -71,7 +53,6 @@ class PatchDescriptions:
                         residue_name(residue)
                     if any(not all(math.isfinite(float(v)) for v in atom.coord) for atom in residue):
                         raise ValueError('nonfinite atom coordinates')
-            codes, segments, status = secondary_structure(model, cif, dssp)
             self.models[key] = (model, codes, segments, status)
 
     def write_chains(self, source, stream):
@@ -167,10 +148,7 @@ class PatchDescriptions:
                    'nominal patch charge difference': delta}
         for i,c in enumerate(chains,1):
             metrics.update({f'interface structure {i}': structures[c],
-                            f'patch {i} hydropathy mean': contexts[c]['patch']['mean_hydropathy'],
-                            f'candidate DD family face {i}': candidate_faces(c,selected[c],codes,segments,self.dd_threshold,self.dd_loop_threshold) if self.dd else None})
-        metrics['candidate DD interface'] = candidate_interface(
-            metrics['candidate DD family face 1'], metrics['candidate DD family face 2'])
+                            f'patch {i} hydropathy mean': contexts[c]['patch']['mean_hydropathy']})
         details = dict(metrics=metrics,contexts=contexts,structures=structures,areas=areas,cs=cs,
                        selected=selected,interactions=interactions,totals=totals)
         self.details[cache_key] = details
@@ -200,8 +178,6 @@ class PatchDescriptions:
             context = details['contexts'][c]
             patch = context['patch']
             print(f"     {c} patch sequence: {patch['sequence']} | secondary structure: {details['structures'][c] or 'none'}", file=stream)
-            if self.dd:
-                print(f"       Candidate DD family face: {details['metrics'][f'candidate DD family face {chains.index(c)+1}'] or 'NA'} (six-helix coverage heuristic)", file=stream)
             for label in ('patch', 'upstream', 'downstream', 'sequence_shell', 'spatial_shell'):
                 values = context[label]
                 print(f"       {label}: n={values['count']} | mean hydropathy {number(values['mean_hydropathy'])} | nominal charge {charge_text(values)} | K/R {values['positive_count']}, D/E {values['negative_count']}, H {values['histidine_count']}", file=stream)

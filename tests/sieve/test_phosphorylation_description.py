@@ -87,7 +87,7 @@ class PhosphorylationTests(unittest.TestCase):
 
     def test_dssp_not_disabled_for_phosphorylation_and_coverage(self):
         text = cif({'A': ('ASST', ((2, 'SEP'), (3, 'SEP')))})
-        with patch('sieve.patch_description_summary.secondary_structure', return_value=(
+        with patch('sieve.alphafold_secondary.secondary_structure', return_value=(
                 {('A', 2): 'H'}, [], {})) as dssp:
             descriptions = PatchDescriptions({('fold', 0): text}, 'mkdssp-test')
             self.assertEqual(dssp.call_args.args[2], 'mkdssp-test')

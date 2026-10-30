@@ -307,11 +307,12 @@ def input_models(path, full_data=None, *, model_scores=None, model_seeds=None, s
         raise ValueError('input must be a CIF, ZIP, or directory of extracted models or ZIPs')
 
 
-def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None, model_scores=None, fold_ids=None, sequence_ids=None, selected_model=None):
+def analyze(path, full_data=None, options=None, chains=None, summary_targets=None, summary_inputs=None, model_scores=None, fold_ids=None, sequence_ids=None, selected_model=None, model_records=None, model_seeds=None):
     rows = []
-    seeds = {} if fold_ids is not None else None
+    seeds = model_seeds if model_seeds is not None else {}
     compositions = {}
-    for source, model, cif, data in input_models(path, full_data, model_scores=model_scores, model_seeds=seeds, selected_model=selected_model):
+    records = model_records if model_records is not None else input_models(path, full_data, model_scores=model_scores, model_seeds=seeds, selected_model=selected_model)
+    for source, model, cif, data in records:
         if fold_ids is not None or sequence_ids is not None:
             try:
                 sequences = list(chain_compositions(cif, data.get('_job_request')).values())
@@ -352,7 +353,10 @@ def analyze(path, full_data=None, options=None, chains=None, summary_targets=Non
         if summary_targets is not None:
             summary_targets[(source, '' if model is None else model)] = (
                 chains[1] if chains is not None else next(reversed(residues), None))
+        from sieve.alphafold_patch_identity import model_identity, attach_patch_identity
+        identity = model_identity(cif, data, seeds.get((source, '' if model is None else model)))
         for row in patches:
+            attach_patch_identity(row, identity, model)
             row.update(source=source, model='' if model is None else model)
             if '_assembly' in data:
                 row['confidence origin'] = 'inherited per-chain values; no assembled confidence'
@@ -452,6 +456,7 @@ def write_summary(rows, targets, stream, descriptions=None, *, structure=False, 
 
 # Export schema is independent of internal graph/hierarchy fields.
 EXPORT_RENAMES = {
+    'patch id': 'patch label',
     **{f'residue count {i}': f'patch {i} residues' for i in (1,2)},
     **{f'contact distance {stat}': f'interchain CA distance {stat}'
        for stat in ('min','max','median','mean')},
@@ -464,11 +469,10 @@ METRIC_COLUMNS = ['interface structure 1','interface structure 2',
     'total buried surface area','total C/S contribution percent',
     'nonpolar contacts','salt bridge candidates','steric overlap candidates','phosphate/basic contacts',
     'salt bridge candidate heavy-atom distance min','salt bridge residues',
-    'nominal patch charge difference','patch 1 hydropathy mean','patch 2 hydropathy mean',
-    'candidate DD family face 1','candidate DD family face 2','candidate DD interface']
-PATCH_COLUMNS = ['sequence_id','fold_id',
+    'nominal patch charge difference','patch 1 hydropathy mean','patch 2 hydropathy mean']
+PATCH_COLUMNS = ['sequence_id','fold_id','patch_id',
     *[EXPORT_RENAMES.get(c,c) for c in OUTPUT_COLUMNS+EXTRA_COLUMNS if c not in EXPORT_DROPPED],
-    *METRIC_COLUMNS, 'dd enabled','dd helix presence threshold','dd loop presence threshold','confidence origin']
+    *METRIC_COLUMNS, 'confidence origin']
 
 
 def write_patches(rows, stream):

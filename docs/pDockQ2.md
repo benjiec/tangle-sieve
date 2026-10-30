@@ -55,9 +55,6 @@ processed in sorted order; subdirectories are not searched.
 | `--full-data` | none | Matching full-data JSON; required only for CIF input |
 | `--output` | optional | TSV path; recomputed and overwritten, no cache; omit for stdout summary only |
 | `--silent` | off | Suppress stdout; retain TSV output and stderr diagnostics |
-| `--dd` | off | Enable provisional six-helix DD face candidates |
-| `--dd-helix-presence-threshold` | 3 | Minimum contacting residue count per required helix; positive integer |
-| `--dd-loop-presence-threshold` | 1 | Minimum contacting residue count per required loop; positive integer |
 | `--chains A B` | all pairs | Analyze one distinct pair; summarize sites on the second argument; output chain order is lexical |
 | `--distance-cutoff` | 8.0 Å | Inclusive cutoff for interchain contacts and all graph edges |
 | `--max-bridge-residues` | 1 | Maximum vertex-separator cardinality; 0 disables splitting |
@@ -354,9 +351,6 @@ multiple or split patches differ. No qualifying leaves produces a header-only TS
 | `salt bridge residues` | Semicolon-separated chain/residue/atom pairs, using the nearest atom pair per residue pair, with distance; `NA` if absent |
 | `nominal patch charge difference` | Side 1 minus side 2; numeric for ordinary residues, labeled −1/−2 phosphate scenarios when needed, `NA` for unsupported chemistry |
 | `patch 1 hydropathy mean`, `patch 2 hydropathy mean` | Means over unique contacting residues; `NA` for sets containing PTMs |
-| `candidate DD family face 1/2` | Ranked heuristic labels with `--dd`; `NA` when disabled/ineligible; `none` when eligible but no face qualifies |
-| `candidate DD interface` | Complementary face classification: `Canonical`, `Variant`, `Atypical`, `None`, or `NA`; rules below |
-| `dd enabled`, `dd helix presence threshold`, `dd loop presence threshold` | DD settings for this run |
 | `confidence origin` | Inherited confidence note for assembled models; otherwise `NA` |
 | `distance cutoff`, `max bridge residues`, `min residues per chain`, `min contacts`, `max separator checks` | Patch-detection parameters |
 
@@ -380,70 +374,19 @@ and library warnings remain on stderr.
 
 ```sh
 sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py locator \
-  --silent --output patches.tsv --dd --dd-helix-presence-threshold 3 --dd-loop-presence-threshold 1
+  --silent --output patches.tsv
 ```
 
-### Candidate DD faces
+### Domain-specific face annotation
 
-`--dd` enables a **screening heuristic**, not a validated DD topology classifier.
-Exactly six DSSP `H` segments are required on a chain, provisionally numbered
-H1–H6 in sequence order. Five/seven helices are not repaired or merged. Missing
-assignments inside that span make the chain ineligible. G/I helices are not
-counted as H segments. A required loop is the complete intervening sequence
-between its two H segments and must contain only DSSP `-`, `T`, `S`, or `G` codes.
-For this heuristic, 3₁₀ (`G`) residues count as loop/connector residues, including
-connectors consisting entirely of `G`. They retain their original DSSP labels
-in structure descriptions. Empty connectors or other structured insertions
-(such as `E`, `B`, or `I`) cannot satisfy a loop requirement.
+Domain interpretation has moved to [alphafold-death-faces.py](alphafold-death-faces.md).
+The patch command no longer accepts DD flags or emits DD classification/settings
+columns. It retains secondary-structure and chemistry descriptors.
 
-| Candidate | Required elements |
-|---|---|
-| Ia | H1, H4 |
-| Ib | H2, H3 |
-| IIa | H4, H4–H5 loop |
-| IIb | H5–H6 loop, H6 |
-| IIIa | H3 |
-| IIIb | H1–H2 loop, H3–H4 loop |
-
-Each required helix must contain at least `--dd-helix-presence-threshold`
-contacting patch residues (default 3). Each required loop must contain at least
-`--dd-loop-presence-threshold` contacting residues (default 1). Both are positive
-integer counts, not fractions. A full match requires every required element to
-meet its threshold. A label followed by `(partial)` requires at least one
-contacting residue in any required element when the full criteria are unmet.
-Other required elements may have zero contacts, and no element needs to meet
-its threshold. Faces with no eligible contacts are omitted. Empty or excluded
-connectors contribute zero coverage but do not prevent a partial match through
-another component. Elements shorter than their threshold can contribute to
-partial matches. The single-element IIIa face is partial when H3 has contacts
-but falls below its threshold.
-
-Full matches precede partial matches. Within each group, labels are ordered by minimum required-element
-fractional coverage (contacting residues divided by element length),
-then mean coverage; remaining ties use Ia, Ib, IIa, IIb, IIIa, IIIb order.
-This ordering is not a likelihood or calibrated probability.
-Partial labels expose threshold edge cases; classifications still depend on
-the contact distance cutoff.
-
-`candidate DD interface` considers all candidates on both sides. Complementary
-pairs are Ia/Ib, IIa/IIb, and IIIa/IIIb in either orientation. Any full
-complementary pair produces `Canonical`; otherwise a complementary pair with
-one or both faces marked `(partial)` produces `Variant`. Candidates without a
-complementary pair produce `Atypical`, including incompatible partial faces.
-If either side is `none`, the result is the literal string `None`. If either
-side is unavailable/ineligible (including DD disabled), the result is `NA`,
-which takes precedence over `None`. These categories describe element coverage,
-not validated interface geometry: even `Canonical` requires structural
-comparison to establish the correct relative orientation.
-
-Element identities follow the [PIDDosome structural study](https://pmc.ncbi.nlm.nih.gov/articles/PMC2908332/)
-and [DD assembly description](https://pmc.ncbi.nlm.nih.gov/articles/PMC3320699/).
-Using whole helices/loops, sequential H labels, and these residue-count cutoffs are explicit
-implementation approximations. Six helices do not establish canonical topology
-or the orientation of the contacted helix surface. Chains containing multiple
-domains or fragmented/fused helices may fail or be misclassified. Validate labels
-against known structural face assignments and check stability under alternative helix and loop count thresholds
-before using them as evidence. No reference-based classification is performed.
+Both scripts emit `patch_id`, a 128-bit membership hash using full fold identity,
+model ID, and exact contacting residues per chain. The readable traversal ID is
+now exported as `patch label`. Detection settings remain separate; match them
+when comparing metrics. See the linked documentation for identity details.
 
 ## Human-readable standard-output summary
 

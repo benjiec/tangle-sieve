@@ -41,16 +41,7 @@ class ExportTests(unittest.TestCase):
         self.assertIn('OD2',metrics['salt bridge residues']);self.assertNotIn('D9',metrics['salt bridge residues'])
         self.assertEqual(metrics['nominal patch charge difference'],0)
         self.assertEqual(metrics['patch 1 hydropathy mean'],1.8)
-        self.assertIsNone(metrics['candidate DD family face 1'])
-        self.assertIsNone(metrics['candidate DD interface'])
-        descriptions.dd=True
-        descriptions.details.clear()
-        with patch('sieve.patch_description_summary.candidate_faces', side_effect=['Ia','Ib (partial)']):
-            enriched=dict(row,**descriptions.describe(row)['metrics'])
-        out=io.StringIO();write_patches([enriched],out)
-        exported=list(csv.DictReader(io.StringIO(out.getvalue()),delimiter='\t'))
-        self.assertEqual(exported[0]['candidate DD interface'],'Variant')
-        descriptions.dd=False
+        self.assertNotIn('candidate DD interface',metrics)
         descriptions.details.clear()
         descriptions.pairs[('fold',0,'A','B')]=([],{(c,1):dict(buried_area=0,buried_nonpolar_area=0) for c in 'AB'})
         metrics=descriptions.describe(row)['metrics']
@@ -79,7 +70,7 @@ class ExportTests(unittest.TestCase):
             (fold/'fold_job_request.json').write_text('{"modelSeeds":[42]}')
             data=dict(token_chain_ids=['A']*4+['B']*4,token_res_ids=list(range(1,5))*2,pae=[[1]*8 for _ in range(8)])
             (fold/'fold_full_data_0.json').write_text(json.dumps(data))
-            args=[str(fold),'--silent','--no-dssp','--output',str(output),'--min-residues-per-chain','1','--min-contacts','1','--dd']
+            args=[str(fold),'--silent','--no-dssp','--output',str(output),'--min-residues-per-chain','1','--min-contacts','1']
             with contextlib.redirect_stdout(io.StringIO()) as stdout:
                 self.assertEqual(SCRIPT.main(args),0)
             self.assertEqual(stdout.getvalue(),'')
@@ -87,17 +78,9 @@ class ExportTests(unittest.TestCase):
             self.assertTrue(rows)
             self.assertEqual(rows[0]['sequence_id'],sequence_id(['AAAA','CCCC']))
             self.assertEqual(rows[0]['fold_id'],fold_id(42,['AAAA','CCCC']))
-            self.assertEqual(rows[0]['candidate DD family face 1'],'NA')
-            self.assertEqual(rows[0]['candidate DD interface'],'NA')
-            self.assertEqual(rows[0]['dd enabled'],'True')
-            self.assertEqual(rows[0]['dd helix presence threshold'],'3')
-            self.assertEqual(rows[0]['dd loop presence threshold'],'1')
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(SCRIPT.main(args+['--dd-helix-presence-threshold','4',
-                                                  '--dd-loop-presence-threshold','2']),0)
-            with output.open() as stream:alias_rows=list(csv.DictReader(stream,delimiter='\t'))
-            self.assertEqual(alias_rows[0]['dd helix presence threshold'],'4')
-            self.assertEqual(alias_rows[0]['dd loop presence threshold'],'2')
+            self.assertNotIn('candidate DD interface',rows[0])
+            self.assertEqual(len(rows[0]['patch_id']),32)
+            self.assertIn('patch label',rows[0])
             with contextlib.redirect_stdout(io.StringIO()) as stdout:
                 self.assertEqual(SCRIPT.main(args+['--distance-cutoff','.1']),0)
             with output.open() as stream:self.assertEqual(list(csv.DictReader(stream,delimiter='\t')),[])

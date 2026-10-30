@@ -1,0 +1,32 @@
+domain	face	element	min_residues	requirement_type	notes
+DD	Ia	alpha1	3	mandatory	core helix
+DD	Ia	alpha4	3	mandatory	core helix
+DD	Ia	loop1-2	0	optional	supporting loop
+DD	Ib	alpha2	3	mandatory	core helix
+DD	Ib	alpha3	3	mandatory	core helix
+DD	Ib	loop2-3	0	optional	supporting loop
+DD	IIa	alpha4	3	mandatory	core helix
+DD	IIa	loop4-5	1	mandatory	anchoring loop
+DD	IIb	alpha6	3	mandatory	core helix
+DD	IIb	loop1-2	1	alternative_or	loop1-2 OR loop5-6
+DD	IIb	loop5-6	1	alternative_or	loop1-2 OR loop5-6
+DD	IIIa	alpha3	3	mandatory	core helix
+DD	IIIa	loop2-3	1	mandatory	supporting loop
+DD	IIIb	loop1-2	1	mandatory	core loop
+DD	IIIb	loop3-4	1	mandatory	core loop
+DED	Ia	alpha1	3	mandatory	core helix
+DED	Ia	alpha4	3	mandatory	core helix
+DED	Ia	loop1-2	0	optional	supporting loop
+DED	Ib	alpha2	3	mandatory	core helix containing FL/RxDL motif (not checked)
+DED	Ib	alpha3	1	alternative_or	alpha3 OR loop2-3
+DED	Ib	loop2-3	2	alternative_or	loop2-3 OR alpha3
+DED	Ib	alpha5	0	optional	peripheral contact if alpha3 <= 6 residues (descriptive only)
+DED	IIa	alpha4	2	mandatory	core helix
+DED	IIa	loop4-5	1	mandatory	anchoring loop
+DED	IIb	alpha6	3	mandatory	core helix
+DED	IIb	loop1-2	1	alternative_or	loop1-2 OR loop5-6
+DED	IIb	loop5-6	1	alternative_or	loop1-2 OR loop5-6
+DED	IIIa	alpha3	1	alternative_or	alpha3 OR loop2-3
+DED	IIIa	loop2-3	2	alternative_or	loop2-3 OR alpha3
+DED	IIIb	loop1-2	1	mandatory	core loop
+DED	IIIb	loop3-4	1	mandatory	core loop

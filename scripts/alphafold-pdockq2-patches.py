@@ -22,9 +22,6 @@ def main(argv=None):
     parser.add_argument('--full-data', help='matching confidence JSON, required for CIF')
     parser.add_argument('--output', help='optional patch TSV (recomputed; no cache); summary printed unless --silent')
     parser.add_argument('--silent', action='store_true', help='suppress stdout summaries; errors and warnings remain on stderr')
-    parser.add_argument('--dd', action='store_true', help='enable provisional six-helix DD face candidates')
-    parser.add_argument('--dd-helix-presence-threshold', type=int, default=3, help='minimum contacting residues per required helix (default 3)')
-    parser.add_argument('--dd-loop-presence-threshold', type=int, default=1, help='minimum contacting residues per required loop (default 1)')
     parser.add_argument('--chains', nargs=2, metavar=('CHAIN1', 'CHAIN2'))
     parser.add_argument('--distance-cutoff', type=float, default=8.0)
     parser.add_argument('--max-bridge-residues', type=int, default=1)
@@ -40,9 +37,6 @@ def main(argv=None):
     dssp_group.add_argument('--no-dssp', action='store_true', help='omit secondary structure; retain other descriptors')
     args = parser.parse_args(argv)
     try:
-        from sieve.alphafold_dd_faces import validate_threshold
-        validate_threshold(args.dd_helix_presence_threshold)
-        validate_threshold(args.dd_loop_presence_threshold, 'loop')
         requests = list(read_patch_inputs(sys.stdin)) if args.input == '-' else [PatchInput(args.input)]
         output = Path(args.output).resolve() if args.output else None
         if output is not None:
@@ -67,8 +61,7 @@ def main(argv=None):
                     fold_ids=fold_ids, sequence_ids=sequence_ids, selected_model=request.model_id)
                 descriptions = PatchDescriptions(inputs, None if args.no_dssp else find_dssp(args.dssp),
                     DescriptionOptions(cutoff=args.distance_cutoff, flank=args.sequence_flank,
-                                       radius=args.spatial_radius, sasa_points=args.sasa_points),
-                    dd=args.dd, dd_threshold=args.dd_helix_presence_threshold, dd_loop_threshold=args.dd_loop_presence_threshold)
+                                       radius=args.spatial_radius, sasa_points=args.sasa_points))
                 if not args.silent:
                     write_summary(current_rows, targets, summary, descriptions, structure=args.structure,
                                   model_scores=model_scores, fold_ids=fold_ids, sequence_ids=sequence_ids, chains=args.chains)
@@ -78,9 +71,6 @@ def main(argv=None):
                             continue
                         row.update(descriptions.describe(row)['metrics'])
                         row.update(sequence_id=sequence_ids.get(row['source']), fold_id=fold_ids.get(row['source']))
-                        row['dd enabled'] = args.dd
-                        row['dd helix presence threshold'] = args.dd_helix_presence_threshold
-                        row['dd loop presence threshold'] = args.dd_loop_presence_threshold
                 rows.extend(current_rows)
             except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
                 if request.record_number is not None:
