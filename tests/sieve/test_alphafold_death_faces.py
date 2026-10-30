@@ -105,6 +105,9 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual([r['patch_id'] for r in rows],[r['patch_id'] for r in expected if r['scope']=='patch' and r['status']=='leaf'])
         wider=analyze(str(self.fold),options=Options(cutoff=10,min_residues_per_chain=1,min_contacts=1),selected_model=1)
         self.assertEqual(rows[0]['patch_id'],next(r['patch_id'] for r in wider if r['scope']=='patch' and r['status']=='leaf'))
+        for side in (1,2):
+            self.assertNotIn(f'patch residues {side}',rows[0])
+            self.assertNotIn(f'interface structure {side}',rows[0])
         self.assertNotIn('face evidence 1',rows[0])
         self.assertNotIn('face evidence 2',rows[0])
         self.assertEqual(rows[0]['candidate interface'],'NA')

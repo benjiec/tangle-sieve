@@ -67,8 +67,6 @@ One row per leaf patch:
 
 - `fold_locator`, `fold_id`, `sequence_id`, `model_id`, `patch_id`, `patch label`.
 - `chain 1/2`, `sequence name 1/2`, `domain 1/2`.
-- `patch residues 1/2`: exact contacting residue numbers, comma-separated.
-- `interface structure 1/2`: contacted DSSP segments and residue numbers.
 - `candidate face 1/2`, `candidate interface`.
 - `status 1/2`, `rules_id`, and all five patch-detection settings.
 

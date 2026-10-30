@@ -15,8 +15,8 @@ from sieve.alphafold_death_rules import read_domains, read_rules, classify, cand
 
 SETTINGS = ['distance cutoff','max bridge residues','min residues per chain','min contacts','max separator checks']
 COLUMNS = ['fold_locator','fold_id','sequence_id','model_id','patch_id','patch label','chain 1','chain 2',
-           'sequence name 1','sequence name 2','domain 1','domain 2','patch residues 1','patch residues 2',
-           'interface structure 1','interface structure 2','candidate face 1','candidate face 2',
+           'sequence name 1','sequence name 2','domain 1','domain 2',
+           'candidate face 1','candidate face 2',
            'candidate interface','status 1','status 2','rules_id',*SETTINGS]
 ERRORS = (OSError,ValueError,KeyError,TypeError,RuntimeError,zipfile.BadZipFile,subprocess.SubprocessError)
 
@@ -132,11 +132,8 @@ def run(requests, manifest, domains_path, rules_path, output, *, options=None, c
                     chain=patch[f'chain {side}'];name=assignment[chain];domain=domains[name]
                     selected={int(n) for n in patch[f'interface residues {side}'].split(',') if n}
                     faces,_,eligibility=classify(chain,selected,codes,segments,rules[domain])
-                    structure='; '.join(f"{s['label']}[{s['code']}]:"+','.join(map(str,sorted(selected & set(s['residues']))))
-                        for s in segments if s['chain']==chain and selected & set(s['residues']))
                     row.update({f'chain {side}':chain,f'sequence name {side}':name,f'domain {side}':domain,
-                        f'patch residues {side}':','.join(map(str,sorted(selected))),
-                        f'interface structure {side}':structure or None,f'candidate face {side}':faces,
+                        f'candidate face {side}':faces,
                         f'status {side}':eligibility})
                 row['candidate interface']=candidate_interface(row['candidate face 1'],row['candidate face 2'])
                 current.append(row)
