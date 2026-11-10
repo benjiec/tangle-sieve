@@ -13,11 +13,14 @@ from sieve.alphafold_pdockq2 import parse_model
 from sieve.alphafold_secondary import find_dssp, load_secondary
 from sieve.alphafold_death_rules import read_domains, read_rules, classify, candidate_interface
 
+from sieve.alphafold_helix_normalization import normalize_helices, validate_kink_settings
+
+KINK_SETTINGS = ["merge kinked helices", "kink connector length", "kink angle"]
 SETTINGS = ['distance cutoff','max bridge residues','min residues per chain','min contacts','max separator checks']
 COLUMNS = ['fold_locator','fold_id','sequence_id','model_id','patch_id','patch label','chain 1','chain 2',
            'sequence name 1','sequence name 2','domain 1','domain 2',
            'candidate face 1','candidate face 2',
-           'candidate interface','status 1','status 2','rules_id',*SETTINGS]
+           'candidate interface','status 1','status 2','rules_id',*SETTINGS,*KINK_SETTINGS]
 ERRORS = (OSError,ValueError,KeyError,TypeError,RuntimeError,zipfile.BadZipFile,subprocess.SubprocessError)
 
 
@@ -46,7 +49,9 @@ def jobs_for(request, error):
 
 
 def run(requests, manifest, domains_path, rules_path, output, *, options=None, chains=None,
-        full_data=None, dssp=None, stderr=None):
+        full_data=None, dssp=None, stderr=None, merge_kinked_helices=False,
+        kink_connector_length=1, kink_angle=70):
+    validate_kink_settings(kink_connector_length,kink_angle)
     stderr=sys.stderr if stderr is None else stderr
     options=options or Options()
     if chains is not None and (len(chains)!=2 or chains[0]==chains[1]):
@@ -118,9 +123,14 @@ def run(requests, manifest, domains_path, rules_path, output, *, options=None, c
     for locator,number,record,seeds,assignment,metadata in prepared:
         try:
             patches=analyze(locator,options=options,chains=chains,model_records=[record],model_seeds=seeds)
-            _,codes,segments,status=load_secondary(record[2],executable)
+            model,codes,segments,status=load_secondary(record[2],executable)
             if status['status']!='assigned':
                 raise ValueError(f'DSSP unavailable: {status}')
+            normalized={}
+            if merge_kinked_helices:
+                for chain in (chains or assignment):
+                    normalized[chain]=normalize_helices(model,chain,codes,segments,
+                        connector_length=kink_connector_length,angle=kink_angle)
             current=[]
             for patch in patches:
                 if patch['scope']!='patch' or patch['status']!='leaf': continue
@@ -128,10 +138,13 @@ def run(requests, manifest, domains_path, rules_path, output, *, options=None, c
                          model_id=number,patch_id=patch['patch_id'],rules_id=rules_id,
                          **{'patch label':patch['patch id']})
                 row.update({k:patch[k] for k in SETTINGS})
+                row.update(dict(zip(KINK_SETTINGS,(merge_kinked_helices,kink_connector_length,kink_angle))))
                 for side in (1,2):
                     chain=patch[f'chain {side}'];name=assignment[chain];domain=domains[name]
                     selected={int(n) for n in patch[f'interface residues {side}'].split(',') if n}
-                    faces,_,eligibility=classify(chain,selected,codes,segments,rules[domain])
+                    chain_segments,report=normalized.get(chain,(segments,""))
+                    faces,_,eligibility=classify(chain,selected,codes,chain_segments,rules[domain])
+                    if report: eligibility += "; " + report
                     row.update({f'chain {side}':chain,f'sequence name {side}':name,f'domain {side}':domain,
                         f'candidate face {side}':faces,
                         f'status {side}':eligibility})

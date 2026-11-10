@@ -21,13 +21,17 @@ def main(argv=None):
     parser.add_argument('--min-residues-per-chain',type=int,default=3)
     parser.add_argument('--min-contacts',type=int,default=5)
     parser.add_argument('--max-separator-checks',type=int,default=1000000)
+    parser.add_argument('--merge-kinked-helices',action='store_true')
+    parser.add_argument('--kink-connector-length',type=int,default=1)
+    parser.add_argument('--kink-angle',type=float,default=70)
     args=parser.parse_args(argv)
     try:
         requests=list(read_patch_inputs(sys.stdin)) if args.input=='-' else [PatchInput(args.input)]
         return run(requests,args.manifest,args.domains,args.rules,args.output,
             options=Options(args.distance_cutoff,args.max_bridge_residues,args.min_residues_per_chain,
                             args.min_contacts,args.max_separator_checks),
-            chains=args.chains,full_data=args.full_data,dssp=args.dssp)
+            chains=args.chains,full_data=args.full_data,dssp=args.dssp,merge_kinked_helices=args.merge_kinked_helices,
+            kink_connector_length=args.kink_connector_length,kink_angle=args.kink_angle)
     except (*ERRORS,csv.Error) as exc:
         parser.error(str(exc))
 

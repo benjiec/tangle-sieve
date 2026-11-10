@@ -101,3 +101,28 @@ The patch script no longer accepts `--dd`, `--dd-helix-presence-threshold`, or
 `--dd-loop-presence-threshold`, and no longer emits DD face/interface/settings
 columns. Use this script and the rule file instead. Both outputs now have
 `patch_id`; the former patch TSV `patch id` traversal column is `patch label`.
+
+## Optional kink normalization
+
+Add `--merge-kinked-helices` to normalize helix numbering for face calls only.
+`--kink-connector-length 1` sets the maximum intervening residue count (positive
+integer); `--kink-angle 70` sets a strict upper angle in degrees (0 < value <= 180).
+This applies to every domain, including user-provided CARD rules.
+
+Only H segments separated by 1 through the configured maximum residues, all
+assigned -, T, or S, qualify. G, I, E, B, P, and missing assignments do not.
+The local N→C axes use the last four Cα positions of the first helix and the
+first four of the second. For successive coordinate differences d0,d1,d2,
+the axis is the normalized cross product (d1−d0) × (d2−d1), oriented N→C.
+Missing/nonfinite coordinates, short helices, and degenerate axes prevent a merge.
+No pLDDT threshold is used.
+
+Original adjacent pairs are evaluated once. Connected qualifying pairs become
+one H element, including connector residues; elements are then renumbered.
+Exactly six resulting H elements are still required: a six-to-five merge yields
+NA. Accepted original ranges/angles and geometry failures appear in `status 1/2`.
+The TSV records `merge kinked helices`, `kink connector length`, and `kink angle`.
+
+Raw DSSP summaries, patch membership, patch IDs, and patch metrics are unchanged.
+These thresholds are uncalibrated heuristics. Review normalized assignments
+against known domain structures before treating face labels as biological evidence.

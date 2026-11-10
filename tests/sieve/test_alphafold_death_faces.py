@@ -122,6 +122,24 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn('candidate DD interface',patch_rows[0])
         self.assertEqual(rows[0]['patch_id'],next(r['patch_id'] for r in patch_rows if r['model']=='1'))
 
+    def test_merge_settings_and_patch_identity(self):
+        with patch('sieve.alphafold_death_faces.find_dssp',return_value='fake'), patch(
+                'sieve.alphafold_death_faces.load_secondary',return_value=(None,{},[],{'status':'assigned'})), patch(
+                'sieve.alphafold_death_faces.normalize_helices',return_value=([], 'merged 1–4 + 6–9: 60.000°')) as normalize:
+            self.assertEqual(self.execute([PatchInput(str(self.fold),1)]),0)
+            normalize.assert_not_called()
+            with self.output.open() as stream:before=list(csv.DictReader(stream,delimiter='\t'))
+            self.assertEqual(run([PatchInput(str(self.fold),1)],self.manifest,self.domains,RULES,self.output,
+                options=self.options,merge_kinked_helices=True),0)
+            self.assertEqual(normalize.call_count,2)
+        with self.output.open() as stream:after=list(csv.DictReader(stream,delimiter='\t'))
+        self.assertEqual([r['patch_id'] for r in before],[r['patch_id'] for r in after])
+        for row in after:
+            self.assertEqual(row['merge kinked helices'],'True')
+            self.assertEqual(row['kink connector length'],'1')
+            self.assertIn('merged',row['status 1'])
+            self.assertIn('merged',row['status 2'])
+
     def test_mapping_errors_preserve_output_before_dssp(self):
         self.output.write_text('existing')
         for domains in ('Sequence Name\tDomain\nfirst\tDD\n',
