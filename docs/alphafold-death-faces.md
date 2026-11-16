@@ -63,18 +63,17 @@ produce `Atypical`; either side `none` produces `None`; ineligibility produces
 
 ## Output and joins
 
-One row per leaf patch:
+Two rows per leaf patch, in side order:
 
 - `fold_locator`, `fold_id`, `sequence_id`, `model_id`, `patch_id`, `patch label`.
-- `chain 1/2`, `sequence name 1/2`, `domain 1/2`.
-- `candidate face 1/2`, `candidate interface`.
-- `status 1/2`, `rules_id`, and all five patch-detection settings.
+- `sequence_index` (1 or 2), `chain`, `sequence name`, `domain`, `candidate face`, and `status` describe the row’s side.
+- Both rows repeat `candidate interface`, `rules_id`, the five patch-detection settings, and the three helix-normalization settings.
 
 Join each side to the tall manifest by locator plus chain ID. Fold and sequence
 IDs are checked against the model. CIF author chain IDs are used. A direct CIF
 is matched to its parent fold directory in the manifest.
 
-Join to patch metrics by locator/model/chain pair and `patch_id`, checking
+Join to patch metrics by locator, model, `patch_id`, and `chain`, checking
 settings separately. The patch script names locator/model columns `source` and
 `model`. Both scripts use lexically ordered chain pairs.
 

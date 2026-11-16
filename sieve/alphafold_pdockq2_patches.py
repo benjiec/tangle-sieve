@@ -15,7 +15,7 @@ from sieve.alphafold_manifest import chain_sequences, fold_id, sequence_id
 from sieve.alphafold_composition import chain_compositions
 
 from sieve.alphafold_pdockq2 import (
-    OUTPUT_COLUMNS, _distance, model_number, parse_model, score_selections,
+    _distance, model_number, parse_model, score_selections,
 )
 
 ALGORITHM_VERSION = '1.0'
@@ -465,14 +465,34 @@ EXPORT_RENAMES = {
 }
 EXPORT_DROPPED = {'interface residues 1','interface residues 2','algorithm version',
                   'parent id','depth','graph residues','separator residues','discarded residues'}
-METRIC_COLUMNS = ['interface structure 1','interface structure 2',
+PATCH_PAIR_METRICS = [
     'total buried surface area','total C/S contribution percent',
     'nonpolar contacts','salt bridge candidates','steric overlap candidates','phosphate/basic contacts',
     'salt bridge candidate heavy-atom distance min','salt bridge residues',
-    'nominal patch charge difference','patch 1 hydropathy mean','patch 2 hydropathy mean']
-PATCH_COLUMNS = ['sequence_id','fold_id','patch_id',
-    *[EXPORT_RENAMES.get(c,c) for c in OUTPUT_COLUMNS+EXTRA_COLUMNS if c not in EXPORT_DROPPED],
-    *METRIC_COLUMNS, 'confidence origin']
+    'nominal patch charge difference']
+PATCH_SIDE_FIELDS = {
+    'chain': 'chain {side}',
+    'region': 'region {side}',
+    'patch residues': 'patch {side} residues',
+    'interface pLDDT': 'interface pLDDT {side}',
+    'normalized PAE to partner': 'normalized PAE {side} to {partner}',
+    'pDockQ2 to partner': 'pDockQ2 {side} to {partner}',
+    **{f'nearest interchain CA distance {stat}': f'nearest interchain CA distance {stat} {{side}}'
+       for stat in ('min', 'max', 'median', 'mean')},
+    'interface structure': 'interface structure {side}',
+    'patch hydropathy mean': 'patch {side} hydropathy mean',
+}
+PATCH_SHARED_COLUMNS = [
+    'scope', 'status', 'rank', 'contact count', 'pDockQ2 max',
+    'distance cutoff', 'max bridge residues', 'min residues per chain', 'min contacts',
+    'max separator checks',
+    *[f'interchain CA distance {stat}' for stat in ('min', 'max', 'median', 'mean')],
+    *PATCH_PAIR_METRICS, 'confidence origin',
+]
+PATCH_COLUMNS = [
+    'fold_id', 'sequence_id', 'source', 'model', 'patch_id', 'patch label',
+    'sequence_index', *PATCH_SIDE_FIELDS, *PATCH_SHARED_COLUMNS,
+]
 
 
 def write_patches(rows, stream):
@@ -490,5 +510,12 @@ def write_patches(rows, stream):
     for row in leaves:
         exported = {EXPORT_RENAMES.get(k,k):v for k,v in row.items() if k not in EXPORT_DROPPED}
         exported['rank'] = ranks[id(row)]
-        writer.writerow({k: 'NA' if exported.get(k) is None else f'{exported[k]:.6f}' if isinstance(exported[k],float)
-                         else exported[k] for k in PATCH_COLUMNS})
+        for side in (1, 2):
+            tall_row = dict(exported, sequence_index=side)
+            tall_row.update({
+                field: exported.get(template.format(side=side, partner=3-side))
+                for field, template in PATCH_SIDE_FIELDS.items()
+            })
+            writer.writerow({k: 'NA' if tall_row.get(k) is None else
+                             f'{tall_row[k]:.6f}' if isinstance(tall_row[k], float) else
+                             tall_row[k] for k in PATCH_COLUMNS})

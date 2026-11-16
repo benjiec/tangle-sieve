@@ -102,7 +102,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(self.execute([PatchInput(str(self.fold),1)]),0)
         with self.output.open() as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
         expected=analyze(str(self.fold),options=self.options,selected_model=1)
-        self.assertEqual([r['patch_id'] for r in rows],[r['patch_id'] for r in expected if r['scope']=='patch' and r['status']=='leaf'])
+        self.assertEqual([r['patch_id'] for r in rows],[r['patch_id'] for r in expected if r['scope']=='patch' and r['status']=='leaf' for _ in range(2)])
         wider=analyze(str(self.fold),options=Options(cutoff=10,min_residues_per_chain=1,min_contacts=1),selected_model=1)
         self.assertEqual(rows[0]['patch_id'],next(r['patch_id'] for r in wider if r['scope']=='patch' and r['status']=='leaf'))
         for side in (1,2):
@@ -112,7 +112,8 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn('face evidence 2',rows[0])
         self.assertEqual(rows[0]['candidate interface'],'NA')
         self.assertEqual(rows[0]['model_id'],'1')
-        self.assertEqual(rows[0]['domain 2'],'DED')
+        self.assertEqual([r['sequence_index'] for r in rows[:2]], ['1', '2'])
+        self.assertEqual([r['domain'] for r in rows[:2]], ['DD', 'DED'])
         patch_script=load_script(ROOT/'scripts/alphafold-pdockq2-patches.py')
         out=self.root/'patches.tsv'
         with patch('sys.stdout',io.StringIO()):
@@ -121,6 +122,34 @@ class RunnerTests(unittest.TestCase):
         with out.open() as stream:patch_rows=list(csv.DictReader(stream,delimiter='\t'))
         self.assertNotIn('candidate DD interface',patch_rows[0])
         self.assertEqual(rows[0]['patch_id'],next(r['patch_id'] for r in patch_rows if r['model']=='1'))
+
+    def test_tall_header_and_asymmetric_classifications(self):
+        def classify_side(chain, *args):
+            return f'face {chain}', None, f'status {chain}'
+
+        with patch('sieve.alphafold_death_faces.find_dssp', return_value='fake'), patch(
+                'sieve.alphafold_death_faces.load_secondary', return_value=(None, {}, [], {'status': 'assigned'})), patch(
+                'sieve.alphafold_death_faces.classify', side_effect=classify_side), patch(
+                'sieve.alphafold_death_faces.candidate_interface', side_effect=lambda a, b: f'{a}+{b}'):
+            self.assertEqual(self.execute([PatchInput(str(self.fold), 1)]), 0)
+
+        with self.output.open() as stream:
+            reader = csv.DictReader(stream, delimiter='\t')
+            self.assertEqual(reader.fieldnames, [
+                'fold_id', 'sequence_id', 'fold_locator', 'model_id', 'patch_id', 'patch label',
+                'sequence_index', 'chain', 'sequence name', 'domain', 'candidate face', 'status',
+                'candidate interface', 'rules_id', 'distance cutoff', 'max bridge residues',
+                'min residues per chain', 'min contacts', 'max separator checks',
+                'merge kinked helices', 'kink connector length', 'kink angle',
+            ])
+            first, second = list(reader)
+        self.assertEqual(
+            [(row['sequence_index'], row['chain'], row['candidate face'], row['status'])
+             for row in (first, second)],
+            [('1', 'A', 'face A', 'status A'), ('2', 'B', 'face B', 'status B')],
+        )
+        self.assertEqual([row['candidate interface'] for row in (first, second)],
+                         ['face A+face B', 'face A+face B'])
 
     def test_merge_settings_and_patch_identity(self):
         with patch('sieve.alphafold_death_faces.find_dssp',return_value='fake'), patch(
@@ -137,8 +166,7 @@ class RunnerTests(unittest.TestCase):
         for row in after:
             self.assertEqual(row['merge kinked helices'],'True')
             self.assertEqual(row['kink connector length'],'1')
-            self.assertIn('merged',row['status 1'])
-            self.assertIn('merged',row['status 2'])
+            self.assertIn('merged',row['status'])
 
     def test_mapping_errors_preserve_output_before_dssp(self):
         self.output.write_text('existing')

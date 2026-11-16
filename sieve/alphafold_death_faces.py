@@ -17,10 +17,9 @@ from sieve.alphafold_helix_normalization import normalize_helices, validate_kink
 
 KINK_SETTINGS = ["merge kinked helices", "kink connector length", "kink angle"]
 SETTINGS = ['distance cutoff','max bridge residues','min residues per chain','min contacts','max separator checks']
-COLUMNS = ['fold_locator','fold_id','sequence_id','model_id','patch_id','patch label','chain 1','chain 2',
-           'sequence name 1','sequence name 2','domain 1','domain 2',
-           'candidate face 1','candidate face 2',
-           'candidate interface','status 1','status 2','rules_id',*SETTINGS,*KINK_SETTINGS]
+SIDE_COLUMNS = ['chain', 'sequence name', 'domain', 'candidate face', 'status']
+COLUMNS = ['fold_id','sequence_id','fold_locator','model_id','patch_id','patch label',
+           'sequence_index',*SIDE_COLUMNS,'candidate interface','rules_id',*SETTINGS,*KINK_SETTINGS]
 ERRORS = (OSError,ValueError,KeyError,TypeError,RuntimeError,zipfile.BadZipFile,subprocess.SubprocessError)
 
 
@@ -139,17 +138,17 @@ def run(requests, manifest, domains_path, rules_path, output, *, options=None, c
                          **{'patch label':patch['patch id']})
                 row.update({k:patch[k] for k in SETTINGS})
                 row.update(dict(zip(KINK_SETTINGS,(merge_kinked_helices,kink_connector_length,kink_angle))))
+                sides=[]
                 for side in (1,2):
                     chain=patch[f'chain {side}'];name=assignment[chain];domain=domains[name]
                     selected={int(n) for n in patch[f'interface residues {side}'].split(',') if n}
                     chain_segments,report=normalized.get(chain,(segments,""))
                     faces,_,eligibility=classify(chain,selected,codes,chain_segments,rules[domain])
                     if report: eligibility += "; " + report
-                    row.update({f'chain {side}':chain,f'sequence name {side}':name,f'domain {side}':domain,
-                        f'candidate face {side}':faces,
-                        f'status {side}':eligibility})
-                row['candidate interface']=candidate_interface(row['candidate face 1'],row['candidate face 2'])
-                current.append(row)
+                    sides.append({'sequence_index':side,'chain':chain,'sequence name':name,
+                                  'domain':domain,'candidate face':faces,'status':eligibility})
+                row['candidate interface']=candidate_interface(*(side['candidate face'] for side in sides))
+                current.extend(dict(row, **side) for side in sides)
             output_rows.extend(current)
         except ERRORS as exc:
             error(f'{locator} model {number}: {exc}')

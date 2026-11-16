@@ -327,22 +327,25 @@ graph behavior, not a claim that either separator is a biological boundary.
 Only final **leaf patches** are exported and considered for the top-five summary.
 Full-interface references and intermediate split parents remain internal to the
 algorithm. A single unsplit component can coincide with the full interface, but
-multiple or split patches differ. No qualifying leaves produces a header-only TSV.
+multiple or split patches differ. Each leaf produces two rows in side order.
+Pair rows by `source`, `model`, and `patch_id`. Both rows repeat the shared
+patch fields. No qualifying leaves produces a header-only TSV.
 
 | Columns | Meaning |
 |---|---|
 | `sequence_id`, `fold_id` | Shared composition and seed-aware identity; `NA` if unavailable |
 | `source`, `model` | Input locator/path and model number |
 | `scope`, `status` | Always `patch`, `leaf` in the export |
-| `chain 1`, `chain 2` | Canonically ordered chain IDs |
-| `region 1`, `region 2` | Selected graph-node ranges; gaps remain gaps |
-| `interface structure 1`, `interface structure 2` | DSSP elements and contacting residue ranges, as in stdout; missing assignments labeled `unassigned` |
-| `patch 1 residues`, `patch 2 residues` | Unique contacting residue counts |
+| `sequence_index`, `chain` | Original patch side (1 or 2) and its chain ID |
+| `region` | Selected graph-node ranges; gaps remain gaps |
+| `interface structure` | DSSP elements and contacting residue ranges, as in stdout; missing assignments labeled `unassigned` |
+| `patch residues` | Unique contacting residue counts |
 | `contact count` | Interchain Cα contact pairs |
-| `interface pLDDT 1/2`, `normalized PAE 1 to 2/2 to 1`, `pDockQ2 1 to 2/2 to 1`, `pDockQ2 max` | Existing confidence statistics |
-| `patch id`, `rank` | Existing preorder patch ID; rank among exported leaves within model/chain pair |
+| `interface pLDDT`, `normalized PAE to partner`, `pDockQ2 to partner` | Side-specific confidence statistics, with directional values from this side to its partner |
+| `pDockQ2 max` | Maximum of both directional scores |
+| `patch_id`, `patch label`, `rank` | Patch hash, preorder label, and rank among exported leaves within model/chain pair |
 | `interchain CA distance min/max/median/mean` | Interchain Cα–Cα contact-pair distances, Å |
-| `nearest interchain CA distance min/max/median/mean 1/2` | Per-residue nearest Cα-contact distributions, Å |
+| `nearest interchain CA distance min/max/median/mean` | Per-residue nearest Cα-contact distributions, Å |
 | `total buried surface area` | Sum of selected-residue burial on both chains, Å²; not divided by two |
 | `total C/S contribution percent` | 100 × summed C/S burial / summed total burial; `NA` if denominator is zero |
 | `nonpolar contacts`, `salt bridge candidates`, `steric overlap candidates` | Unique residue-pair counts; salt candidates include the same-chain 3.5 Å proximity region; other counts require both endpoints in the patch |
@@ -350,7 +353,7 @@ multiple or split patches differ. No qualifying leaves produces a header-only TS
 | `salt bridge candidate heavy-atom distance min` | Minimum distance among counted ordinary salt candidates, Å; `NA` if absent |
 | `salt bridge residues` | Semicolon-separated chain/residue/atom pairs, using the nearest atom pair per residue pair, with distance; `NA` if absent |
 | `nominal patch charge difference` | Side 1 minus side 2; numeric for ordinary residues, labeled −1/−2 phosphate scenarios when needed, `NA` for unsupported chemistry |
-| `patch 1 hydropathy mean`, `patch 2 hydropathy mean` | Means over unique contacting residues; `NA` for sets containing PTMs |
+| `patch hydropathy mean` | Means over unique contacting residues; `NA` for sets containing PTMs |
 | `confidence origin` | Inherited confidence note for assembled models; otherwise `NA` |
 | `distance cutoff`, `max bridge residues`, `min residues per chain`, `min contacts`, `max separator checks` | Patch-detection parameters |
 

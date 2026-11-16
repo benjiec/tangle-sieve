@@ -98,13 +98,55 @@ class ExportTests(unittest.TestCase):
         rows.append(dict(rows[-1],status='split'))
         out=io.StringIO();write_patches(rows,out)
         parsed=list(csv.DictReader(io.StringIO(out.getvalue()),delimiter='\t'))
-        self.assertEqual(len(parsed),1)
+        self.assertEqual(len(parsed),2)
         row=parsed[0]
         for field in ('parent id','depth','graph residues','algorithm version','separator residues','discarded residues','interface residues 1','residue count 1'):
             self.assertNotIn(field,row)
-        self.assertEqual(row['patch 1 residues'],'1')
+        self.assertEqual(row['patch residues'],'1')
         self.assertIn('interchain CA distance min',row)
-        self.assertIn('nearest interchain CA distance min 2',row)
+        self.assertIn('nearest interchain CA distance min',row)
+
+    def test_tall_header_without_leaves(self):
+        output = io.StringIO()
+        write_patches([], output)
+        self.assertEqual(output.getvalue().splitlines(), ['\t'.join((
+            'fold_id', 'sequence_id', 'source', 'model', 'patch_id', 'patch label',
+            'sequence_index', 'chain', 'region', 'patch residues', 'interface pLDDT',
+            'normalized PAE to partner', 'pDockQ2 to partner',
+            'nearest interchain CA distance min', 'nearest interchain CA distance max',
+            'nearest interchain CA distance median', 'nearest interchain CA distance mean',
+            'interface structure', 'patch hydropathy mean', 'scope', 'status', 'rank',
+            'contact count', 'pDockQ2 max', 'distance cutoff', 'max bridge residues',
+            'min residues per chain', 'min contacts', 'max separator checks',
+            'interchain CA distance min', 'interchain CA distance max',
+            'interchain CA distance median', 'interchain CA distance mean',
+            'total buried surface area', 'total C/S contribution percent', 'nonpolar contacts',
+            'salt bridge candidates', 'steric overlap candidates', 'phosphate/basic contacts',
+            'salt bridge candidate heavy-atom distance min', 'salt bridge residues',
+            'nominal patch charge difference', 'confidence origin',
+        ))])
+
+    def test_tall_pairs_preserve_direction_rank_and_missing_fold_ids(self):
+        leaves = [
+            {'source': source, 'patch_id': patch_id, 'rank': rank, 'scope': 'patch',
+             'status': 'leaf', 'chain 1': 'B', 'chain 2': 'A',
+             'normalized PAE 1 to 2': 0.25, 'normalized PAE 2 to 1': 0.75,
+             'pDockQ2 1 to 2': 0.2, 'pDockQ2 2 to 1': 0.8, 'contact count': 4}
+            for source, patch_id, rank in [('first', 'p2', 5), ('first', 'p1', 3), ('second', 'p1', 8)]
+        ]
+        output = io.StringIO()
+        write_patches(leaves, output)
+        rows = list(csv.DictReader(io.StringIO(output.getvalue()), delimiter='\t'))
+        self.assertEqual(len(rows), 6)
+        for i, (leaf, rank) in enumerate(zip(leaves, ('2', '1', '1'))):
+            pair = rows[2*i:2*i+2]
+            self.assertEqual([row['sequence_index'] for row in pair], ['1', '2'])
+            self.assertEqual([row['chain'] for row in pair], ['B', 'A'])
+            self.assertEqual([row['normalized PAE to partner'] for row in pair], ['0.250000', '0.750000'])
+            self.assertEqual([row['pDockQ2 to partner'] for row in pair], ['0.200000', '0.800000'])
+            for row in pair:
+                self.assertEqual((row['source'], row['patch_id'], row['rank'], row['fold_id'], row['contact count']),
+                                 (leaf['source'], leaf['patch_id'], rank, 'NA', '4'))
 
     def test_cli_silent_identity_recompute_and_empty(self):
         with tempfile.TemporaryDirectory() as directory:
