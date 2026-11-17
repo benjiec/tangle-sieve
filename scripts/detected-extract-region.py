@@ -5,6 +5,7 @@ import sys
 
 import duckdb
 
+from sieve.region_accession import format_region_accession
 from tangle import open_file_to_read, open_file_to_write, unique_batch
 from tangle.detected import DetectedTable
 from tangle.models import CSVSource, Schema
@@ -111,7 +112,6 @@ def extract_regions(
             )
             continue
 
-        output_accession = f"{accession}_{pfam_accession}_{minimum}_{maximum}"
         if domain_only:
             regions = sequence_matches
         else:
@@ -135,8 +135,10 @@ def extract_regions(
                 report(f"Ignoring {label}: start {start} exceeds end {end}")
                 continue
 
-            record_id = (f"{output_accession}_domain_{domain_index}"
-                         if domain_only else output_accession)
+            record_id = format_region_accession(
+                accession, pfam_accession, minimum, maximum,
+                domain_index if domain_only else None,
+            )
             extracted[record_id] = sequence[start - 1:end]
 
     return extracted
