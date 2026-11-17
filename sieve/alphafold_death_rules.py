@@ -13,12 +13,12 @@ def read_domains(path):
         reader = csv.DictReader(stream, delimiter='\t', strict=True)
         columns = reader.fieldnames or []
         lowered = [c.lower() for c in columns]
-        if len(set(lowered)) != len(lowered) or not {'sequence name','domain'} <= set(lowered):
-            raise ValueError('domain TSV requires unique Sequence Name and Domain headers (case-insensitive)')
-        name, domain = (columns[lowered.index(c)] for c in ('sequence name','domain'))
+        if len(set(lowered)) != len(lowered) or not {'sequence name','domain type'} <= set(lowered):
+            raise ValueError('domain TSV requires unique Sequence Name and Domain Type headers (case-insensitive)')
+        name, domain = (columns[lowered.index(c)] for c in ('sequence name','domain type'))
         result = {}
         for row in reader:
-            if None in row or any(v is None for v in row.values()) or not row[name].strip() or not row[domain].strip():
+            if None in row or not (row[name] or '').strip() or not (row[domain] or '').strip():
                 raise ValueError('incomplete domain assignment')
             if row[name] in result:
                 raise ValueError(f'duplicate sequence assignment: {row[name]}')

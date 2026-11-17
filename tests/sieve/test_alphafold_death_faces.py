@@ -18,18 +18,33 @@ from tests.scripts.helpers import load_script
 
 ROOT=Path(__file__).resolve().parents[2]
 RULES=ROOT/'data/death-face-rules.tsv'
+SEQUENCE_HEADER = 'Sequence Name\tProtein Accession\tDomain Type\tDomain Accession\n'
 
 
 class RuleTests(unittest.TestCase):
     def test_domains_extra_columns_exact_names_duplicate_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'domains.tsv'
-            path.write_text('sequence name\tdomain\tOther\n name \tDD\tignored\n')
-            self.assertEqual(read_domains(path),{' name ':'DD'})
-            for text in ('Sequence Name\tDomain\nA\tDD\nA\tDD\n',
-                         'Sequence Name\tDomain\nA\t\n', 'Name\tDomain\nA\tDD\n'):
-                path.write_text(text)
-                with self.assertRaises(ValueError):read_domains(path)
+            path.write_text(
+                'sequence name\tProtein Accession\tdomain type\tDomain Accession\n'
+                ' name \tp.1\tDD\tp.1_PF00531_1_1\nB\tq.1\tDED\n'
+            )
+            self.assertEqual(read_domains(path), {' name ': 'DD', 'B': 'DED'})
+            for text, message in (
+                (SEQUENCE_HEADER + 'A\tp.1\tDD\nA\tp.2\tDD\n', 'duplicate sequence assignment'),
+                (SEQUENCE_HEADER + 'A\tp.1\t\n', 'incomplete domain assignment'),
+                (SEQUENCE_HEADER + 'A\tp.1\n', 'incomplete domain assignment'),
+                (SEQUENCE_HEADER + ' \tp.1\tDD\n', 'incomplete domain assignment'),
+                (SEQUENCE_HEADER + 'A\tp.1\tDD\tp.1_PF00531_1_1\textra\n', 'incomplete domain assignment'),
+                ('Name\tDomain Type\nA\tDD\n', 'requires unique Sequence Name and Domain Type'),
+                ('Sequence Name\tDomain\nA\tDD\n', 'requires unique Sequence Name and Domain Type'),
+                ('Sequence Name\tDomain Type\tdomain type\nA\tDD\tDED\n',
+                 'requires unique Sequence Name and Domain Type'),
+            ):
+                with self.subTest(text=text):
+                    path.write_text(text)
+                    with self.assertRaisesRegex(ValueError, message):
+                        read_domains(path)
 
     def test_mandatory_or_partial_optional_and_mixed_pairing(self):
         rules,_=read_rules(RULES);c,s=structure()
@@ -88,7 +103,10 @@ class RunnerTests(unittest.TestCase):
         fasta=self.root/'seq.faa';fasta.write_text('>first\nAAAA\n>second\nCCCC\n')
         self.manifest=self.root/'manifest.tsv'
         self.assertEqual(manifest(self.fold,fasta,self.manifest,io.StringIO()),0)
-        self.domains=self.root/'domains.tsv';self.domains.write_text('Sequence Name\tDomain\nfirst\tDD\nsecond\tDED\n')
+        self.domains = self.root/'domains.tsv'
+        self.domains.write_text(
+            SEQUENCE_HEADER + 'first\tp.1\tDD\tp.1_PF00531_1_1\nsecond\tq.1\tDED\tq.1_PF01335_1_1\n'
+        )
         self.output=self.root/'faces.tsv';self.err=io.StringIO()
         self.options=Options(min_residues_per_chain=1,min_contacts=1)
 
@@ -170,11 +188,13 @@ class RunnerTests(unittest.TestCase):
 
     def test_mapping_errors_preserve_output_before_dssp(self):
         self.output.write_text('existing')
-        for domains in ('Sequence Name\tDomain\nfirst\tDD\n',
-                        'Sequence Name\tDomain\nfirst\tXX\nsecond\tDED\n'):
-            self.domains.write_text(domains)
+        for rows, message in (
+            ('first\tp.1\tDD\n', 'sequence missing from domain TSV: second'),
+            ('first\tp.1\tXX\nsecond\tq.1\tDED\n', 'domain has no rules: XX'),
+        ):
+            self.domains.write_text(SEQUENCE_HEADER + rows)
             with patch('sieve.alphafold_death_faces.find_dssp',return_value='fake'), patch('sieve.alphafold_death_faces.load_secondary') as dssp:
-                with self.assertRaises(ValueError):self.execute()
+                with self.assertRaisesRegex(ValueError, message):self.execute()
                 dssp.assert_not_called()
             self.assertEqual(self.output.read_text(),'existing')
 
