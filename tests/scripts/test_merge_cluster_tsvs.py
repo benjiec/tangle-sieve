@@ -85,3 +85,46 @@ class TestMergeClusterTsvs(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("output refers to input file", result.stderr)
                 self.assertEqual(source.read_text(), HEADER)
+
+    def test_compares_sequences_by_cluster_and_member(self):
+        a, b, c = (f"{name}_PF00531_1_1" for name in "abc")
+        table = self.input("clusters.tsv", f"{HEADER}\n{a}\t{a}\n{a}\t{c}\n{b}\t{c}\n")
+        first = self.input("first.fasta", f">{a}\n>{c}\nABCD\n>{a}\nAB\nCD\n")
+        second = self.input("second.fasta", f">{b}\n>{b}\nABCd\n>{c}\nABCD\n")
+        result = self.merge(table, "--cluster-fasta", first, second, first)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.output.read_text(),
+            f"{HEADER}\tProtein Accession\tSame as Cluster Repr\n"
+            f"{a}\t{a}\ta\ttrue\n{a}\t{c}\tc\ttrue\n{b}\t{c}\tc\tfalse\n",
+        )
+
+    def test_invalid_fasta_keeps_output_intact(self):
+        a, b = (f"{name}_PF00531_1_1" for name in "ab")
+        table = self.input("clusters.tsv", f"{HEADER}\n{a}\t{b}\n")
+        valid = self.input("valid.fasta", f">{a}\n>{a}\nABC\n>{b}\nABC\n")
+        for body, expected, other_files in (
+            ("ABC\n", "broken.fasta:1:", []),
+            (">\n", "broken.fasta:1:", []),
+            (f">{a}\nABC\n", "before a cluster header", []),
+            (f">{a}\n>{b}\nABC\n", "missing sequence for representative", []),
+            (f">{a}\n>{a}\nABC\n", "clusters.tsv:2: missing FASTA sequences", []),
+            (f">{a}\n>{a}\nABD\n>{b}\nABD\n", "conflicting sequences", [valid]),
+            (f">{a}\n>{a}\nABC\n>{b}\nABC\n>{b}\nABD\n", "conflicting sequences", []),
+            (f">{a}\n>{a}\nABC\n>{b}\nABC\n>{b}\n", "missing sequence for representative", []),
+        ):
+            with self.subTest(body=body):
+                broken = self.input("broken.fasta", body)
+                self.output.write_text("existing output")
+                result = self.merge(table, "--cluster-fasta", *other_files, broken)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                self.assertEqual(self.output.read_text(), "existing output")
+
+    def test_rejects_fasta_as_output(self):
+        table = self.input("clusters.tsv", HEADER)
+        fasta = self.input("input.fasta", ">rep\n>rep\nABC\n")
+        result = self.merge(table, "--cluster-fasta", fasta, output=fasta)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("output refers to input file", result.stderr)
+        self.assertEqual(fasta.read_text(), ">rep\n>rep\nABC\n")
