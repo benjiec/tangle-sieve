@@ -86,7 +86,7 @@ def merge_cluster_tsvs(inputs, output, cluster_fastas=()):
             temporary = Path(stream.name)
             header = f"{INPUT_HEADER}\tProtein Accession"
             if cluster_fastas:
-                header += "\tSame as Cluster Repr"
+                header += "\tSame as Cluster Repr\tContained"
             stream.write(header + "\n")
             for path in inputs:
                 with path.open(encoding="utf-8") as source:
@@ -110,6 +110,8 @@ def merge_cluster_tsvs(inputs, output, cluster_fastas=()):
                                 )
                             representative, member = sequences_by_pair[pair]
                             result += "\ttrue" if representative == member else "\tfalse"
+                            contained = representative in member or member in representative
+                            result += "\ttrue" if contained else "\tfalse"
                         stream.write(result + "\n")
         temporary.replace(output)
     finally:

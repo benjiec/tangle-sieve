@@ -95,8 +95,8 @@ class TestMergeClusterTsvs(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             self.output.read_text(),
-            f"{HEADER}\tProtein Accession\tSame as Cluster Repr\n"
-            f"{a}\t{a}\ta\ttrue\n{a}\t{c}\tc\ttrue\n{b}\t{c}\tc\tfalse\n",
+            f"{HEADER}\tProtein Accession\tSame as Cluster Repr\tContained\n"
+            f"{a}\t{a}\ta\ttrue\ttrue\n{a}\t{c}\tc\ttrue\ttrue\n{b}\t{c}\tc\tfalse\tfalse\n",
         )
 
     def test_invalid_fasta_keeps_output_intact(self):
@@ -128,3 +128,15 @@ class TestMergeClusterTsvs(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("output refers to input file", result.stderr)
         self.assertEqual(fasta.read_text(), ">rep\n>rep\nABC\n")
+
+    def test_containment_in_both_directions(self):
+        a, b, c = (f"{name}_PF00531_1_1" for name in "abc")
+        table = self.input("clusters.tsv", f"{HEADER}\n{a}\t{b}\n{a}\t{c}\n")
+        fasta = self.input("clusters.fasta", f">{a}\n>{a}\nBCD\n>{b}\nABCDE\n>{c}\nCD\n")
+        result = self.merge(table, "--cluster-fasta", fasta)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.output.read_text(),
+            f"{HEADER}\tProtein Accession\tSame as Cluster Repr\tContained\n"
+            f"{a}\t{b}\tb\tfalse\ttrue\n{a}\t{c}\tc\tfalse\ttrue\n",
+        )
