@@ -39,9 +39,9 @@ aligned on another. Neither is a physical inter-residue distance. See the
 ## Invocation and parameters
 
 ```bash
-alphafold-pdockq2-patches.py model.cif --full-data full_data.json --output patches.tsv
-alphafold-pdockq2-patches.py predictions.zip --output patches.tsv
-alphafold-pdockq2-patches.py ./folds --chains A B --output patches.tsv
+alphafold-pdockq2-patches.py model.cif --full-data full_data.json
+alphafold-pdockq2-patches.py predictions.zip
+alphafold-pdockq2-patches.py ./folds --chains A B
 ```
 
 Run in the installed sieve Python environment, as with the other sieve scripts.
@@ -53,8 +53,6 @@ processed in sorted order; subdirectories are not searched.
 |---|---:|---|
 | positional input | required | CIF, ZIP, or directory of ZIPs |
 | `--full-data` | none | Matching full-data JSON; required only for CIF input |
-| `--output` | optional | TSV path; recomputed and overwritten, no cache; omit for stdout summary only |
-| `--silent` | off | Suppress stdout; retain TSV output and stderr diagnostics |
 | `--chains A B` | all pairs | Analyze one distinct pair; summarize sites on the second argument; output chain order is lexical |
 | `--distance-cutoff` | 8.0 Å | Inclusive cutoff for interchain contacts and all graph edges |
 | `--max-bridge-residues` | 1 | Maximum vertex-separator cardinality; 0 disables splitting |
@@ -377,31 +375,19 @@ ordering. TSV rows retain traversal order, not rank order. Values are formatted
 to six decimal places after ranking. Changing settings always recomputes results
 and replaces `--output`; there is no cache.
 
-### Silent output
+### Interface evaluation
 
-`--silent` suppresses stdout, including model and structure summaries. `--output`
-still writes the enriched TSV. With no output path, no file is created. Errors
-and library warnings remain on stderr.
+Use [alphafold-interface.py](alphafold-interface.md) to export the tall patch TSV
+with family-specific classifications. The patch command prints the report.
 
-```sh
-sieve-py ~/git/tangle/sieve/scripts/alphafold-pdockq2-patches.py locator \
-  --silent --output patches.tsv
-```
-
-### Domain-specific face annotation
-
-Domain interpretation has moved to [alphafold-death-faces.py](alphafold-death-faces.md).
-The patch command no longer accepts DD flags or emits DD classification/settings
-columns. It retains secondary-structure and chemistry descriptors.
-
-Both scripts emit `patch_id`, a 128-bit membership hash using full fold identity,
+The TSV includes `patch_id`, a 128-bit membership hash using full fold identity,
 model ID, and exact contacting residues per chain. The readable traversal ID is
 now exported as `patch label`. Detection settings remain separate; match them
-when comparing metrics. See the linked documentation for identity details.
+when comparing metrics. See the [interface command documentation](alphafold-interface.md) for output details.
 
 ## Human-readable standard-output summary
 
-After analysis (and writing the TSV if requested), the command prints fold identity and model confidence followed by up to five highest-scoring
+After analysis, the patch command prints fold identity and model confidence followed by up to five highest-scoring
 patch rows per input source, ranked across its models and chain pairs involving
 the **last chain encountered in the first CIF structural model**. This is CIF
 chain order, not lexical chain-ID order. For example, with CIF chains A,B,C,
@@ -612,7 +598,7 @@ area used by the patch stdout summary. These calculations do not change pDockQ2.
 `alphafold-pdockq2-patches.py` now includes structural descriptors by default.
 The usual CIF plus `--full-data`, ZIP, and directory inputs still work. No second
 reference structure, alignment, output archive, or report directory is needed.
-The optional `--output` TSV exports enriched leaf-patch rows; see the column specification above.
+The interface command exports enriched leaf-patch rows using the column specification above.
 
 Before the full-interface scores, the summary groups chains by exact modeled
 amino-acid sequence within each input. Each group lists its chain IDs and length,

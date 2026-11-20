@@ -72,25 +72,19 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(out.count('Fold ID:'), 2)
         self.assertLess(out.index('Model 1'), out.index('Model 0'))
 
-    def test_empty_stdin_no_output_or_file_change(self):
-        output = self.root/'out.tsv'
-        output.write_text('original')
-        self.assertEqual(self.call('\n\n', ['--output', str(output)]), '')
-        self.assertEqual(output.read_text(), 'original')
+    def test_empty_stdin(self):
+        self.assertEqual(self.call('\n\n'), '')
 
-    def test_invalid_input_or_missing_model_preserves_output(self):
-        output = self.root/'out.tsv'
-        output.write_text('original')
+    def test_invalid_input_or_missing_model_prints_no_report(self):
         for text in ('locator\tbad\n', record(str(self.folder), 99),
                      record(str(self.folder), 0) + 'bad\trow\n',
                      record(str(self.folder), 0).replace('\t0\t', '\t-1\t')):
             with self.subTest(text=text):
                 out, err = io.StringIO(), io.StringIO()
                 with patch('sys.stdin', io.StringIO(text)), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
-                    SCRIPT.main(self.args + ['--output', str(output)])
+                    SCRIPT.main(self.args)
                 self.assertEqual(out.getvalue(), '')
                 self.assertIn('stdin record', err.getvalue())
-                self.assertEqual(output.read_text(), 'original')
 
     def test_shared_format_quotes_and_validation(self):
         locator = '/path/with\ttab and "quote"\nand newline'
@@ -101,11 +95,6 @@ class PipelineTests(unittest.TestCase):
                      'a\t12345678\t0\t1.1\tNA\n'):
             with self.assertRaises(ValueError):
                 list(read_patch_inputs(io.StringIO(text)))
-
-    def test_output_cannot_overwrite_piped_input(self):
-        with patch('sys.stdin', io.StringIO(str(self.folder)+'\n')), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            SCRIPT.main(self.args + ['--output', str(self.folder)])
-        self.assertTrue(self.folder.is_dir())
 
     def test_actual_list_results_pipe_selects_highest_only(self):
         # Invalid CIF and absent full-data on model 1 must never be read.

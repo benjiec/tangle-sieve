@@ -1,7 +1,7 @@
 """Shared headerless TSV contract for AlphaFold result producers and consumers."""
 import csv
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 
 from sieve.alphafold_confidence import model_confidence
 
@@ -48,6 +48,7 @@ class PatchInput:
     locator: str
     model_id: object = None
     record_number: object = None
+    sequence_names: dict[str, str] = field(default_factory=dict)
 
 
 def read_patch_inputs(stream):

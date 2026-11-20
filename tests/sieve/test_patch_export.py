@@ -1,19 +1,12 @@
-import contextlib
 import csv
 import io
-import json
-from pathlib import Path
-import tempfile
 import unittest
 from unittest.mock import patch
 
-from sieve.alphafold_manifest import sequence_id, fold_id
 from sieve.alphafold_pdockq2_patches import write_patches, detect_patches, Options
 from sieve.alphafold_pdockq2 import parse_model
 from sieve.patch_description_summary import PatchDescriptions
-from tests.scripts.test_alphafold_pdockq2_patches import SCRIPT
 from tests.sieve.test_alphafold_pdockq2_patches import CIF, DATA
-from tests.sieve.test_alphafold_overlap import fixture
 
 
 class ExportTests(unittest.TestCase):
@@ -148,33 +141,11 @@ class ExportTests(unittest.TestCase):
                 self.assertEqual((row['source'], row['patch_id'], row['rank'], row['fold_id'], row['contact count']),
                                  (leaf['source'], leaf['patch_id'], rank, 'NA', '4'))
 
-    def test_cli_silent_identity_recompute_and_empty(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);fold=root/'fold';fold.mkdir();output=root/'patches.tsv'
-            (fold/'fold_model_0.cif').write_text(fixture([('A','AAAA',[0,0,0]),('B','CCCC',[6,0,0])]))
-            (fold/'fold_job_request.json').write_text('{"modelSeeds":[42]}')
-            data=dict(token_chain_ids=['A']*4+['B']*4,token_res_ids=list(range(1,5))*2,pae=[[1]*8 for _ in range(8)])
-            (fold/'fold_full_data_0.json').write_text(json.dumps(data))
-            args=[str(fold),'--silent','--no-dssp','--output',str(output),'--min-residues-per-chain','1','--min-contacts','1']
-            with contextlib.redirect_stdout(io.StringIO()) as stdout:
-                self.assertEqual(SCRIPT.main(args),0)
-            self.assertEqual(stdout.getvalue(),'')
-            with output.open() as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
-            self.assertTrue(rows)
-            self.assertEqual(rows[0]['sequence_id'],sequence_id(['AAAA','CCCC']))
-            self.assertEqual(rows[0]['fold_id'],fold_id(42,['AAAA','CCCC']))
-            self.assertNotIn('candidate DD interface',rows[0])
-            self.assertEqual(len(rows[0]['patch_id']),32)
-            self.assertIn('patch label',rows[0])
-            with contextlib.redirect_stdout(io.StringIO()) as stdout:
-                self.assertEqual(SCRIPT.main(args+['--distance-cutoff','.1']),0)
-            with output.open() as stream:self.assertEqual(list(csv.DictReader(stream,delimiter='\t')),[])
-            self.assertEqual(stdout.getvalue(),'')
-            with contextlib.redirect_stdout(io.StringIO()) as stdout:
-                self.assertEqual(SCRIPT.main([str(fold),'--silent','--no-dssp']),0)
-            self.assertEqual(stdout.getvalue(),'')
-            for value in ('0','1.1','nan'):
-                with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
-                    SCRIPT.main(args+['--dd-helix-presence-threshold',value])
-                with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
-                    SCRIPT.main(args+['--dd-loop-presence-threshold',value])
+    def test_empty_export_after_narrower_cutoff(self):
+        residues, pae = parse_model(CIF, DATA)
+        for cutoff, expected in ((8.0, 2), (0.1, 0)):
+            output = io.StringIO()
+            rows = detect_patches(residues, pae, Options(cutoff=cutoff, min_residues_per_chain=1, min_contacts=1))
+            write_patches(rows, output)
+            output.seek(0)
+            self.assertEqual(len(list(csv.DictReader(output, delimiter='\t'))), expected)

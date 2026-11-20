@@ -495,7 +495,7 @@ PATCH_COLUMNS = [
 ]
 
 
-def write_patches(rows, stream):
+def patch_export_rows(rows, *, side_fields=None, extra_columns=(), result_columns=()):
     """Export only final leaf patches; internal reference/split rows remain available."""
     leaves = [r for r in rows if r['scope']=='patch' and r['status']=='leaf']
     groups = {}
@@ -505,8 +505,8 @@ def write_patches(rows, stream):
     for group in groups.values():
         for rank,row in enumerate(sorted(group,key=lambda r:r['rank']),1):
             ranks[id(row)] = rank
-    writer = csv.DictWriter(stream, fieldnames=PATCH_COLUMNS, delimiter='\t', lineterminator='\n')
-    writer.writeheader()
+    fields = {**PATCH_SIDE_FIELDS, **(side_fields or {})}
+    columns = (*PATCH_COLUMNS, *(side_fields or {}), *extra_columns, *result_columns)
     for row in leaves:
         exported = {EXPORT_RENAMES.get(k,k):v for k,v in row.items() if k not in EXPORT_DROPPED}
         exported['rank'] = ranks[id(row)]
@@ -514,8 +514,18 @@ def write_patches(rows, stream):
             tall_row = dict(exported, sequence_index=side)
             tall_row.update({
                 field: exported.get(template.format(side=side, partner=3-side))
-                for field, template in PATCH_SIDE_FIELDS.items()
+                for field, template in fields.items()
             })
-            writer.writerow({k: 'NA' if tall_row.get(k) is None else
-                             f'{tall_row[k]:.6f}' if isinstance(tall_row[k], float) else
-                             tall_row[k] for k in PATCH_COLUMNS})
+            yield {
+                column: ('NULL' if column in result_columns else 'NA') if tall_row.get(column) is None
+                else f'{tall_row[column]:.6f}' if isinstance(tall_row[column], float)
+                else str(tall_row[column]).lower() if isinstance(tall_row[column], bool)
+                else tall_row[column]
+                for column in columns
+            }
+
+
+def write_patches(rows, stream):
+    writer = csv.DictWriter(stream, fieldnames=PATCH_COLUMNS, delimiter='\t', lineterminator='\n')
+    writer.writeheader()
+    writer.writerows(patch_export_rows(rows))

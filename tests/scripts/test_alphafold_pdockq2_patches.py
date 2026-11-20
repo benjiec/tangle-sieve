@@ -1,5 +1,4 @@
 import contextlib
-import csv
 import io
 import json
 from pathlib import Path
@@ -13,26 +12,20 @@ SCRIPT = load_script(str(Path(__file__).resolve().parents[2] / 'scripts' / 'alph
 
 
 class PatchCommandTests(unittest.TestCase):
-    def test_cli_success_and_failure_preserves_output(self):
+    def test_cli_report_and_invalid_chain(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            cif, data, output = root/'model.cif', root/'data.json', root/'patches.tsv'
+            cif, data = root/'model.cif', root/'data.json'
             cif.write_text(CIF)
             data.write_text(json.dumps(DATA))
-            args = [str(cif), '--full-data', str(data), '--output', str(output),
+            args = [str(cif), '--full-data', str(data),
                     '--min-residues-per-chain', '1', '--min-contacts', '1', '--no-dssp']
-            self.assertEqual(SCRIPT.main(args), 0)
-            before = output.read_text()
-            rows = list(csv.DictReader(io.StringIO(before), delimiter='\t'))
-            self.assertEqual([r['scope'] for r in rows], ['patch', 'patch'])
-            self.assertEqual(rows[0]['patch residues'], '1')
-            self.assertEqual(rows[0]['interface structure'], 'unassigned:1')
+            with contextlib.redirect_stdout(io.StringIO()) as report:
+                self.assertEqual(SCRIPT.main(args), 0)
+            self.assertIn('pDockQ2', report.getvalue())
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 SCRIPT.main(args + ['--chains', 'A', 'X'])
-            self.assertEqual(output.read_text(), before)
-            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                SCRIPT.main([str(cif), '--full-data', str(data), '--output', str(cif)])
-            self.assertEqual(cif.read_text(), CIF)
+            self.assertEqual(set(root.iterdir()), {cif, data})
 
     def test_help_mentions_specification(self):
         output = io.StringIO()

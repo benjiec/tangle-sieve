@@ -20,5 +20,5 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sieve", "scripts"]
+include = ["sieve", "sieve.interface", "scripts"]
 namespaces = true

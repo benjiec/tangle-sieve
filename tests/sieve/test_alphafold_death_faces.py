@@ -14,7 +14,6 @@ from sieve.alphafold_result_format import PatchInput
 from sieve.alphafold_pdockq2_patches import analyze, Options
 from tests.sieve.test_alphafold_dd_faces import structure
 from tests.sieve.test_alphafold_overlap import fixture
-from tests.scripts.helpers import load_script
 
 ROOT=Path(__file__).resolve().parents[2]
 RULES=ROOT/'data/death-face-rules.tsv'
@@ -132,14 +131,6 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(rows[0]['model_id'],'1')
         self.assertEqual([r['sequence_index'] for r in rows[:2]], ['1', '2'])
         self.assertEqual([r['domain'] for r in rows[:2]], ['DD', 'DED'])
-        patch_script=load_script(ROOT/'scripts/alphafold-pdockq2-patches.py')
-        out=self.root/'patches.tsv'
-        with patch('sys.stdout',io.StringIO()):
-            self.assertEqual(patch_script.main([str(self.fold),'--no-dssp','--silent','--output',str(out),
-                '--min-residues-per-chain','1','--min-contacts','1']),0)
-        with out.open() as stream:patch_rows=list(csv.DictReader(stream,delimiter='\t'))
-        self.assertNotIn('candidate DD interface',patch_rows[0])
-        self.assertEqual(rows[0]['patch_id'],next(r['patch_id'] for r in patch_rows if r['model']=='1'))
 
     def test_tall_header_and_asymmetric_classifications(self):
         def classify_side(chain, *args):
@@ -210,21 +201,6 @@ class RunnerTests(unittest.TestCase):
                 'sieve.alphafold_death_faces.load_secondary',side_effect=RuntimeError('DSSP failed')):
             self.assertEqual(self.execute(),1)
         with self.output.open() as stream:self.assertEqual(list(csv.DictReader(stream,delimiter='\t')),[])
-
-    def test_pipeline_and_atomic_failure(self):
-        script=load_script(ROOT/'scripts/alphafold-death-faces.py')
-        with self.manifest.open() as stream:identity=next(csv.DictReader(stream,delimiter='\t'))
-        stdin=io.StringIO(f"{self.fold}\t{identity['fold_id']}\t1\t0.5\t0.6\n")
-        with patch('sys.stdin',stdin), patch('sys.stdout',io.StringIO()) as stdout, patch(
-                'sieve.alphafold_death_faces.find_dssp',return_value='fake'), patch(
-                'sieve.alphafold_death_faces.load_secondary',return_value=(None,{},[],{'status':'assigned'})):
-            self.assertEqual(script.main(['-','--manifest',str(self.manifest),'--domains',str(self.domains),
-                '--rules',str(RULES),'--output',str(self.output),'--min-residues-per-chain','1','--min-contacts','1']),0)
-            self.assertEqual(stdout.getvalue(),'')
-            before=self.output.read_bytes()
-            with patch('sieve.alphafold_cache.os.replace',side_effect=OSError('disk failure')):
-                with self.assertRaises(OSError):self.execute()
-            self.assertEqual(self.output.read_bytes(),before)
 
     def test_manifest_identity_mismatch_is_fatal(self):
         text=self.manifest.read_text()

@@ -1,13 +1,10 @@
 """Standalone death-family patch annotation using shared geometric detection."""
 import sys
 from pathlib import Path
-import subprocess
-import zipfile
 
 from sieve.alphafold_cache import write_cache
-from sieve.alphafold_files import discover, fold_locator, model_number
 from sieve.alphafold_manifest import read_manifest_groups
-from sieve.alphafold_structure import open_structure_fold
+from sieve.alphafold_patch_metrics import ERRORS, jobs_for
 from sieve.alphafold_pdockq2_patches import input_models, analyze, Options
 from sieve.alphafold_pdockq2 import parse_model
 from sieve.alphafold_secondary import find_dssp, load_secondary
@@ -20,33 +17,6 @@ SETTINGS = ['distance cutoff','max bridge residues','min residues per chain','mi
 SIDE_COLUMNS = ['chain', 'sequence name', 'domain', 'candidate face', 'status']
 COLUMNS = ['fold_id','sequence_id','fold_locator','model_id','patch_id','patch label',
            'sequence_index',*SIDE_COLUMNS,'candidate interface','rules_id',*SETTINGS,*KINK_SETTINGS]
-ERRORS = (OSError,ValueError,KeyError,TypeError,RuntimeError,zipfile.BadZipFile,subprocess.SubprocessError)
-
-
-def jobs_for(request, error):
-    path=Path(request.locator)
-    if '::' in request.locator or path.suffix.lower()=='.cif':
-        locators=[request.locator]
-    elif path.is_dir() and any(model_number(p.name) is not None for p in path.iterdir() if p.is_file()):
-        locators=[str(path.resolve())]
-    else:
-        locators=[fold_locator(f.source_path,f.fold_path) for f in discover(path,error)]
-    for locator in locators:
-        try:
-            with open_structure_fold(locator) as fold:
-                models=[model_number(n) for n in fold.models]
-            if len(models)!=len(set(models)):
-                raise ValueError('duplicate model numbers')
-            if request.model_id is not None:
-                if request.model_id not in models:
-                    raise ValueError(f'model {request.model_id} not found')
-                models=[request.model_id]
-            for model in sorted(models,key=lambda n:-1 if n is None else n):
-                yield locator,model
-        except ERRORS as exc:
-            error(f'{locator}: {exc}')
-
-
 def run(requests, manifest, domains_path, rules_path, output, *, options=None, chains=None,
         full_data=None, dssp=None, stderr=None, merge_kinked_helices=False,
         kink_connector_length=1, kink_angle=70):
