@@ -20,11 +20,19 @@ def main(argv=None):
     parser.add_argument('--manifest', help='manifest mapping fold locators and chains to sequence names')
     parser.add_argument('--full-data', help='matching confidence JSON for direct CIF input')
     parser.add_argument('--dssp', help='mkdssp executable')
+    parser.add_argument('--motif-window', action='append', default=[], metavar='CHAIN:START-END',
+                        help='TRAF-binding motif residues, inclusive, repeatable across chains')
+    parser.add_argument('--traf-threshold', action='append', default=[], metavar='NAME=VALUE',
+                        help='override mixed_area, packing_area, or paired_area')
+    parser.add_argument('--math-window', action='append', default=[], metavar='CHAIN:START-END',
+                        help='explicit TRAF MATH domain residues, inclusive')
     args = parser.parse_args(argv)
     try:
         requests = read_patch_inputs(sys.stdin) if args.input == '-' else [PatchInput(args.input)]
         return run(requests, args.output, manifest=args.manifest, domain_file=args.domain_file,
-                   domains=args.domain, chains=args.chains, full_data=args.full_data, dssp=args.dssp)
+                   domains=args.domain, chains=args.chains, full_data=args.full_data, dssp=args.dssp,
+                   motif_windows=args.motif_window, traf_thresholds=args.traf_threshold,
+                   math_windows=args.math_window)
     except (*ERRORS, csv.Error) as error:
         parser.error(str(error))
 

@@ -7,10 +7,11 @@ from sieve.alphafold_cache import write_cache
 from sieve.alphafold_death_rules import read_domains
 from sieve.alphafold_manifest import read_manifest_groups
 from sieve.alphafold_patch_metrics import ERRORS, jobs_for
-from sieve.alphafold_pdockq2 import parse_model
+from sieve.alphafold_pdockq2 import collect_regions, parse_model
 from sieve.alphafold_pdockq2_patches import PATCH_COLUMNS, input_models, patch_export_rows
 from sieve.alphafold_secondary import find_dssp
 from sieve.interface.registry import INTERFACES, resolve
+from sieve.interface import traf_slim
 
 SIDE_FIELDS = {
     'sequence name': 'sequence name {side}',
@@ -45,12 +46,14 @@ def manifest_rows(groups, locator):
 
 
 def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
-                   chains, full_data, dssp, error):
+                   chains, full_data, dssp, error, motif_windows=None, traf_thresholds=None,
+                   math_windows=None):
     seeds, model_scores = {}, {}
     record, = input_models(
         locator, full_data, selected_model=number, model_seeds=seeds, model_scores=model_scores,
     )
-    residues, _ = parse_model(record[2], record[3])
+    parsed = parse_model(record[2], record[3])
+    residues, _ = parsed
     if chains and any(chain not in residues for chain in chains):
         raise ValueError(f'--chains requires two chains present in the model: {list(residues)}')
     if len(residues) < 2:
@@ -64,6 +67,7 @@ def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
     names = {row['input chain']: row['input description'] for row in group}
     names.update(request.sequence_names)
     pairs = [tuple(chains)] if chains else combinations(sorted(residues), 2)
+    all_rows = []
     for pair in pairs:
         try:
             domains = {}
@@ -75,9 +79,19 @@ def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
                 else:
                     detail = f' for sequence {names[chain]!r}' if chain in names else ''
                     raise ValueError(f'missing domain assignment for chain {chain}{detail}')
+            if chains is None and any(set(domains.values()) <= role for role in (
+                traf_slim.TRAF_DOMAINS, traf_slim.MOTIF_DOMAINS,
+            )):
+                continue
             profile, oriented = resolve(pair, domains)
+            extras = {}
+            if profile.name == 'traf_slim':
+                extras.update(domains=domains, motif_windows=motif_windows or {},
+                              thresholds=traf_thresholds or traf_slim.Thresholds(), parsed=parsed,
+                              math_windows=math_windows or {})
             metrics = profile.extract(
                 locator, oriented, record=record, seeds=seeds, model_scores=model_scores, dssp=dssp,
+                **extras,
             )
             if group:
                 source = record[0]
@@ -86,7 +100,8 @@ def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
                     raise ValueError('model/manifest identity mismatch')
             current = []
             for patch in metrics.leaves():
-                structure = metrics.descriptions.models[(patch['source'], patch['model'])]
+                structure = (metrics.descriptions.models[(patch['source'], patch['model'])]
+                             if metrics.descriptions is not None else None)
                 classification = profile.classify(patch, structure, domains, chains=oriented)
                 patch.update(classification.settings)
                 patch.update({
@@ -103,17 +118,30 @@ def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
                                   f'candidate face {side}': details.get('candidate face'),
                                   f'face status {side}': details.get('face status')})
                 current.append(patch)
-            yield from current
+            all_rows.extend(current)
         except ERRORS as exc:
             error(f'{locator} model {number} chains {"/".join(pair)}: {exc}')
+    contacting_protomers = {}
+    for row in all_rows:
+        if row['interface_family'] == 'traf_slim' and row.get('contact count'):
+            contacting_protomers.setdefault(row['chain 2'], set()).add(row['chain 1'])
+    for row in all_rows:
+        if row['interface_family'] == 'traf_slim' and row.get('contact count'):
+            others = contacting_protomers[row['chain 2']] - {row['chain 1']}
+            row['traf_other_protomers'] = ','.join(sorted(others)) if others else None
+        yield row
 
 
 def run(requests, output, *, manifest=None, domain_file=None, domains=(), chains=None,
-        full_data=None, dssp=None, stderr=None):
+        full_data=None, dssp=None, stderr=None, motif_windows=(), traf_thresholds=(),
+        math_windows=()):
     stderr = sys.stderr if stderr is None else stderr
     if chains is not None and (len(chains) != 2 or chains[0] == chains[1]):
         raise ValueError('--chains requires two distinct chains')
     overrides = domain_overrides(domains)
+    windows = collect_regions(motif_windows)
+    math_regions = collect_regions(math_windows)
+    thresholds = traf_slim.parse_thresholds(traf_thresholds)
     explicit_mapping = chains is not None and all(chain in overrides for chain in chains)
     lookup_mapping = manifest is not None and domain_file is not None
     if not (explicit_mapping or lookup_mapping):
@@ -151,7 +179,8 @@ def run(requests, output, *, manifest=None, domain_file=None, domains=(), chains
                 rows.extend(evaluate_model(
                     locator, number, request, groups=groups, domain_table=domain_table,
                     overrides=overrides, chains=chains, full_data=full_data,
-                    dssp=executable, error=error,
+                    dssp=executable, error=error, motif_windows=windows, traf_thresholds=thresholds,
+                    math_windows=math_regions,
                 ))
             except ERRORS as exc:
                 error(f'{locator} model {number}: {exc}')

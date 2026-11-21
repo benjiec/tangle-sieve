@@ -106,3 +106,48 @@ The TSV records `merge kinked helices`, `kink connector length`, and `kink angle
 Raw DSSP summaries, patch membership, patch IDs, and patch metrics are unchanged.
 These thresholds are uncalibrated heuristics. Review normalized assignments
 against known domain structures before treating face labels as biological evidence.
+
+## TRAF–SLiM interfaces
+
+Annotate the receptor chain as `TRAF2`, `TRAF3`, `TRAF5`, `TRAF6`,
+`TRAF`, or `MATH`, and the peptide chain as `SLiM`. The paralog
+annotation is independent of pose classification.
+
+```sh
+python scripts/alphafold-interface.py fold.zip --output traf.tsv \
+  --chains A B --domain A:TRAF6 --domain B:SLiM
+```
+
+Without `--math-window`, use an input construct with a complete MATH domain
+at its C terminus. The strand connectivity can accommodate different lengths
+of upstream coil. Use `--math-window A:50-201` for known boundaries, tags,
+and extensions. The terminal fold check allows a short structural cap after
+the last backbone ladder. Use an explicit window if the chain includes a tag
+or appended sequence that could be mistaken for this cap.
+
+Use `--motif-window B:24-32` to supply an inclusive peptide interval. Otherwise
+the evaluator finds peptide contacts within 6 Å and selects among overlapping
+five- and six-residue windows. Comparable sites or registers are reported as
+unresolved. The TSV records the inferred or supplied windows, the assigned
+groove landmarks, and the evidence behind the call.
+
+Pose classes use backbone and side-chain geometry from the input model.
+`traf6` requires an ordered antiparallel β7 backbone ladder with at least
+three hydrogen bonds spanning at least four sequence steps on both partners.
+`traf2/3` requires a packing anchor followed by a β6–β7 loop polar anchor
+within a five-residue span. A polar anchor can be supported by a qualified
+hydrogen bond, a salt bridge, or two compatible side-chain contacts within
+3.8 Å. The last case supplies pose evidence only. The other results are
+`atypical`, `unresolved`, and `no_contact`.
+
+Confidence reports both directional pDockQ2 scores using the existing
+8 Å Cα scoring contacts and uses their minimum as the numeric summary.
+Chemical feasibility uses summed buried area and geometric contacts.
+The provisional area floors are 250 Å² for mixed support, 400 Å² for
+packing-only support, and 150 Å² for backbone pairing, with no upper area
+bound. Override these floors using `--traf-threshold NAME=VALUE` with
+`mixed_area`, `packing_area`, or `paired_area`.
+
+With manifest-driven evaluation of all annotated pairs,
+`traf_other_protomers` lists other evaluated MATH chains contacting the same
+motif. Reference structures are stored only under `tests/fixtures/traf_slim`.

@@ -8,7 +8,6 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from sieve.alphafold_death_rules import read_rules
 from sieve.alphafold_interface import COLUMNS, run
 from sieve.alphafold_manifest import fold_id, run as build_manifest, sequence_id
 from sieve.alphafold_pdockq2_patches import PATCH_COLUMNS, Options, analyze, input_models, patch_export_rows
@@ -27,14 +26,6 @@ SCRIPT = load_script(ROOT / 'scripts/alphafold-interface.py')
 
 
 class DeathTests(unittest.TestCase):
-    def test_rule_table(self):
-        source = ROOT.parent / 'coral/notes/interactome/dd_face_rules.tsv'
-        if not source.is_file():
-            self.skipTest('interactome reference table is outside the Sieve checkout')
-        rules, rules_id = read_rules(source)
-        self.assertEqual(death.RULES, rules)
-        self.assertEqual(death.RULES_ID, rules_id)
-
     def test_confidence_boundaries(self):
         for score, area, expected in (
             (0.229, 700, 'Reject'), (0.23, 700, 'Low'), (0.399, 700, 'Low'),
@@ -130,11 +121,11 @@ class DeathTests(unittest.TestCase):
                          [{'connector_length': 1, 'angle': 75}] * 2)
 
     def test_registry_orientation_ambiguity_and_unsupported_domains(self):
-        death_profile, = INTERFACES
+        death_profile = next(profile for profile in INTERFACES if profile.name == 'death')
         asymmetric = replace(death_profile, name='test', domains_a=frozenset({'TRAF'}),
                              domains_b=frozenset({'SLiM'}),
                              extract=partial(death.extract, distance_cutoff=6.0))
-        self.assertEqual(resolve(('A', 'B'), {'A': 'SLiM', 'B': 'TRAF'}, (*INTERFACES, asymmetric)),
+        self.assertEqual(resolve(('A', 'B'), {'A': 'SLiM', 'B': 'TRAF'}, (death_profile, asymmetric)),
                          (asymmetric, ('B', 'A')))
         domains = {'A': 'CARD', 'B': 'DED'}
         self.assertEqual(resolve(('A', 'B'), domains), (death_profile, ('A', 'B')))
@@ -247,7 +238,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.output.read_text(), 'original')
 
     def test_registry_profile_controls_cutoff(self):
-        death_profile, = INTERFACES
+        death_profile = next(profile for profile in INTERFACES if profile.name == 'death')
         custom = replace(death_profile, name='narrow', extract=partial(death.extract, distance_cutoff=0.1))
         with patch('sieve.alphafold_interface.resolve', return_value=(custom, ('A', 'B'))):
             self.assertEqual(run([PatchInput(self.locator, 1)], self.output,

@@ -2,7 +2,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sieve.interface import death
+from sieve.interface import death, traf_slim
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,9 @@ INTERFACES = (
     InterfaceProfile('death', DEATH_DOMAINS, DEATH_DOMAINS, death.extract,
                      death.confidence, death.feasibility, death.classify_interface,
                      ('rules_id', 'merge kinked helices', 'kink connector length', 'kink angle')),
+    InterfaceProfile('traf_slim', traf_slim.TRAF_DOMAINS, traf_slim.MOTIF_DOMAINS,
+                     traf_slim.extract, traf_slim.confidence, traf_slim.feasibility,
+                     traf_slim.classify_interface, traf_slim.COLUMNS),
 )
 
 
