@@ -114,6 +114,13 @@ def run(requests, output, *, manifest=None, domain_file=None, domains=(), chains
     if chains is not None and (len(chains) != 2 or chains[0] == chains[1]):
         raise ValueError('--chains requires two distinct chains')
     overrides = domain_overrides(domains)
+    explicit_mapping = chains is not None and all(chain in overrides for chain in chains)
+    lookup_mapping = manifest is not None and domain_file is not None
+    if not (explicit_mapping or lookup_mapping):
+        raise ValueError(
+            'domain mapping requires --chains with a --domain assignment for each selected chain, '
+            'or both --manifest and --domain-file'
+        )
     requests = list(requests)
     target = Path(output).resolve()
     protected = {Path(path).resolve() for path in (manifest, domain_file, full_data) if path}

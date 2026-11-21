@@ -1,4 +1,3 @@
-import io
 import json
 from pathlib import Path
 import tempfile
@@ -7,7 +6,7 @@ import zipfile
 
 from sieve.alphafold_pdockq2 import Residue, score_pair
 from sieve.alphafold_pdockq2_patches import (
-    Options, analyze, components, detect_patches, find_split, input_models, write_patches,
+    Options, analyze, components, detect_patches, find_split, input_models, patch_export_rows,
 )
 
 
@@ -133,11 +132,10 @@ class PatchTests(unittest.TestCase):
 
     def test_tsv_schema(self):
         residues, pae = self.fixture()
-        output = io.StringIO()
-        write_patches(detect_patches(residues, pae), output)
-        self.assertNotIn('algorithm version', output.getvalue())
-        self.assertIn('interchain CA distance min', output.getvalue())
-        self.assertNotIn('separator residues', output.getvalue())
+        first, *_ = patch_export_rows(detect_patches(residues, pae))
+        self.assertNotIn('algorithm version', first)
+        self.assertIn('interchain CA distance min', first)
+        self.assertNotIn('separator residues', first)
 
 
 CIF = '''data_test

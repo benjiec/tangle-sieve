@@ -1,5 +1,4 @@
 """Spatial interface patches; algorithm specification: docs/pDockQ2.md."""
-import csv
 import json
 import math
 import re
@@ -523,9 +522,3 @@ def patch_export_rows(rows, *, side_fields=None, extra_columns=(), result_column
                 else tall_row[column]
                 for column in columns
             }
-
-
-def write_patches(rows, stream):
-    writer = csv.DictWriter(stream, fieldnames=PATCH_COLUMNS, delimiter='\t', lineterminator='\n')
-    writer.writeheader()
-    writer.writerows(patch_export_rows(rows))

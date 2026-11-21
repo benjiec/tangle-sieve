@@ -11,9 +11,10 @@ from unittest.mock import patch
 from sieve.alphafold_death_rules import read_rules
 from sieve.alphafold_interface import COLUMNS, run
 from sieve.alphafold_manifest import fold_id, run as build_manifest, sequence_id
-from sieve.alphafold_pdockq2_patches import PATCH_COLUMNS, Options, analyze, write_patches
+from sieve.alphafold_pdockq2_patches import PATCH_COLUMNS, Options, analyze, input_models, patch_export_rows
 from sieve.alphafold_patch_metrics import extract_patch_metrics
 from sieve.alphafold_result_format import PatchInput, ResultRecord, write_result
+from sieve.alphafold_secondary import load_secondary
 from sieve.interface import death
 from sieve.interface.registry import INTERFACES, resolve
 from tests.scripts.helpers import load_script
@@ -188,13 +189,12 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual({row['kink angle'] for row in rows}, {'75'})
         self.assertEqual({row['distance cutoff'] for row in rows}, {'10.000000'})
 
-        legacy = io.StringIO()
         args = dict(options=Options(cutoff=10.0), chains=('A', 'B'), selected_model=1)
         expected = extract_patch_metrics(self.locator, **args)
-        write_patches(list(expected.leaves()), legacy)
-        legacy.seek(0)
-        self.assertEqual([{key: row[key] for key in PATCH_COLUMNS} for row in rows],
-                         list(csv.DictReader(legacy, delimiter='\t')))
+        self.assertEqual(
+            [{key: row[key] for key in PATCH_COLUMNS} for row in rows],
+            [{key: str(value) for key, value in row.items()} for row in patch_export_rows(expected.leaves())],
+        )
         self.assertEqual(rows[0]['patch_id'], next(
             row['patch_id'] for row in analyze(self.locator, **args) if row['status'] == 'leaf'
         ))
@@ -202,10 +202,35 @@ class PipelineTests(unittest.TestCase):
     def test_explicit_and_supplied_names_with_batch_errors(self):
         request = PatchInput(self.locator, 1, sequence_names={'B': 'second sequence'})
         self.assertEqual(run([PatchInput(self.locator, 0), request], self.output,
-                             domain_file=self.domains, domains=['A:CARD'], chains=('A', 'B'),
+                             manifest=self.manifest, domain_file=self.domains,
+                             domains=['A:CARD'], chains=('A', 'B'),
                              stderr=self.errors), 1)
         self.assertIn('model 0', self.errors.getvalue())
         self.assertEqual([row['domain'] for row in self.read()], ['CARD', 'DED'])
+
+    def test_incomplete_mapping_fails_before_opening_inputs(self):
+        self.output.write_text('original')
+        for flags in (
+            {}, {'chains': ('A', 'B')}, {'domains': ['A:DD', 'B:DED']},
+            {'chains': ('A', 'B'), 'domains': ['A:DD', 'C:CARD']},
+            {'manifest': self.manifest}, {'domain_file': self.domains},
+            {'chains': ('A', 'B'), 'domains': ['A:DD'], 'domain_file': self.domains},
+        ):
+            with self.subTest(flags=flags), patch('sieve.alphafold_interface.jobs_for') as jobs:
+                with self.assertRaisesRegex(ValueError, 'domain mapping requires'):
+                    run([PatchInput(self.locator, 1)], self.output, **flags)
+                jobs.assert_not_called()
+        self.assertEqual(self.output.read_text(), 'original')
+
+    def test_lookup_error_identifies_fold_and_unmapped_chain(self):
+        self.output.write_text('original')
+        self.assertEqual(run([PatchInput(self.locator, 1)], self.output,
+                             manifest=self.manifest, domain_file=self.domains,
+                             chains=('A', 'C'), stderr=self.errors), 1)
+        self.assertIn(self.locator, self.errors.getvalue())
+        self.assertIn("missing domain assignment for chain C for sequence 'third sequence'",
+                      self.errors.getvalue())
+        self.assertEqual(self.output.read_text(), 'original')
 
     def test_registry_profile_controls_cutoff(self):
         death_profile, = INTERFACES
@@ -214,6 +239,37 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(run([PatchInput(self.locator, 1)], self.output,
                                  domains=['A:DD', 'B:DED'], chains=('A', 'B')), 0)
         self.assertEqual(self.read(), [])
+
+    def test_manifest_identity_mismatch_preserves_output(self):
+        self.output.write_text('original')
+        text = self.manifest.read_text()
+        expected_id = fold_id(42, ['AAAA', 'CCCC', 'GGGG'])
+        self.manifest.write_text(text.replace(expected_id, '00000000'))
+        self.assertEqual(run([PatchInput(self.locator, 1)], self.output,
+                             manifest=self.manifest, domain_file=self.domains,
+                             chains=('A', 'B'), stderr=self.errors), 1)
+        self.assertIn('model/manifest identity mismatch', self.errors.getvalue())
+        self.assertEqual(self.output.read_text(), 'original')
+
+    def test_tall_rows_keep_side_specific_face_results_and_patch_identity(self):
+        request = PatchInput(self.locator, 1)
+        flags = dict(domains=['A:DD', 'B:DED'], chains=('B', 'A'))
+        self.assertEqual(run([request], self.output, **flags), 0)
+        before = self.read()
+        with patch('sieve.patch_description_summary.load_secondary') as load, patch(
+                'sieve.interface.death.normalize_helices', return_value=([], 'merged example')), patch(
+                'sieve.interface.death.classify',
+                side_effect=lambda chain, *_: ('Ia' if chain == 'A' else 'Ib', [], 'eligible')):
+            record = next(input_models(self.locator, selected_model=1))
+            model, _, _, _ = load_secondary(record[2], None)
+            load.return_value = (model, {}, [], {'status': 'assigned'})
+            self.assertEqual(run([request], self.output, **flags), 0)
+        after = self.read()
+        self.assertEqual([row['patch_id'] for row in after], [row['patch_id'] for row in before])
+        self.assertEqual([(row['chain'], row['candidate face']) for row in after],
+                         [('A', 'Ia'), ('B', 'Ib')])
+        self.assertEqual({row['face status'] for row in after}, {'eligible; merged example'})
+        self.assertEqual({row['interface'] for row in after}, {'Canonical'})
 
     def test_unmatched_pair_and_failed_atomic_write_preserve_output(self):
         self.output.write_text('original')

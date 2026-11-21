@@ -22,7 +22,9 @@ alphafold-find.py manifest.tsv names.txt |
 
 The input also accepts a fold locator, extracted fold directory, or CIF
 (with `--full-data`). Stdin accepts one locator per line or result rows with a
-selected model. Without `--chains`, the command evaluates all chain pairs.
+selected model. Domain mapping requires either `--chains` with a `--domain`
+assignment for each selected chain or both `--manifest` and `--domain-file`.
+With manifest lookup and no `--chains`, the command evaluates all chain pairs.
 Explicit chain assignments take precedence over domain-file lookup. The domain
 TSV uses case-insensitive `Sequence Name` and `Domain Type` headers and exact
 values. Additional columns are allowed. The registry reports an error for a
