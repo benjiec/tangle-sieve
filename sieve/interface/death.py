@@ -109,6 +109,8 @@ def feasibility(patch):
     contacts = patch.get('nonpolar contacts')
     salts = patch.get('salt bridge candidates')
     salt_distance = patch.get('salt bridge candidate heavy-atom distance min')
+    if salt_distance is None:
+        salt_distance = 100.0
     charge = patch.get('nominal patch charge difference')
     overlaps = patch.get('steric overlap candidates')
     ca_distance = patch.get('contact distance min')

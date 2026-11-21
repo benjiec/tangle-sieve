@@ -57,6 +57,8 @@ class DeathTests(unittest.TestCase):
         }
         self.assertTrue(death.feasibility(zipper))
         for key in zipper:
+            if key == 'salt bridge candidate heavy-atom distance min':
+                continue
             with self.subTest(missing=key):
                 self.assertIsNone(death.feasibility({**zipper, key: None}))
         for key, value in (
@@ -95,6 +97,17 @@ class DeathTests(unittest.TestCase):
                     'salt bridge candidate heavy-atom distance min': distance,
                     'steric overlap candidates': overlaps, 'contact distance min': ca,
                 }), expected)
+
+    def test_missing_salt_distance_uses_fallback(self):
+        patch_row = {
+            'total buried surface area': 598.121699, 'total C/S contribution percent': 41.306076,
+            'nonpolar contacts': 1, 'salt bridge candidates': 0,
+            'salt bridge candidate heavy-atom distance min': None,
+            'nominal patch charge difference': 2, 'steric overlap candidates': 0,
+            'contact distance min': 5.185086,
+        }
+        self.assertIs(death.feasibility(patch_row), False)
+        self.assertIs(death.feasibility({**patch_row, 'nonpolar contacts': 5}), True)
 
     def test_classification_uses_rule_evidence_and_normalization_defaults(self):
         codes, segments = structure()
@@ -185,7 +198,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual({row['iptm'] for row in rows}, {'0.600000'})
         self.assertEqual({row['interface_family'] for row in rows}, {'death'})
         self.assertEqual({row['interface'] for row in rows}, {'NULL'})
-        self.assertEqual({row['chemical feasibility'] for row in rows}, {'NULL'})
+        self.assertEqual({row['salt bridge candidate heavy-atom distance min'] for row in rows}, {'NA'})
+        self.assertEqual({row['chemical feasibility'] for row in rows}, {'false'})
         self.assertEqual({row['kink angle'] for row in rows}, {'75'})
         self.assertEqual({row['distance cutoff'] for row in rows}, {'10.000000'})
 

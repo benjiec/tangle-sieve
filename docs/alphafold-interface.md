@@ -37,7 +37,9 @@ The death profile accepts DD, DED, and CARD on either side. It detects patches a
 connector and an angle strictly below 75°. The interface field comes from the
 face classifier. The confidence and chemical feasibility calculations use
 unrounded metrics. The electrostatic predicate uses the magnitude of the signed
-charge difference. Each unavailable result is written as `NULL`.
+charge difference. Feasibility uses 100 Å when the minimum salt-bridge candidate
+distance is unavailable. The raw distance column records `NA`. Each unavailable
+result is written as `NULL`.
 
 DSSP discovery uses `--dssp`, then `SIEVE_DSSP`, then `mkdssp` on PATH. When DSSP
 assignments are unavailable, the interface result is `NULL` and the face status
