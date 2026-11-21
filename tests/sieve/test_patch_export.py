@@ -19,6 +19,11 @@ class ExportTests(unittest.TestCase):
         interactions=[base,dict(base,atom_2='OD2',distance=3),dict(base,residue_2=9,distance=2),
                       dict(base,type='nonpolar_contact'),dict(base,type='nonpolar_contact'),
                       dict(base,type='steric_overlap_candidate'),dict(base,type='phosphate_basic_contact')]
+        hydrogen_bond = dict(base, type='hydrogen_bond_candidate')
+        interactions.extend([
+            hydrogen_bond, hydrogen_bond, dict(hydrogen_bond, atom_2='OD2'),
+            dict(hydrogen_bond, residue_1=9), dict(hydrogen_bond, residue_2=9),
+        ])
         burial={('A',1):dict(buried_area=20,buried_nonpolar_area=10),
                 ('B',1):dict(buried_area=30,buried_nonpolar_area=5)}
         descriptions.pairs[('fold',0,'A','B')]=(interactions,burial)
@@ -27,6 +32,13 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(metrics['total C/S contribution percent'],30)
         self.assertEqual(metrics['nonpolar contacts'],1)
         self.assertEqual(metrics['salt bridge candidates'],1)
+        self.assertEqual(metrics['hydrogen-bond candidates'], 2)
+        row.update(metrics)
+        self.assertEqual([side['hydrogen-bond candidates'] for side in patch_export_rows([row])], [2, 2])
+        report = io.StringIO()
+        descriptions.write_patch(row, report)
+        self.assertIn('Hydrogen-bond candidates (unique atom pairs within patch, ≤ 3.5 Å): 2',
+                      report.getvalue())
         self.assertEqual(metrics['steric overlap candidates'],1)
         self.assertEqual(metrics['phosphate/basic contacts'],1)
         self.assertEqual(metrics['salt bridge candidate heavy-atom distance min'],3)
@@ -113,7 +125,7 @@ class ExportTests(unittest.TestCase):
             'total buried surface area', 'total C/S contribution percent', 'nonpolar contacts',
             'salt bridge candidates', 'steric overlap candidates', 'phosphate/basic contacts',
             'salt bridge candidate heavy-atom distance min', 'salt bridge residues',
-            'nominal patch charge difference', 'confidence origin',
+            'nominal patch charge difference', 'hydrogen-bond candidates', 'confidence origin',
         ))
 
     def test_tall_pairs_preserve_direction_rank_and_missing_fold_ids(self):

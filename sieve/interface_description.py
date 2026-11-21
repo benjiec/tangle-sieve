@@ -10,6 +10,7 @@ import tempfile
 
 import numpy as np
 from Bio.PDB import DSSP, MMCIFParser
+from Bio.Data.PDBData import protein_letters_3to1
 from Bio.PDB.SASA import ShrakeRupley
 from Bio.SeqUtils import seq1
 
@@ -25,6 +26,14 @@ PHOSPHORYLATED = frozenset(('SEP', 'TPO', 'PTR'))
 PHOSPHATE_OXYGENS = frozenset(('O1P', 'O2P', 'O3P'))
 HYDROPHOBIC = frozenset('AVILMFWYPC')
 BACKBONE = frozenset(('N', 'CA', 'C', 'O', 'OXT'))
+SIDECHAIN_DONORS = {
+    **POSITIVE, 'ASN': {'ND2'}, 'GLN': {'NE2'}, 'HIS': {'ND1', 'NE2'},
+    'SER': {'OG'}, 'THR': {'OG1'}, 'TRP': {'NE1'}, 'TYR': {'OH'},
+}
+SIDECHAIN_ACCEPTORS = {
+    **NEGATIVE, 'ASN': {'OD1'}, 'GLN': {'OE1'}, 'HIS': {'ND1', 'NE2'},
+    'SER': {'OG'}, 'THR': {'OG1'}, 'TYR': {'OH'},
+}
 
 
 @dataclass(frozen=True)
@@ -37,9 +46,11 @@ class DescriptionOptions:
     nonpolar_cutoff: float = 4.5
     clash_overlap: float = 0.6
     salt_patch_radius: float = 3.5
+    hydrogen_bond_cutoff: float = 3.5
 
     def __post_init__(self):
-        for field in ('cutoff', 'radius', 'salt_cutoff', 'nonpolar_cutoff', 'clash_overlap', 'salt_patch_radius'):
+        for field in ('cutoff', 'radius', 'salt_cutoff', 'nonpolar_cutoff', 'clash_overlap',
+                      'salt_patch_radius', 'hydrogen_bond_cutoff'):
             if not math.isfinite(getattr(self, field)) or getattr(self, field) <= 0:
                 raise ValueError(f'{field} must be finite and positive')
         if (not isinstance(self.flank, int) or not isinstance(self.sasa_points, int)
@@ -139,6 +150,19 @@ def sasa_burial(model, chains, points):
     return result
 
 
+def hydrogen_bond_roles(residue, atom):
+    name, element = atom.name, atom.element
+    if residue.resname not in protein_letters_3to1:
+        return False, False
+    donor = element in ('N', 'O') and (
+        (name == 'N' and residue.resname != 'PRO') or name in SIDECHAIN_DONORS.get(residue.resname, ())
+    )
+    acceptor = element in ('N', 'O') and (
+        name in ('O', 'OXT') or name in SIDECHAIN_ACCEPTORS.get(residue.resname, ())
+    )
+    return donor, acceptor
+
+
 def atom_interactions(model, chains, options):
     """Explicit geometric candidates, not bond energies or hydrogen-bond assignments."""
     result = []
@@ -150,9 +174,12 @@ def atom_interactions(model, chains, options):
             raise ValueError(f'unsupported element for clash radii: {atom.element}')
     if not len(xyz):
         return result
+    second_roles = [hydrogen_bond_roles(residue, atom) for residue, atom in second]
+    search_radius = max(options.salt_cutoff, options.nonpolar_cutoff, options.hydrogen_bond_cutoff, 4.0)
     for r1, a in first:
+        donor_a, acceptor_a = hydrogen_bond_roles(r1, a)
         distances = np.linalg.norm(xyz - a.coord, axis=1)
-        for j in np.flatnonzero(distances <= max(options.salt_cutoff, options.nonpolar_cutoff, 4.0)):
+        for j in np.flatnonzero(distances <= search_radius):
             r2, b = second[j]
             d = float(distances[j])
             types = []
@@ -166,6 +193,9 @@ def atom_interactions(model, chains, options):
                 types.append('phosphate_basic_contact')
             if salt and d <= options.salt_cutoff:
                 types.append('salt_bridge_candidate')
+            donor_b, acceptor_b = second_roles[j]
+            if d <= options.hydrogen_bond_cutoff and ((donor_a and acceptor_b) or (donor_b and acceptor_a)):
+                types.append('hydrogen_bond_candidate')
             if (residue_label(r1) in HYDROPHOBIC and residue_label(r2) in HYDROPHOBIC
                     and a.name not in BACKBONE and b.name not in BACKBONE
                     and a.element in ('C', 'S') and b.element in ('C', 'S') and d <= options.nonpolar_cutoff):

@@ -348,6 +348,7 @@ patch fields. No qualifying leaves produces a header-only TSV.
 | `total C/S contribution percent` | 100 × summed C/S burial / summed total burial; `NA` if denominator is zero |
 | `nonpolar contacts`, `salt bridge candidates`, `steric overlap candidates` | Unique residue-pair counts; salt candidates include the same-chain 3.5 Å proximity region; other counts require both endpoints in the patch |
 | `phosphate/basic contacts` | Separate unique residue-pair count for phosphate/basic geometric candidates |
+| `hydrogen-bond candidates` | Unique cross-chain donor–acceptor atom pairs at ≤3.5 Å with both residues in the patch |
 | `salt bridge candidate heavy-atom distance min` | Minimum distance among counted ordinary salt candidates, Å; `NA` if absent |
 | `salt bridge residues` | Semicolon-separated chain/residue/atom pairs, using the nearest atom pair per residue pair, with distance; `NA` if absent |
 | `nominal patch charge difference` | Side 1 minus side 2; numeric for ordinary residues, labeled −1/−2 phosphate scenarios when needed, `NA` for unsupported chemistry |

@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 from Bio.PDB import Model, Chain, Residue, Atom
-from sieve.interface_description import DescriptionOptions, composition, neighborhood, atom_interactions, sasa_burial, secondary_structure, describe_model
+from sieve.interface_description import DescriptionOptions, composition, neighborhood, atom_interactions, hydrogen_bond_roles, sasa_burial, secondary_structure, describe_model
 from tests.sieve.test_alphafold_pdockq2_patches import CIF, DATA
 
 
@@ -30,6 +30,36 @@ class DescriptorTests(unittest.TestCase):
         self.assertEqual((salt[0]['atom_1'],salt[0]['atom_2']),('NZ','OD1'))
         m['B'][1]['OD1'].coord[0]+=.01
         self.assertFalse(any(x['type']=='salt_bridge_candidate' for x in atom_interactions(m,('A','B'),DescriptionOptions())))
+
+    def test_hydrogen_bond_distance_and_either_chain_as_donor(self):
+        model = make_model()
+        oxygen = model['B'][1]['OD1']
+        oxygen.coord[0] = 3.5
+        options = DescriptionOptions()
+        for chains, atoms in ((('A', 'B'), ('NZ', 'OD1')), (('B', 'A'), ('OD1', 'NZ'))):
+            pairs = [x for x in atom_interactions(model, chains, options)
+                     if x['type'] == 'hydrogen_bond_candidate']
+            self.assertEqual([(x['atom_1'], x['atom_2']) for x in pairs], [atoms])
+        oxygen.coord[0] += 0.001
+        self.assertFalse(any(x['type'] == 'hydrogen_bond_candidate'
+                             for x in atom_interactions(model, ('A', 'B'), options)))
+        for cutoff in (0, -1, float('nan'), float('inf')):
+            with self.subTest(cutoff=cutoff), self.assertRaises(ValueError):
+                DescriptionOptions(hydrogen_bond_cutoff=cutoff)
+
+    def test_hydrogen_bond_atom_roles(self):
+        for residue, name, element, expected in (
+            ('ALA', 'N', 'N', (True, False)), ('PRO', 'N', 'N', (False, False)),
+            ('PRO', 'O', 'O', (False, True)), ('GLY', 'OXT', 'O', (False, True)),
+            ('ASN', 'ND2', 'N', (True, False)), ('ASN', 'OD1', 'O', (False, True)),
+            ('HIS', 'NE2', 'N', (True, True)), ('SER', 'OG', 'O', (True, True)),
+            ('TRP', 'NE1', 'N', (True, False)), ('PHE', 'CZ', 'C', (False, False)),
+            ('CYS', 'SG', 'S', (False, False)), ('SEP', 'N', 'N', (False, False)),
+        ):
+            with self.subTest(residue=residue, atom=name):
+                r = Residue.Residue((' ', 1, ' '), residue, ' ')
+                atom = Atom.Atom(name, np.zeros(3), 90, 1, ' ', name, 1, element=element)
+                self.assertEqual(hydrogen_bond_roles(r, atom), expected)
 
     def test_discontinuous_shell_deduplicated(self):
         m=make_model(); chain=m['A']

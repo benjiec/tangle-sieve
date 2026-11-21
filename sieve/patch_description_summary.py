@@ -143,6 +143,10 @@ class PatchDescriptions:
                     if x['residue_1'] in (salt_selected if x['type']=='salt_bridge_candidate' else selected)[chains[0]]
                     and x['residue_2'] in (salt_selected if x['type']=='salt_bridge_candidate' else selected)[chains[1]]]
         totals = Counter(kind for kind,_,_ in {(x['type'],x['residue_1'],x['residue_2']) for x in features})
+        hydrogen_bond_pairs = {
+            (x['residue_1'], x['atom_1'], x['residue_2'], x['atom_2'])
+            for x in features if x['type'] == 'hydrogen_bond_candidate'
+        }
         salts = {}
         for x in features:
             if x['type'] == 'salt_bridge_candidate':
@@ -161,6 +165,7 @@ class PatchDescriptions:
                    'total C/S contribution percent': 100*sum(cs.values())/total_area if total_area > 0 else None,
                    'nonpolar contacts': totals['nonpolar_contact'],
                    'salt bridge candidates': totals['salt_bridge_candidate'],
+                   'hydrogen-bond candidates': len(hydrogen_bond_pairs),
                    'steric overlap candidates': totals['steric_overlap_candidate'],
                    'phosphate/basic contacts': totals['phosphate_basic_contact'],
                    'salt bridge candidate heavy-atom distance min': min((x['distance'] for x in salts.values()),default=None),
@@ -209,6 +214,8 @@ class PatchDescriptions:
         print(f'     Nominal patch charge difference ({chains[0]} − {chains[1]}): {delta}', file=stream)
         totals = details['totals']
         print('     Contact chemistry (unique residue pairs): ' + ' | '.join(f'{kind} {totals[kind]}' for kind in ('nonpolar_contact','salt_bridge_candidate','steric_overlap_candidate')), file=stream)
+        print(f"     Hydrogen-bond candidates (unique atom pairs within patch, ≤ {self.options.hydrogen_bond_cutoff:g} Å): "
+              f"{details['metrics']['hydrogen-bond candidates']}", file=stream)
         if key in self.modified:
             print(f"     Phosphate/basic contacts (unique residue pairs within patch): {totals['phosphate_basic_contact']}", file=stream)
         salts = {(a,b,'salt_bridge_candidate'): x for (a,b),x in details['salts'].items()}

@@ -468,7 +468,7 @@ PATCH_PAIR_METRICS = [
     'total buried surface area','total C/S contribution percent',
     'nonpolar contacts','salt bridge candidates','steric overlap candidates','phosphate/basic contacts',
     'salt bridge candidate heavy-atom distance min','salt bridge residues',
-    'nominal patch charge difference']
+    'nominal patch charge difference', 'hydrogen-bond candidates']
 PATCH_SIDE_FIELDS = {
     'chain': 'chain {side}',
     'region': 'region {side}',
