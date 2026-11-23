@@ -7,6 +7,7 @@ import re
 import zipfile
 from dataclasses import dataclass
 from itertools import combinations
+from statistics import mean, median
 
 from Bio.PDB import MMCIFParser
 from Bio.Data.PDBData import protein_letters_3to1
@@ -64,6 +65,35 @@ def _selected(number, ranges):
 
 def _distance(first, second):
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(first, second)))
+
+
+DISTANCE_STATS = {'min': min, 'max': max, 'median': median, 'mean': mean}
+
+
+def ca_distance_metrics(distances):
+    """Summarize the Cα distances of the supplied interface contact pairs."""
+    values = list(distances.values())
+    metrics = {f'contact distance {name}': stat(values) if values else ''
+               for name, stat in DISTANCE_STATS.items()}
+    for index in (0, 1):
+        nearest = {}
+        for pair, distance in distances.items():
+            key = pair[index]
+            nearest[key] = min(nearest.get(key, math.inf), distance)
+        metrics.update({f'nearest contact distance {name} {index + 1}':
+                        stat(nearest.values()) if nearest else ''
+                        for name, stat in DISTANCE_STATS.items()})
+    return metrics
+
+
+def region_confidence(first, second):
+    metrics = {}
+    for side, selection in enumerate((first, second), 1):
+        values = [r.plddt for r in selection]
+        metrics[f'region mean pLDDT {side}'] = mean(values) if values and all(
+            v is not None and math.isfinite(v) and 0 <= v <= 100 for v in values
+        ) else None
+    return metrics
 
 
 def _mean(values):

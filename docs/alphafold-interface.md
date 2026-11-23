@@ -24,11 +24,41 @@ The input also accepts a fold locator, extracted fold directory, or CIF
 (with `--full-data`). Stdin accepts one locator per line or result rows with a
 selected model. Domain mapping requires either `--chains` with a `--domain`
 assignment for each selected chain or both `--manifest` and `--domain-file`.
-With manifest lookup and no `--chains`, the command evaluates all chain pairs.
+With manifest lookup and no `--chains`, the command evaluates chain pairs
+that match a registered interface profile.
 Explicit chain assignments take precedence over domain-file lookup. The domain
 TSV uses case-insensitive `Sequence Name` and `Domain Type` headers and exact
-values. Additional columns are allowed. The registry reports an error for a
-missing assignment or a domain pair with zero or multiple matching profiles.
+values. Additional columns are allowed. Missing or unknown domain assignments
+and ambiguous profile matches are errors. An explicit `--chains` pair must
+match a profile.
+
+## TSV layout and shared measurements
+
+Each patch has two rows, identified by `patch_id` and `sequence_index`.
+Every export starts with the same identity, chain, shared measurement, and
+call columns. A death-only or TRAF-only run appends that profile's columns.
+A mixed run appends both blocks in registry order. Unavailable measurements
+and inapplicable profile fields are empty TSV fields. Unavailable
+`confidence`, `chemical feasibility`, and `interface` calls use `NULL`.
+
+Shared measurements include per-partner burial, tight-contact residue counts
+at 4.5 Å, region mean pLDDT, and Cα distance summaries. `contact basis`
+identifies the residue pairs used for the Cα summaries. TRAF selects pairs
+by heavy-atom distance and the death profile selects them by Cα distance.
+`pDockQ2 contact count` and `pDockQ2 distance cutoff` describe the
+independent scoring selection. Interface structure comes from DSSP, with
+unassigned positions marked in the summary.
+
+Hydrogen-bond candidates are counted by atom pair. The shared qualified
+bond columns use a donor–hydrogen–acceptor angle of at least 120° and
+report unresolved donor geometry separately. The new nonpolar, salt, and
+clash residue-pair columns use only the measured selection. Clash pairs
+exclude geometry-qualified hydrogen-bond atom overlaps. The legacy contact
+columns retain their existing counting rules, including the death profile's
+expanded salt-candidate neighborhood. In the death profile, burial is
+measured in the full chain-pair context and summed over patch residues. In
+TRAF, burial and chemistry use the selected MATH and motif windows, and
+structure and hydropathy summarize their contacting residues.
 
 ## Death-family profile
 
@@ -38,7 +68,7 @@ connector and an angle strictly below 75°. The interface field comes from the
 face classifier. The confidence and chemical feasibility calculations use
 unrounded metrics. The electrostatic predicate uses the magnitude of the signed
 charge difference. Feasibility uses 100 Å when the minimum salt-bridge candidate
-distance is unavailable. The raw distance column records `NA`. Each unavailable
+distance is unavailable. The raw distance column is empty. Each unavailable
 result is written as `NULL`.
 
 DSSP discovery uses `--dssp`, then `SIEVE_DSSP`, then `mkdssp` on PATH. When DSSP
@@ -109,13 +139,13 @@ against known domain structures before treating face labels as biological eviden
 
 ## TRAF–SLiM interfaces
 
-Annotate the receptor chain as `TRAF2`, `TRAF3`, `TRAF5`, `TRAF6`,
-`TRAF`, or `MATH`, and the peptide chain as `SLiM`. The paralog
+Annotate the receptor chain as `TRAF_MATH`, `TRAF2`, `TRAF3`, `TRAF5`,
+`TRAF6`, or `MATH`, and the peptide chain as `SLiM`. The paralog
 annotation is independent of pose classification.
 
 ```sh
 python scripts/alphafold-interface.py fold.zip --output traf.tsv \
-  --chains A B --domain A:TRAF6 --domain B:SLiM
+  --chains A B --domain A:TRAF_MATH --domain B:SLiM
 ```
 
 Without `--math-window`, use an input construct with a complete MATH domain

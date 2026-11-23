@@ -33,6 +33,8 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(metrics['nonpolar contacts'],1)
         self.assertEqual(metrics['salt bridge candidates'],1)
         self.assertEqual(metrics['hydrogen-bond candidates'], 2)
+        self.assertEqual(metrics['unresolved hydrogen-bond candidates'], 2)
+        self.assertEqual(metrics['backbone hydrogen bonds'], 0)
         row.update(metrics)
         self.assertEqual([side['hydrogen-bond candidates'] for side in patch_export_rows([row])], [2, 2])
         report = io.StringIO()
@@ -86,6 +88,7 @@ class ExportTests(unittest.TestCase):
         descriptions.pairs[('fold',0,'A','B')]=(interactions,burial)
         metrics=descriptions.describe(row)['metrics']
         self.assertEqual(metrics['salt bridge candidates'],2)
+        self.assertEqual(metrics['salt bridge residue pairs'], 0)
         self.assertEqual(metrics['salt bridge candidate heavy-atom distance min'],2.7)
         self.assertEqual(metrics['nonpolar contacts'],0)
         self.assertNotIn('D3',metrics['salt bridge residues'])

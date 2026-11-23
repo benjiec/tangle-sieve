@@ -2,7 +2,6 @@
 import json
 import math
 import re
-import statistics
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -14,7 +13,7 @@ from sieve.alphafold_manifest import chain_sequences, fold_id, sequence_id
 from sieve.alphafold_composition import chain_compositions
 
 from sieve.alphafold_pdockq2 import (
-    _distance, model_number, parse_model, score_selections,
+    _distance, ca_distance_metrics, model_number, parse_model, region_confidence, score_selections,
 )
 
 ALGORITHM_VERSION = '1.0'
@@ -124,15 +123,13 @@ def detect_patches(residues, pae, options=None, chains=None):
             selected = [[lookup[n] for n in sorted(part) if n[0] == c] for c in (chain1, chain2)]
             row = score_selections(chain1, chain2, *selected, pae,
                                    *[ranges(r.number for r in side) for side in selected], options.cutoff)
-            contact_distances = [(a, b, _distance(lookup[a].ca, lookup[b].ca))
-                                 for a, b in contacts if a in part and b in part]
-            distances = [distance for _, _, distance in contact_distances]
-            row.update({
-                'contact distance min': min(distances) if distances else '',
-                'contact distance max': max(distances) if distances else '',
-                'contact distance mean': statistics.mean(distances) if distances else '',
-                'contact distance median': statistics.median(distances) if distances else '',
-            })
+            contact_distances = {(a[1], b[1]): _distance(lookup[a].ca, lookup[b].ca)
+                                 for a, b in contacts if a in part and b in part}
+            row.update(ca_distance_metrics(contact_distances))
+            row.update(region_confidence(*selected))
+            row['pDockQ2 contact count'] = row['contact count']
+            row['contact basis'] = 'Cα'
+            row['pDockQ2 distance cutoff'] = options.cutoff
             row.update({'scope': scope, 'algorithm version': ALGORITHM_VERSION,
                         'graph residues': labels(part), 'separator residues': '', 'discarded residues': '',
                         'distance cutoff': options.cutoff, 'max bridge residues': options.max_bridge_residues,
@@ -141,14 +138,6 @@ def detect_patches(residues, pae, options=None, chains=None):
             for side in (1, 2):
                 text = row[f'interface residues {side}']
                 row[f'residue count {side}'] = len(text.split(',')) if text else 0
-                nearest = {}
-                for a, b, distance in contact_distances:
-                    node = a if side == 1 else b
-                    nearest[node] = min(nearest.get(node, math.inf), distance)
-                values = list(nearest.values())
-                for stat, function in [('min', min), ('max', max),
-                                       ('median', statistics.median), ('mean', statistics.mean)]:
-                    row[f'nearest contact distance {stat} {side}'] = function(values) if values else ''
             return row
 
         reference = make_row(nodes, 'full')
@@ -494,7 +483,8 @@ PATCH_COLUMNS = [
 ]
 
 
-def patch_export_rows(rows, *, side_fields=None, extra_columns=(), result_columns=()):
+def patch_export_rows(rows, *, side_fields=None, extra_columns=(), result_columns=(),
+                      profile_columns=(), profile_side_fields=None, missing_value='NA'):
     """Export only final leaf patches; internal reference/split rows remain available."""
     leaves = [r for r in rows if r['scope']=='patch' and r['status']=='leaf']
     groups = {}
@@ -504,8 +494,8 @@ def patch_export_rows(rows, *, side_fields=None, extra_columns=(), result_column
     for group in groups.values():
         for rank,row in enumerate(sorted(group,key=lambda r:r['rank']),1):
             ranks[id(row)] = rank
-    fields = {**PATCH_SIDE_FIELDS, **(side_fields or {})}
-    columns = (*PATCH_COLUMNS, *(side_fields or {}), *extra_columns, *result_columns)
+    fields = {**PATCH_SIDE_FIELDS, **(side_fields or {}), **(profile_side_fields or {})}
+    columns = (*PATCH_COLUMNS, *(side_fields or {}), *extra_columns, *result_columns, *profile_columns)
     for row in leaves:
         exported = {EXPORT_RENAMES.get(k,k):v for k,v in row.items() if k not in EXPORT_DROPPED}
         exported['rank'] = ranks[id(row)]
@@ -516,7 +506,7 @@ def patch_export_rows(rows, *, side_fields=None, extra_columns=(), result_column
                 for field, template in fields.items()
             })
             yield {
-                column: ('NULL' if column in result_columns else 'NA') if tall_row.get(column) is None
+                column: ('NULL' if column in result_columns else missing_value) if tall_row.get(column) is None
                 else f'{tall_row[column]:.6f}' if isinstance(tall_row[column], float)
                 else str(tall_row[column]).lower() if isinstance(tall_row[column], bool)
                 else tall_row[column]

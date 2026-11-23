@@ -1,16 +1,25 @@
 import csv
 import gzip
+import io
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
 from Bio.PDB import MMCIFIO, MMCIFParser
+from Bio.PDB.Chain import Chain
+from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 
+from sieve.alphafold_interface import COLUMNS, run
+from sieve.alphafold_manifest import fold_id, sequence_id
+from sieve.alphafold_result_format import PatchInput
 from sieve.interface import traf_slim as traf
+from sieve.interface.measurements import donor_hydrogens, heavy_contacts
+from sieve.patch_description_summary import PatchDescriptions
 from sieve.interface.registry import resolve
 from sieve.interface.traf_topology import find_groove
 from tests.scripts.helpers import load_script
+from tests.sieve.test_alphafold_results import zip_bytes
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'traf_slim'
@@ -42,22 +51,25 @@ class TrafTests(TestCase):
     def test_registry_orients_traf5(self):
         profile, chains = resolve(('P', 'T'), {'P': 'SLiM', 'T': 'TRAF5'})
         self.assertEqual((profile.name, chains), ('traf_slim', ('T', 'P')))
+        self.assertEqual(resolve(('T', 'P'), {'T': 'TRAF_MATH', 'P': 'SLIM'})[0], profile)
+        with self.assertRaisesRegex(ValueError, 'unsupported interface domains'):
+            resolve(('T', 'P'), {'T': 'TRAF', 'P': 'SLIM'})
 
     def test_feasibility_thresholds_and_no_upper_limit(self):
         limits = traf.Thresholds()
-        base = dict(traf_tight_motif_residues=3, traf_clash_pairs=0, traf_nonpolar_pairs=0,
-                    traf_backbone_hbonds=0, traf_sidechain_hbonds=0,
-                    traf_unresolved_hbond_pairs=0)
+        base = {'tight-contact residues 2': 3, 'steric clash residue pairs': 0,
+                'nonpolar residue pairs': 0, 'backbone hydrogen bonds': 0,
+                'side-chain hydrogen bonds': 0, 'unresolved hydrogen-bond candidates': 0}
         for area, span, changes, expected in (
-            (149.99, 2, {'traf_backbone_hbonds': 3}, 'insufficient_support'),
-            (150, 2, {'traf_backbone_hbonds': 3}, 'small_but_well_paired'),
-            (150, 1, {'traf_backbone_hbonds': 3}, 'insufficient_support'),
-            (250, 0, {'traf_sidechain_hbonds': 2, 'traf_nonpolar_pairs': 2}, 'hydrogen_bond_supported'),
-            (400, 0, {'traf_nonpolar_pairs': 5}, 'packing_supported_provisional'),
-            (1800, 0, {'traf_nonpolar_pairs': 5}, 'packing_supported_provisional'),
-            (1800, 0, {'traf_nonpolar_pairs': 5, 'traf_clash_pairs': 3}, 'clash_or_sparse_contact'),
-            (400, 0, {'traf_nonpolar_pairs': 5, 'traf_tight_motif_residues': 1}, 'clash_or_sparse_contact'),
-            (250, 0, {'traf_nonpolar_pairs': 2, 'traf_unresolved_hbond_pairs': 1}, 'unresolved'),
+            (149.99, 2, {'backbone hydrogen bonds': 3}, 'insufficient_support'),
+            (150, 2, {'backbone hydrogen bonds': 3}, 'small_but_well_paired'),
+            (150, 1, {'backbone hydrogen bonds': 3}, 'insufficient_support'),
+            (250, 0, {'side-chain hydrogen bonds': 2, 'nonpolar residue pairs': 2}, 'hydrogen_bond_supported'),
+            (400, 0, {'nonpolar residue pairs': 5}, 'packing_supported_provisional'),
+            (1800, 0, {'nonpolar residue pairs': 5}, 'packing_supported_provisional'),
+            (1800, 0, {'nonpolar residue pairs': 5, 'steric clash residue pairs': 3}, 'clash_or_sparse_contact'),
+            (400, 0, {'nonpolar residue pairs': 5, 'tight-contact residues 2': 1}, 'clash_or_sparse_contact'),
+            (250, 0, {'nonpolar residue pairs': 2, 'unresolved hydrogen-bond candidates': 1}, 'unresolved'),
         ):
             with self.subTest(area=area, changes=changes):
                 metrics = {**base, **changes, 'total buried surface area': area}
@@ -79,14 +91,13 @@ class TrafTests(TestCase):
                         chain.detach_child(r.id)
                         r.id = (' ', r.id[1] + 1000, ' ')
                         chain.add(r)
-                domain = find_groove(traf.protein_residues(model[a]), traf.donor_hydrogens, terminal=True)
+                domain = find_groove(traf.protein_residues(model[a]), donor_hydrogens, terminal=True)
                 self.assertIsNotNone(domain)
                 motif = [model[b][n] for n in range(start + 1000, stop + 1001)]
-                tight = {y for _, y in traf.contact_pairs(domain.domain, motif, 4.5)}
-                metrics, interactions = traf.chemical_metrics(model, (a, b), domain.domain,
-                                                               motif, tight, traf.Thresholds())
-                self.assertTrue(traf.feasibility(metrics))
-                self.assertEqual(traf.assess_pose(domain, motif, interactions)[0], label)
+                candidates, row = self.evaluate(model, (a, b), domain, motif, supplied=True)
+                self.assertTrue(traf.feasibility(candidates[0].metrics))
+                traf.update_site(row, candidates, domain)
+                self.assertEqual(row['traf_pose'], label)
 
     def test_topology_terminal_extension_truncation_and_explicit_window(self):
         chain = load_model('1LB5')['A']
@@ -98,14 +109,14 @@ class TrafTests(TestCase):
                     r.id = (' ', n, ' ')
                     for a in r:
                         a.coord += 100
-                groove = find_groove(coil + native, traf.donor_hydrogens, terminal=True)
+                groove = find_groove(coil + native, donor_hydrogens, terminal=True)
                 self.assertEqual(traf.residue_span(groove.beta7), '463-479')
                 self.assertEqual(traf.residue_span(groove.domain), '351-501')
         append_copy(chain, native[:12], 502, 100)
-        self.assertIsNone(find_groove(traf.protein_residues(chain), traf.donor_hydrogens, terminal=True))
-        self.assertIsNotNone(find_groove(native, traf.donor_hydrogens, terminal=False))
-        self.assertIsNone(find_groove(native[:-16], traf.donor_hydrogens, terminal=True))
-        self.assertIsNone(find_groove(native[30:], traf.donor_hydrogens, terminal=True))
+        self.assertIsNone(find_groove(traf.protein_residues(chain), donor_hydrogens, terminal=True))
+        self.assertIsNotNone(find_groove(native, donor_hydrogens, terminal=False))
+        self.assertIsNone(find_groove(native[:-16], donor_hydrogens, terminal=True))
+        self.assertIsNone(find_groove(native[30:], donor_hydrogens, terminal=True))
 
     def test_cli_infers_motif_on_long_tail_and_accepts_explicit_window(self):
         model = load_model('1LB5')
@@ -120,20 +131,101 @@ class TrafTests(TestCase):
         self.assertEqual([row['interface'] for row in inferred + supplied], ['traf6'] * 4)
         forward, reverse = (float(row['pDockQ2 to partner']) for row in inferred)
         self.assertEqual(float(inferred[0]['confidence']), min(forward, reverse))
+        self.assertEqual({row['contact basis'] for row in inferred}, {'heavy atom'})
+        self.assertEqual({row['backbone hydrogen bonds'] for row in supplied}, {'5'})
+        self.assertEqual(supplied[0]['hydrogen-bond atom pairs'].count('A:472/'), 2)
+        self.assertEqual({row['region mean pLDDT'] == '' for row in supplied}, {False})
+        self.assertNotIn('candidate face', inferred[0])
+        self.assertNotIn('traf_nonpolar_pairs', inferred[0])
+        self.assertTrue(all(row['patch hydropathy mean'] and row['interface structure']
+                            for row in inferred))
+        first, second = ([model[c][n] for n in range(lo, hi + 1)]
+                         for c, lo, hi in (('A', 351, 501), ('B', 603, 608)))
+        contact_distances = {(a.id[1], b.id[1]): float(a['CA'] - b['CA'])
+                             for a in first for b in second
+                             if any(x - y <= 6 for x in a for y in b
+                                    if x.element not in ('H', 'D') and y.element not in ('H', 'D'))}
+        self.assertEqual(int(supplied[0]['contact count']), len(contact_distances))
+        self.assertAlmostEqual(float(supplied[0]['interchain CA distance max']),
+                               max(contact_distances.values()), places=5)
+        self.assertAlmostEqual(sum(float(row['buried surface area']) for row in supplied),
+                               float(supplied[0]['total buried surface area']), places=5)
+
+    def test_mixed_manifest_export_keeps_one_header_and_two_rows_per_patch(self):
+        model = load_model('1LB5')
+        names = {'A': 'receptor', 'B': 'ligand', 'C': 'first death', 'D': 'second death'}
+        domains = {'A': 'TRAF_MATH', 'B': 'SLIM', 'C': 'DD', 'D': 'DED'}
+        for chain_id, offset in (('C', 100), ('D', 104)):
+            chain = Chain(chain_id)
+            model.add(chain)
+            append_copy(chain, list(model['A'])[:4], 1, offset)
+        with TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            archive, manifest, domain_file, output = (
+                root / name for name in ('mixed.zip', 'manifest.tsv', 'domains.tsv', 'out.tsv')
+            )
+            writer = MMCIFIO()
+            writer.set_structure(model)
+            buffer = io.StringIO()
+            writer.save(buffer)
+            cif = MMCIF2Dict(io.StringIO(buffer.getvalue()))
+            ids = {c: str(i) for i, c in enumerate(names, 1)}
+            cif['_entity.id'] = list(ids.values())
+            cif['_entity.type'] = ['polymer'] * len(ids)
+            cif['_struct_asym.id'] = list(ids)
+            cif['_struct_asym.entity_id'] = list(ids.values())
+            cif['_atom_site.label_entity_id'] = [ids[c] for c in cif['_atom_site.label_asym_id']]
+            polymers = [(c.id, i, r.resname) for c in model for i, r in enumerate(c, 1)]
+            cif['_entity_poly_seq.entity_id'] = [ids[c] for c, _, _ in polymers]
+            cif['_entity_poly_seq.num'] = [str(i) for _, i, _ in polymers]
+            cif['_entity_poly_seq.mon_id'] = [residue for _, _, residue in polymers]
+            writer.set_dict(cif)
+            buffer = io.StringIO()
+            writer.save(buffer)
+            keys = [(c.id, r.id[1]) for c in model for r in c]
+            archive.write_bytes(zip_bytes({
+                'fold_model_0.cif': buffer.getvalue(),
+                'fold_full_data_0.json': json.dumps(dict(
+                    token_chain_ids=[c for c, _ in keys], token_res_ids=[n for _, n in keys],
+                    pae=[[1] * len(keys) for _ in keys],
+                )),
+                'fold_job_request.json': '{"modelSeeds":[42]}',
+            }))
+            sequences = [''.join(traf.residue_label(r) for r in c) for c in model]
+            with manifest.open('w') as stream:
+                rows = csv.writer(stream, delimiter='\t')
+                rows.writerow(['fold_locator', 'fold_id', 'sequence_id', 'input description', 'input chain'])
+                for c, name in names.items():
+                    rows.writerow([archive, fold_id(42, sequences), sequence_id(sequences), name, c])
+            domain_file.write_text('Sequence Name\tDomain Type\n' + ''.join(
+                f'{name}\t{domains[c]}\n' for c, name in names.items()
+            ))
+            errors = io.StringIO()
+            self.assertEqual(run([PatchInput(str(archive))], output, manifest=manifest,
+                                 domain_file=domain_file, stderr=errors), 0, errors.getvalue())
+            with output.open() as stream:
+                reader = csv.DictReader(stream, delimiter='\t')
+                rows = list(reader)
+                self.assertEqual(reader.fieldnames[:len(COLUMNS)], list(COLUMNS))
+            self.assertEqual(len(rows), 4)
+            self.assertEqual(len({row['fold_id'] for row in rows}), 1)
+            self.assertEqual(len({row['patch_id'] for row in rows}), 2)
+            for family in ('death', 'traf_slim'):
+                pair = [r for r in rows if r['interface_family'] == family]
+                self.assertEqual([r['sequence_index'] for r in pair], ['1', '2'])
+                self.assertTrue(all(r['total buried surface area'] for r in pair))
+                self.assertTrue(all(r['kink angle'] == ('75' if family == 'death' else '') for r in pair))
+                self.assertTrue(all(bool(r['traf_pose_evidence']) == (family == 'traf_slim') for r in pair))
+            self.assertNotIn('\tNA\t', output.read_text())
 
     def test_inferred_windows_recover_fixture_pose_without_labels(self):
         for code, a, b, _, _, label in CASES:
             with self.subTest(code=code):
                 model = load_model(code)
-                groove = find_groove(traf.protein_residues(model[a]), traf.donor_hydrogens, terminal=True)
+                groove = find_groove(traf.protein_residues(model[a]), donor_hydrogens, terminal=True)
                 motif = traf.protein_residues(model[b])
-                contacts = traf.contact_pairs(groove.domain, motif, 6.0)
-                tight = traf.contact_pairs(groove.domain, motif, 4.5)
-                candidates = traf.evaluate_sites(model, (a, b), groove.domain,
-                                                  traf.candidate_windows(motif, contacts, tight),
-                                                  traf.Thresholds(), ({a: [], b: []}, None))
-                row = {'traf_math_window': traf.residue_span(groove.domain)}
-                traf.update_site(row, candidates, groove, contacts)
+                candidates, row = self.evaluate(model, (a, b), groove, motif)
+                traf.update_site(row, candidates, groove)
                 self.assertEqual(row['traf_pose'], label)
 
     def test_ambiguous_distinct_sites_report_both_windows(self):
@@ -169,8 +261,23 @@ class TrafTests(TestCase):
             atom.coord += 100
         row = self.run_cli(model)[0]
         self.assertEqual((row['interface'], row['confidence']), ('no_contact', 'NULL'))
+        self.assertEqual((row['contact count'], row['tight-contact residues']), ('0', '0'))
         row = self.run_cli(model, '--motif-window', 'B:603-609')[0]
         self.assertEqual((row['interface'], row['traf_status']), ('unresolved', 'missing motif coordinates'))
+
+    def test_shared_descriptors_agree_for_identical_full_chain_selections(self):
+        model = load_model('1LB5')
+        descriptions = PatchDescriptions({}, None)
+        descriptions.models[('fixture', 0)] = model, {}, [], {'status': 'unavailable'}
+        chains = ('A', 'B')
+        selections = {c: {r.id[1] for r in model[c]} for c in chains}
+        row = {'source': 'fixture', 'model': 0, 'chain 1': 'A', 'chain 2': 'B',
+               **{f'interface residues {side}': ','.join(map(str, sorted(selections[c])))
+                  for side, c in enumerate(chains, 1)}}
+        full = descriptions.describe(row)
+        cropped = descriptions.describe(row, context=selections)
+        self.assertEqual(full['metrics'], cropped['metrics'])
+        self.assertEqual(full['evidence'], cropped['evidence'])
 
     def test_explicit_partial_math_window_retains_confidence_and_chemistry(self):
         row = self.run_cli(load_model('1LB5'), '--math-window', 'A:405-479',
@@ -179,6 +286,20 @@ class TrafTests(TestCase):
         self.assertEqual(row['traf_pose_evidence'], 'groove landmarks unresolved')
         self.assertNotEqual(row['confidence'], 'NULL')
         self.assertNotEqual(row['chemical feasibility'], 'NULL')
+
+    @staticmethod
+    def evaluate(model, chains, groove, motif, supplied=False):
+        descriptions = PatchDescriptions({}, None)
+        descriptions.models[('fixture', 0)] = model, {}, [], {'status': 'unavailable'}
+        row = {'source': 'fixture', 'model': 0, 'chain 1': chains[0], 'chain 2': chains[1],
+               'traf_math_window': traf.residue_span(groove.domain)}
+        contacts = heavy_contacts(groove.domain, motif, 6.0)
+        tight = {pair for pair, distance in contacts.items() if distance <= 4.5}
+        windows = ([(motif, {b for _, b in tight}, len(tight) / len(motif))] if supplied
+                   else traf.candidate_windows(motif, contacts, tight))
+        candidates = traf.evaluate_sites(descriptions, row, groove.domain, windows, traf.Thresholds(),
+                                         ({c: [] for c in chains}, None), contacts, tight)
+        return candidates, row
 
     def run_cli(self, model, *extra):
         script = load_script(Path(__file__).resolve().parents[2] / 'scripts/alphafold-interface.py')
@@ -194,7 +315,7 @@ class TrafTests(TestCase):
                                             pae=[[1 if c == d or c == 'A' else 4 for d, _ in keys]
                                                  for c, _ in keys])))
             self.assertEqual(script.main([str(cif), '--full-data', str(data), '--output', str(output),
-                                          '--chains', 'B', 'A', '--domain', 'A:TRAF6',
+                                          '--chains', 'B', 'A', '--domain', 'A:TRAF_MATH',
                                           '--domain', 'B:SLiM', *extra]), 0)
             with output.open() as stream:
                 return list(csv.DictReader(stream, delimiter='\t'))

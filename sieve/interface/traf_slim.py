@@ -1,26 +1,28 @@
 """Evaluate TRAF MATH–SLiM contacts from model coordinates."""
 from collections import defaultdict
-from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
-import io
 from itertools import combinations
 import json
 import math
 
-from Bio.PDB import MMCIFParser
 import numpy as np
 
 from sieve.alphafold_composition import chain_compositions
 from sieve.alphafold_manifest import fold_id, sequence_id
 from sieve.alphafold_patch_identity import attach_patch_identity, model_identity
-from sieve.alphafold_pdockq2 import score_selections
 from sieve.interface_description import (
-    BACKBONE, HYDROPHOBIC, DescriptionOptions, atom_interactions, hydrogen_bond_roles,
-    protein_residues, residue_label, sasa_burial,
+    BACKBONE, HYDROPHOBIC, hydrogen_bond_roles, protein_residues, residue_label,
 )
+from sieve.interface.measurements import (
+    ContactEvidence, TIGHT_CONTACT_CUTOFF, atom_model_ca_metrics, donor_hydrogens,
+    heavy_contacts, selected_confidence,
+)
+from sieve.interface.results import Classification, Evaluation
+from sieve.patch_description_summary import PatchDescriptions
 from sieve.interface.traf_topology import complete_backbone, find_groove
 
-TRAF_DOMAINS = frozenset(('MATH', 'TRAF', 'TRAF2', 'TRAF3', 'TRAF5', 'TRAF6'))
+TRAF_PARALOGS = frozenset(('TRAF2', 'TRAF3', 'TRAF5', 'TRAF6'))
+TRAF_DOMAINS = TRAF_PARALOGS | {'MATH', 'TRAF_MATH'}
 MOTIF_DOMAINS = frozenset(('SLiM', 'SLIM'))
 COLUMNS = (
     'traf_paralog', 'traf_math_window', 'traf_math_source',
@@ -28,11 +30,7 @@ COLUMNS = (
     'traf_motif_register', 'traf_beta6', 'traf_beta7', 'traf_polar_loop',
     'traf_pocket', 'traf_pose_evidence',
     'traf_other_protomers', 'traf_status', 'traf_feasibility_rule',
-    'traf_math_buried_area', 'traf_motif_buried_area', 'traf_tight_motif_residues',
-    'traf_backbone_hbonds', 'traf_sidechain_hbonds', 'traf_hbond_atoms',
-    'traf_unresolved_hbond_pairs',
-    'traf_nonpolar_pairs', 'traf_clash_pairs', 'traf_salt_pairs',
-    'traf_scoring_contacts', 'traf_motif_plddt', 'traf_thresholds',
+    'traf_thresholds',
 )
 
 
@@ -56,24 +54,6 @@ def parse_thresholds(values):
     return replace(Thresholds(), **thresholds)
 
 
-def contact_pairs(first, second, cutoff):
-    atoms_a = [(residue, atom) for residue in first for atom in residue if atom.element not in ('H', 'D')]
-    atoms_b = [(residue, atom) for residue in second for atom in residue if atom.element not in ('H', 'D')]
-    if not atoms_a or not atoms_b:
-        return set()
-    xyz = np.array([atom.coord for _, atom in atoms_b])
-    return {(residue.id[1], atoms_b[j][0].id[1])
-            for residue, atom in atoms_a
-            for j in np.flatnonzero(np.linalg.norm(xyz - atom.coord, axis=1) <= cutoff)}
-
-
-def angle(first, second):
-    scale = np.linalg.norm(first) * np.linalg.norm(second)
-    if scale == 0:
-        return None
-    return float(np.degrees(np.arccos(np.clip(np.dot(first, second) / scale, -1, 1))))
-
-
 def residue_span(residues):
     return f'{residues[0].id[1]}-{residues[-1].id[1]}' if residues else None
 
@@ -81,7 +61,9 @@ def residue_span(residues):
 def assess_pose(groove, motif, interactions):
     if groove is None or not (groove.loop and groove.pocket):
         return 'unresolved', None, 'groove landmarks unresolved'
-    backbone, polar = interactions
+    backbone = interactions.backbone_bonds
+    polar = {(a, b) for a, b, c, _ in interactions.hydrogen_bonds if c not in BACKBONE}
+    polar.update(interactions.salt_pairs)
     beta7 = {r.id[1]: r for r in groove.beta7}
     peptide = {r.id[1]: r for r in motif}
     ladder = [(a, b) for a, b, _, _ in backbone if a in beta7 and b in peptide]
@@ -154,124 +136,12 @@ def polar_loop_contacts(peptide, loop):
     }
 
 
-def donor_hydrogens(residue, donor, previous):
-    explicit = [a.coord for a in residue if a.element in ('H', 'D') and a - donor <= 1.25]
-    if explicit:
-        return explicit
-    neighbors = [a.coord for a in residue if a.element != 'H' and a.element != 'D'
-                 and a != donor and 0.5 < a - donor <= 1.75]
-    if (donor.name == 'N' and previous is not None and 'C' in previous
-            and previous['C'] - donor <= 1.75):
-        neighbors.append(previous['C'].coord)
-    if donor.element != 'N' or not neighbors or len(neighbors) > 2:
-        return []
-    vectors = np.array(neighbors) - donor.coord
-    vectors /= np.linalg.norm(vectors, axis=1)[:, None]
-    if len(vectors) == 2:
-        direction = -vectors.sum(axis=0)
-        norm = np.linalg.norm(direction)
-        return [donor.coord + direction / norm] if norm > 1e-6 else []
-    # Terminal amide/guanidinium nitrogens lie in the plane of their parent carbon.
-    if donor.name not in ('ND2', 'NE2', 'NH1', 'NH2'):
-        return []
-    parent = next((a for a in residue if a.element == 'C' and a - donor <= 1.75), None)
-    if parent is None:
-        return []
-    axis = vectors[0]
-    for atom in residue:
-        if atom == donor or atom == parent or atom.element in ('H', 'D') or atom - parent > 1.75:
-            continue
-        offset = atom.coord - parent.coord
-        perpendicular = offset - np.dot(offset, axis) * axis
-        norm = np.linalg.norm(perpendicular)
-        if norm > 1e-6:
-            return [donor.coord - 0.5 * axis + sign * np.sqrt(0.75) * perpendicular / norm
-                    for sign in (-1, 1)]
-    return []
-
-
-def chemical_metrics(model, chains, math_residues, motif, tight, thresholds):
-    pair = deepcopy(model)
-    selected = dict(zip(chains, (math_residues, motif)))
-    previous = {}
-    for chain in list(pair):
-        if chain.id not in selected:
-            pair.detach_child(chain.id)
-            continue
-        residues = protein_residues(chain)
-        previous[chain.id] = {right.id: left for left, right in zip(residues, residues[1:])}
-        keep = {r.id for r in selected[chain.id]}
-        for residue in list(chain):
-            if residue.id not in keep:
-                chain.detach_child(residue.id)
-            else:
-                for atom in list(residue):
-                    if atom.element in ('H', 'D'):
-                        # SASA uses heavy atoms. H-bond geometry reads the original model.
-                        residue.detach_child(atom.id)
-
-    features = atom_interactions(pair, chains, DescriptionOptions(cutoff=6))
-    areas = sasa_burial(pair, chains, 240)
-    math_area, motif_area = (max(0., sum(item['buried_area'] for (cid, _), item in areas.items()
-                                       if cid == chain)) for chain in chains)
-    pairs = defaultdict(set)
-    bonds, backbone, uncertain, clashes = set(), set(), set(), []
-    for item in features:
-        first, second = item['residue_1'], item['residue_2']
-        atoms = item['atom_1'], item['atom_2']
-        kind = item['type']
-        key = (first, second, *atoms)
-        if kind == 'steric_overlap_candidate':
-            clashes.append(key)
-        elif kind == 'hydrogen_bond_candidate':
-            left, right = (model[c][n] for c, n in zip(chains, (first, second)))
-            a, b = left[atoms[0]], right[atoms[1]]
-            for donor, acceptor in ((a, b), (b, a)):
-                source = donor.parent
-                if not (hydrogen_bond_roles(source, donor)[0]
-                        and hydrogen_bond_roles(acceptor.parent, acceptor)[1]):
-                    continue
-                hydrogens = donor_hydrogens(source, donor, previous[source.parent.id].get(source.id))
-                if not hydrogens:
-                    uncertain.add(key)
-                for h in hydrogens:
-                    theta = angle(donor.coord - h, acceptor.coord - h)
-                    if theta is not None and theta >= 120:
-                        bonds.add(key)
-                        if all(atom in BACKBONE for atom in atoms):
-                            backbone.add(key)
-        else:
-            pairs[kind].add((first, second))
-    clash_pairs = {(a, b) for a, b, c, d in clashes if (a, b, c, d) not in bonds}
-    nonpolar = len(pairs['nonpolar_contact'])
-    total_area = math_area + motif_area
-    metrics = {
-        'total buried surface area': total_area,
-        'traf_math_buried_area': math_area,
-        'traf_motif_buried_area': motif_area,
-        'traf_tight_motif_residues': len(tight),
-        'traf_backbone_hbonds': len(backbone),
-        'traf_sidechain_hbonds': len(bonds - backbone),
-        'traf_hbond_atoms': ','.join(f'{chains[0]}:{a}/{c}-{chains[1]}:{b}/{d}'
-                                   for a, b, c, d in sorted(bonds)),
-        'traf_unresolved_hbond_pairs': len(uncertain - bonds),
-        'traf_nonpolar_pairs': nonpolar,
-        'traf_clash_pairs': len(clash_pairs),
-        'traf_salt_pairs': len(pairs['salt_bridge_candidate']),
-    }
-    span = min(len({bond[i] for bond in backbone}) for i in (0, 1))
-    metrics['traf_feasibility_rule'] = feasibility_rule(metrics, span, thresholds)
-    polar = {(a, b) for a, b, c, _ in bonds if c not in BACKBONE}
-    polar.update(pairs['salt_bridge_candidate'])
-    return metrics, (backbone, polar)
-
-
 def feasibility_rule(metrics, span, limits):
-    tight = metrics['traf_tight_motif_residues']
-    clashes = metrics['traf_clash_pairs']
-    nonpolar = metrics['traf_nonpolar_pairs']
-    backbone = metrics['traf_backbone_hbonds']
-    bonds = backbone + metrics['traf_sidechain_hbonds']
+    tight = metrics['tight-contact residues 2']
+    clashes = metrics['steric clash residue pairs']
+    nonpolar = metrics['nonpolar residue pairs']
+    backbone = metrics['backbone hydrogen bonds']
+    bonds = backbone + metrics['side-chain hydrogen bonds']
     area = metrics['total buried surface area']
     if clashes >= 3 or tight < 2:
         return 'clash_or_sparse_contact'
@@ -281,7 +151,7 @@ def feasibility_rule(metrics, span, limits):
         return 'hydrogen_bond_supported'
     if area >= limits.packing_area and tight >= 3 and nonpolar >= 5:
         return 'packing_supported_provisional'
-    if metrics['traf_unresolved_hbond_pairs'] and area >= limits.mixed_area and nonpolar >= 2:
+    if metrics['unresolved hydrogen-bond candidates'] and area >= limits.mixed_area and nonpolar >= 2:
         return 'unresolved'
     return 'insufficient_support'
 
@@ -295,24 +165,6 @@ def feasibility(row):
     if rule in (None, 'unresolved'):
         return None
     return rule in ('small_but_well_paired', 'hydrogen_bond_supported', 'packing_supported_provisional')
-
-
-@dataclass
-class Evaluation:
-    rows: list
-    fold_ids: dict
-    sequence_ids: dict
-    descriptions: None = None
-
-    def leaves(self):
-        yield from self.rows
-
-
-@dataclass
-class Classification:
-    interface: str
-    sides: dict
-    settings: dict
 
 
 def classify_interface(row, structure, domains, *, chains):
@@ -345,47 +197,25 @@ def candidate_windows(motif, contacts, tight):
     return [item for item in windows if maximum - item[2] <= .25]
 
 
-def interface_confidence(chains, math_residues, motif, parsed):
-    residues, pae = parsed
-    regions = [{r.id[1] for r in selection} for selection in (math_residues, motif)]
-    selected = [[r for r in residues[c] if r.number in region]
-                for c, region in zip(chains, regions)]
-    values = [r.plddt for r in selected[1]]
-    result = {}
-
-    def valid(value):
-        return value is not None and math.isfinite(value) and 0 <= value <= 100
-
-    if values and len(values) == len(motif) and all(map(valid, values)):
-        result['traf_motif_plddt'] = sum(values) / len(values)
-    if pae is None or not all(valid(r.plddt) for selection in selected for r in selection):
-        return result
-    scores = score_selections(*chains, *selected, pae, None, None)
-    result['traf_scoring_contacts'] = scores['contact count']
-    if scores['contact count']:
-        for key in ('pDockQ2 1 to 2', 'pDockQ2 2 to 1', 'pDockQ2 max',
-                    'normalized PAE 1 to 2', 'normalized PAE 2 to 1',
-                    'interface pLDDT 1', 'interface pLDDT 2'):
-            result[key] = scores[key]
-        result['traf_confidence'] = min(scores['pDockQ2 1 to 2'], scores['pDockQ2 2 to 1'])
-    return result
-
-
 @dataclass
 class Candidate:
     window: list
     sites: set
     density: float
     metrics: dict
-    interactions: tuple
+    evidence: ContactEvidence | None
 
     def ranking(self):
         m = self.metrics
-        chemistry_known = m.get('traf_feasibility_rule') != 'unresolved' or 'traf_clash_pairs' in m
-        return (self.density, chemistry_known, -m.get('traf_clash_pairs', 0),
-                m.get('traf_backbone_hbonds', 0) + m.get('traf_sidechain_hbonds', 0),
-                m.get('total buried surface area', 0) / len(self.window),
-                m.get('traf_confidence', -1), m.get('traf_motif_plddt', -1))
+        chemistry_known = self.evidence is not None
+        confidence = m.get('traf_confidence')
+        plddt = m.get('region mean pLDDT 2')
+        return (self.density, chemistry_known,
+                -m['steric clash residue pairs'] if chemistry_known else 0,
+                m['backbone hydrogen bonds'] + m['side-chain hydrogen bonds'] if chemistry_known else 0,
+                m['total buried surface area'] / len(self.window) if chemistry_known else 0,
+                confidence if confidence is not None else -1,
+                plddt if plddt is not None else -1)
 
     def comparable(self, other):
         first, second = self.ranking(), other.ranking()
@@ -395,21 +225,44 @@ class Candidate:
                 and (min(first[6], second[6]) < 0 or abs(first[6] - second[6]) <= 5))
 
 
-def evaluate_sites(model, chains, domain, windows, thresholds, parsed):
+def evaluate_sites(descriptions, row, domain, windows, thresholds, parsed, contacts, tight):
+    chains = (row['chain 1'], row['chain 2'])
+    model = descriptions.models[(row['source'], row['model'])][0]
+    receptor = {r.id[1] for r in domain}
     candidates = []
     for window, sites, density in windows:
-        metrics = interface_confidence(chains, domain, window, parsed)
-        contacts = contact_pairs(domain, window, 6)
-        partners = {a for a, _ in contacts}
-        if all(all(atom in r for atom in ('N', 'CA', 'C', 'O'))
-               for r in domain if r.id[1] in partners):
-            chemistry, interactions = chemical_metrics(model, chains, domain, window, sites, thresholds)
-            metrics.update(chemistry)
+        motif = {r.id[1] for r in window}
+        selected = {pair: distance for pair, distance in contacts.items() if pair[1] in motif}
+        patch_row = with_contacts(row, selected)
+        context = dict(zip(chains, (receptor, motif)))
+        detail = descriptions.describe(
+            patch_row, context=context, tight_contacts={pair for pair in tight if pair[1] in motif},
+        )
+        metrics = {**patch_row, **detail['metrics'],
+                   **selected_confidence(chains, (receptor, motif), parsed),
+                   **atom_model_ca_metrics(model, chains, selected)}
+        scores = [metrics.get(key) for key in ('pDockQ2 1 to 2', 'pDockQ2 2 to 1')]
+        if all(score is not None for score in scores):
+            metrics['traf_confidence'] = min(scores)
+        partners = {a for a, _ in selected}
+        evidence = detail['evidence']
+        if all(all(atom in r for atom in ('N', 'CA', 'C', 'O')) for r in domain if r.id[1] in partners):
+            span = min(len({bond[i] for bond in evidence.backbone_bonds}) for i in (0, 1))
+            metrics['traf_feasibility_rule'] = feasibility_rule(metrics, span, thresholds)
         else:
             metrics['traf_feasibility_rule'] = 'unresolved'
-            interactions = (set(), set())
-        candidates.append(Candidate(window, sites, density, metrics, interactions))
+            evidence = None
+        candidates.append(Candidate(window, sites, density, metrics, evidence))
     return sorted(candidates, key=Candidate.ranking, reverse=True)
+
+
+def with_contacts(row, contacts):
+    patch = {**row, 'contact count': len(contacts)}
+    for side in (1, 2):
+        numbers = sorted({pair[side - 1] for pair in contacts})
+        patch[f'interface residues {side}'] = ','.join(map(str, numbers))
+        patch[f'residue count {side}'] = len(numbers)
+    return patch
 
 
 def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
@@ -417,7 +270,8 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
     source, number, cif, data = record
     model_id = '' if number is None else number
     residues, pae = parsed
-    model = MMCIFParser(QUIET=True).get_structure('traf', io.StringIO(cif))[0]
+    descriptions = PatchDescriptions({(source, model_id): cif}, dssp)
+    model = descriptions.models[(source, model_id)][0]
     math_chain, peptide_chain = chains
     receptor = protein_residues(model[math_chain])
     peptide = protein_residues(model[peptide_chain])
@@ -446,12 +300,15 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
         'source': source, 'model': model_id, 'fold_id': fold, 'sequence_id': sequence,
         'scope': 'patch', 'status': 'leaf', 'rank': 1, 'patch id': 'traf_slim',
         'chain 1': math_chain, 'chain 2': peptide_chain, 'distance cutoff': 6.0,
+        'contact basis': 'heavy atom',
         'interface residues 1': '', 'interface residues 2': '',
-        'traf_paralog': domain if domain.startswith('TRAF') and domain != 'TRAF' else None,
+        'traf_paralog': domain if domain in TRAF_PARALOGS else None,
         'traf_math_window': residue_span(math_domain),
         'traf_math_source': 'supplied' if explicit_math else 'inferred',
         'traf_motif_source': 'supplied' if explicit_motif else 'inferred',
         'traf_motif_window': residue_span(motif) if explicit_motif else None,
+        'region 1': residue_span(math_domain),
+        'region 2': residue_span(motif) if explicit_motif else None,
         'traf_thresholds': json.dumps(asdict(thresholds), sort_keys=True),
         'traf_pose': 'unresolved',
         **model_scores.get((source, model_id), {}),
@@ -459,52 +316,50 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
     if groove:
         row.update(traf_beta6=residue_span(groove.beta6), traf_beta7=residue_span(groove.beta7),
                    traf_polar_loop=residue_span(groove.loop), traf_pocket=residue_span(groove.pocket))
+    if '_assembly' in data:
+        row['confidence origin'] = 'inherited per-chain values; no assembled confidence'
     if not math_domain:
         row['traf_status'] = ('missing MATH window coordinates' if explicit_math
                               else 'complete terminal MATH topology unresolved')
     elif not motif:
         row['traf_status'] = 'missing motif coordinates'
     else:
-        contacts = contact_pairs(math_domain, motif, 6.0)
-        tight = contact_pairs(math_domain, motif, 4.5)
+        contacts = heavy_contacts(math_domain, motif, 6.0)
+        tight = {pair for pair, distance in contacts.items() if distance <= TIGHT_CONTACT_CUTOFF}
         if not contacts:
-            row.update(traf_pose='no_contact', traf_status='no_contact',
-                       traf_feasibility_rule='no_contact', **{'contact count': 0})
+            row.update(with_contacts(row, contacts))
+            row.update({'tight-contact cutoff': TIGHT_CONTACT_CUTOFF,
+                        'tight-contact residues 1': 0, 'tight-contact residues 2': 0})
+            row.update(traf_pose='no_contact', traf_status='no_contact', traf_feasibility_rule='no_contact')
         else:
             windows = ([(motif, {b for _, b in tight}, len(tight) / len(motif))]
                        if explicit_motif else candidate_windows(motif, contacts, tight))
             if pae is not None and not all(math.isfinite(float(x)) and float(x) >= 0 for line in pae for x in line):
                 parsed = residues, None
-            candidates = evaluate_sites(model, chains, math_domain, windows, thresholds, parsed)
+            candidates = evaluate_sites(descriptions, row, math_domain, windows, thresholds, parsed, contacts, tight)
             if not candidates:
                 row['traf_status'] = 'contacting motif lacks a contiguous backbone window'
             else:
-                update_site(row, candidates, groove, contacts)
+                update_site(row, candidates, groove)
     attach_patch_identity(row, model_identity(cif, data, seed), number)
-    return Evaluation([row], {source: fold}, {source: sequence})
+    return Evaluation([row], {source: fold}, {source: sequence}, descriptions.models)
 
 
-def update_site(row, candidates, groove, contacts):
+def update_site(row, candidates, groove):
     best = candidates[0]
-    motif_numbers = {r.id[1] for r in best.window}
-    contacts = {(a, b) for a, b in contacts if b in motif_numbers}
-    row['contact count'] = len(contacts)
-    for side in (1, 2):
-        numbers = sorted({pair[side - 1] for pair in contacts})
-        row[f'interface residues {side}'] = ','.join(map(str, numbers))
-        row[f'residue count {side}'] = len(numbers)
+    row.update(best.metrics)
     row['region 1'] = row['traf_math_window']
     row['region 2'] = row['traf_motif_window'] = residue_span(best.window)
-    row.update(best.metrics)
-    if 'traf_clash_pairs' in best.metrics:
-        pose, register, evidence = assess_pose(groove, best.window, best.interactions)
+    if best.evidence is not None:
+        pose, register, evidence = assess_pose(groove, best.window, best.evidence)
     else:
         pose, register, evidence = 'unresolved', None, 'incomplete contacting MATH backbone'
     competitors = []
     for candidate in candidates[1:]:
         if not best.comparable(candidate):
             continue
-        alternate_pose, alternate_register, _ = assess_pose(groove, candidate.window, candidate.interactions)
+        alternate_pose, alternate_register, _ = (assess_pose(groove, candidate.window, candidate.evidence)
+                                                 if candidate.evidence is not None else (None, None, None))
         shared = len(best.sites & candidate.sites)
         same_site = shared >= max(1, min(len(best.sites), len(candidate.sites)) - 1)
         competing_register = (alternate_register is not None and register is not None

@@ -16,11 +16,16 @@ from sieve.interface import traf_slim
 SIDE_FIELDS = {
     'sequence name': 'sequence name {side}',
     'domain': 'domain {side}',
-    'candidate face': 'candidate face {side}',
-    'face status': 'face status {side}',
+    'buried surface area': 'buried surface area {side}',
+    'tight-contact residues': 'tight-contact residues {side}',
+    'region mean pLDDT': 'region mean pLDDT {side}',
 }
-PROFILE_COLUMNS = tuple(dict.fromkeys(column for profile in INTERFACES for column in profile.columns))
-EXTRA_COLUMNS = ('iptm', 'ptm', 'interface_family', *PROFILE_COLUMNS)
+EXTRA_COLUMNS = (
+    'contact basis', 'tight-contact cutoff', 'pDockQ2 contact count', 'pDockQ2 distance cutoff',
+    'nonpolar residue pairs', 'salt bridge residue pairs', 'steric clash residue pairs',
+    'backbone hydrogen bonds', 'side-chain hydrogen bonds', 'unresolved hydrogen-bond candidates',
+    'hydrogen-bond atom pairs', 'iptm', 'ptm', 'interface_family',
+)
 RESULT_COLUMNS = ('confidence', 'chemical feasibility', 'interface')
 COLUMNS = (*PATCH_COLUMNS, *SIDE_FIELDS, *EXTRA_COLUMNS, *RESULT_COLUMNS)
 
@@ -47,7 +52,7 @@ def manifest_rows(groups, locator):
 
 def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
                    chains, full_data, dssp, error, motif_windows=None, traf_thresholds=None,
-                   math_windows=None):
+                   math_windows=None, evaluated_profiles=None):
     seeds, model_scores = {}, {}
     record, = input_models(
         locator, full_data, selected_model=number, model_seeds=seeds, model_scores=model_scores,
@@ -79,11 +84,10 @@ def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
                 else:
                     detail = f' for sequence {names[chain]!r}' if chain in names else ''
                     raise ValueError(f'missing domain assignment for chain {chain}{detail}')
-            if chains is None and any(set(domains.values()) <= role for role in (
-                traf_slim.TRAF_DOMAINS, traf_slim.MOTIF_DOMAINS,
-            )):
+            resolved = resolve(pair, domains, allow_unmatched=chains is None)
+            if resolved is None:
                 continue
-            profile, oriented = resolve(pair, domains)
+            profile, oriented = resolved
             extras = {}
             if profile.name == 'traf_slim':
                 extras.update(domains=domains, motif_windows=motif_windows or {},
@@ -98,10 +102,11 @@ def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
                 ids = (metrics.fold_ids[source], metrics.sequence_ids[source])
                 if ids != (group[0]['fold_id'], group[0]['sequence_id']):
                     raise ValueError('model/manifest identity mismatch')
+            if evaluated_profiles is not None:
+                evaluated_profiles.add(profile.name)
             current = []
-            for patch in metrics.leaves():
-                structure = (metrics.descriptions.models[(patch['source'], patch['model'])]
-                             if metrics.descriptions is not None else None)
+            for patch in metrics.rows:
+                structure = metrics.structures.get((patch['source'], patch['model']))
                 classification = profile.classify(patch, structure, domains, chains=oriented)
                 patch.update(classification.settings)
                 patch.update({
@@ -114,9 +119,8 @@ def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
                     chain = patch[f'chain {side}']
                     details = classification.sides[chain]
                     patch.update({f'sequence name {side}': names.get(chain),
-                                  f'domain {side}': domains[chain],
-                                  f'candidate face {side}': details.get('candidate face'),
-                                  f'face status {side}': details.get('face status')})
+                                  f'domain {side}': domains[chain]})
+                    patch.update({f'{field} {side}': details.get(field) for field in profile.side_fields})
                 current.append(patch)
             all_rows.extend(current)
         except ERRORS as exc:
@@ -168,6 +172,7 @@ def run(requests, output, *, manifest=None, domain_file=None, domains=(), chains
         print(f'ERROR: {message}', file=stderr)
 
     rows = []
+    evaluated_profiles = set()
     seen = set()
     for request in requests:
         for locator, number in jobs_for(request, error):
@@ -180,12 +185,18 @@ def run(requests, output, *, manifest=None, domain_file=None, domains=(), chains
                     locator, number, request, groups=groups, domain_table=domain_table,
                     overrides=overrides, chains=chains, full_data=full_data,
                     dssp=executable, error=error, motif_windows=windows, traf_thresholds=thresholds,
-                    math_windows=math_regions,
+                    math_windows=math_regions, evaluated_profiles=evaluated_profiles,
                 ))
             except ERRORS as exc:
                 error(f'{locator} model {number}: {exc}')
     if rows or not failed:
-        write_cache(target, COLUMNS, patch_export_rows(
+        profiles = [profile for profile in INTERFACES if profile.name in evaluated_profiles]
+        profile_fields = {field: f'{field} {{side}}' for profile in profiles for field in profile.side_fields}
+        profile_columns = tuple(dict.fromkeys(
+            field for profile in profiles for field in (*profile.side_fields, *profile.columns)
+        ))
+        write_cache(target, (*COLUMNS, *profile_columns), patch_export_rows(
             rows, side_fields=SIDE_FIELDS, extra_columns=EXTRA_COLUMNS, result_columns=RESULT_COLUMNS,
+            profile_columns=profile_columns, profile_side_fields=profile_fields, missing_value='',
         ))
     return int(failed)

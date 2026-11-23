@@ -1,5 +1,4 @@
 """Death-family patch evaluation using the interactome face rules."""
-from dataclasses import dataclass
 from math import isfinite
 
 from sieve.alphafold_death_rules import FACES, candidate_interface, classify
@@ -7,6 +6,7 @@ from sieve.alphafold_helix_normalization import normalize_helices
 from sieve.alphafold_patch_metrics import extract_patch_metrics
 from sieve.alphafold_pdockq2_patches import Options
 from sieve.alphafold_structure import canonical, digest
+from sieve.interface.results import Classification, Evaluation
 
 # Transcribed from coral/notes/interactome/dd_face_rules.tsv.
 # Domain, face, element, minimum contacting residues, requirement, notes.
@@ -79,10 +79,11 @@ RULES_ID = rules_id(RULES)
 
 
 def extract(locator, chains, *, record, seeds, model_scores, dssp, distance_cutoff=10.0):
-    return extract_patch_metrics(
+    result = extract_patch_metrics(
         locator, options=Options(cutoff=distance_cutoff), chains=chains,
         model_records=[record], model_seeds=seeds, model_scores=model_scores, dssp=dssp,
     )
+    return Evaluation(result.leaves(), result.fold_ids, result.sequence_ids, result.descriptions.models)
 
 
 def available_number(value):
@@ -140,13 +141,6 @@ def feasibility(patch):
     )
     hydrophobic = 1000 <= area < 1800 and carbon_sulfur >= 40 and salts >= 0 and overlaps <= 2
     return not hovering and (lateral or cooperative or zipper or clamp or hydrophobic)
-
-
-@dataclass
-class Classification:
-    interface: str | None
-    sides: dict
-    settings: dict
 
 
 def classify_interface(patch, structure, domains, *, chains, rules=RULES,

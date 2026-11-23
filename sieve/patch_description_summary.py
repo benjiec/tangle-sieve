@@ -1,5 +1,6 @@
 """Human-readable structural descriptors for the existing patch summary."""
 from collections import Counter, defaultdict
+from copy import deepcopy
 import math
 
 from Bio.PDB import NeighborSearch
@@ -11,6 +12,7 @@ from sieve.interface_description import (
 )
 from sieve.alphafold_pdockq2_patches import ranges
 from sieve.alphafold_secondary import find_dssp, load_secondary
+from sieve.interface.measurements import TIGHT_CONTACT_CUTOFF, heavy_contacts, qualify_contacts
 
 
 
@@ -109,21 +111,39 @@ class PatchDescriptions:
         print('  Codes: H alpha, G 3₁₀, I pi, E strand, B isolated beta bridge, P polyproline; T/S/– loop; ? unassigned.', file=stream)
         print(file=stream)
 
-    def describe(self, row):
+    def describe(self, row, *, context=None, tight_contacts=None):
         """One descriptor calculation shared by TSV and human-readable summaries."""
         key = (row['source'], row['model'])
         chains = (row['chain 1'], row['chain 2'])
-        cache_key = (*key, *chains, row['interface residues 1'], row['interface residues 2'])
+        context_key = tuple(frozenset(context[c]) for c in chains) if context is not None else None
+        cache_key = (*key, *chains, row['interface residues 1'], row['interface residues 2'], context_key)
         if cache_key in self.details:
             return self.details[cache_key]
         model, codes, segments, _ = self.models[key]
-        pair_key = (*key, *chains)
-        if pair_key not in self.pairs:
-            self.pairs[pair_key] = (atom_interactions(model, chains, self.options),
-                                   sasa_burial(model, chains, self.options.sasa_points))
-        interactions, burial = self.pairs[pair_key]
         selected = {c: {int(n) for n in row[f'interface residues {i}'].split(',') if n}
                     for i,c in enumerate(chains,1)}
+        measured = selected if context is None else context
+        if context is None:
+            pair_key = (*key, *chains)
+            if pair_key not in self.pairs:
+                self.pairs[pair_key] = (atom_interactions(model, chains, self.options),
+                                       sasa_burial(model, chains, self.options.sasa_points))
+            interactions, burial = self.pairs[pair_key]
+        else:
+            pair = deepcopy(model)
+            for chain in list(pair):
+                if chain.id not in context:
+                    pair.detach_child(chain.id)
+                    continue
+                for residue in list(chain):
+                    if residue.id[1] not in context[chain.id] or 'CA' not in residue:
+                        chain.detach_child(residue.id)
+                        continue
+                    for atom in list(residue):
+                        if atom.element in ('H', 'D'):
+                            residue.detach_child(atom.id)
+            interactions = atom_interactions(pair, chains, self.options)
+            burial = sasa_burial(pair, chains, self.options.sasa_points)
         contexts = {c: neighborhood(model[c], selected[c], self.options.flank, self.options.radius) for c in chains}
         structures = {}
         for c in chains:
@@ -136,12 +156,18 @@ class PatchDescriptions:
             if missing:
                 parts.append(f'unassigned:{residue_ranges(missing)}')
             structures[c] = '; '.join(parts) or None
-        areas = {c: sum(burial[(c,n)]['buried_area'] for n in selected[c]) for c in chains}
-        cs = {c: sum(burial[(c,n)]['buried_nonpolar_area'] for n in selected[c]) for c in chains}
-        salt_selected = {c: salt_patch_residues(model[c], selected[c], self.options.salt_patch_radius) for c in chains}
-        features = [x for x in interactions
-                    if x['residue_1'] in (salt_selected if x['type']=='salt_bridge_candidate' else selected)[chains[0]]
-                    and x['residue_2'] in (salt_selected if x['type']=='salt_bridge_candidate' else selected)[chains[1]]]
+        areas = {c: sum(burial[(c,n)]['buried_area'] for n in measured[c]) for c in chains}
+        cs = {c: sum(burial[(c,n)]['buried_nonpolar_area'] for n in measured[c]) for c in chains}
+        within = [x for x in interactions if x['residue_1'] in measured[chains[0]]
+                  and x['residue_2'] in measured[chains[1]]]
+        features = within
+        if context is None:
+            salt_selected = {c: salt_patch_residues(model[c], selected[c], self.options.salt_patch_radius)
+                             for c in chains}
+            features = [x for x in within if x['type'] != 'salt_bridge_candidate']
+            features.extend(x for x in interactions if x['type'] == 'salt_bridge_candidate'
+                            and x['residue_1'] in salt_selected[chains[0]]
+                            and x['residue_2'] in salt_selected[chains[1]])
         totals = Counter(kind for kind,_,_ in {(x['type'],x['residue_1'],x['residue_2']) for x in features})
         hydrogen_bond_pairs = {
             (x['residue_1'], x['atom_1'], x['residue_2'], x['atom_2'])
@@ -171,11 +197,19 @@ class PatchDescriptions:
                    'salt bridge candidate heavy-atom distance min': min((x['distance'] for x in salts.values()),default=None),
                    'salt bridge residues': '; '.join(f"{chains[0]}:{x['aa_1']}{a}/{x['atom_1']}–{chains[1]}:{x['aa_2']}{b}/{x['atom_2']} ({x['distance']:.3f} Å)" for (a,b),x in sorted(salts.items())) or None,
                    'nominal patch charge difference': delta}
+        chemistry, evidence = qualify_contacts(model, chains, within)
+        metrics.update(chemistry)
+        if tight_contacts is None:
+            selections = [[r for r in protein_residues(model[c]) if r.id[1] in measured[c]] for c in chains]
+            tight_contacts = heavy_contacts(*selections, TIGHT_CONTACT_CUTOFF)
+        metrics['tight-contact cutoff'] = TIGHT_CONTACT_CUTOFF
         for i,c in enumerate(chains,1):
             metrics.update({f'interface structure {i}': structures[c],
-                            f'patch {i} hydropathy mean': contexts[c]['patch']['mean_hydropathy']})
+                            f'patch {i} hydropathy mean': contexts[c]['patch']['mean_hydropathy'],
+                            f'buried surface area {i}': areas[c],
+                            f'tight-contact residues {i}': len({pair[i - 1] for pair in tight_contacts})})
         details = dict(metrics=metrics,contexts=contexts,structures=structures,areas=areas,cs=cs,
-                       selected=selected,salts=salts,interactions=interactions,totals=totals)
+                       selected=selected,salts=salts,interactions=interactions,totals=totals,evidence=evidence)
         self.details[cache_key] = details
         return details
 

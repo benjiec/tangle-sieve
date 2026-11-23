@@ -167,7 +167,8 @@ class PipelineTests(unittest.TestCase):
     def read(self):
         with self.output.open() as stream:
             reader = csv.DictReader(stream, delimiter='\t')
-            self.assertEqual(reader.fieldnames, list(COLUMNS))
+            self.assertEqual(reader.fieldnames[:len(COLUMNS)], list(COLUMNS))
+            self.assertNotIn('traf_pose_evidence', reader.fieldnames)
             return list(reader)
 
     def test_piped_model_and_domain_lookup_keep_legacy_columns(self):
@@ -189,7 +190,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual({row['iptm'] for row in rows}, {'0.600000'})
         self.assertEqual({row['interface_family'] for row in rows}, {'death'})
         self.assertEqual({row['interface'] for row in rows}, {'NULL'})
-        self.assertEqual({row['salt bridge candidate heavy-atom distance min'] for row in rows}, {'NA'})
+        self.assertEqual({row['salt bridge candidate heavy-atom distance min'] for row in rows}, {''})
         self.assertEqual({row['chemical feasibility'] for row in rows}, {'false'})
         self.assertEqual({row['kink angle'] for row in rows}, {'75'})
         self.assertEqual({row['distance cutoff'] for row in rows}, {'10.000000'})
@@ -198,7 +199,7 @@ class PipelineTests(unittest.TestCase):
         expected = extract_patch_metrics(self.locator, **args)
         self.assertEqual(
             [{key: row[key] for key in PATCH_COLUMNS} for row in rows],
-            [{key: str(value) for key, value in row.items()} for row in patch_export_rows(expected.leaves())],
+            [{key: str(value) for key, value in row.items()} for row in patch_export_rows(expected.leaves(), missing_value='')],
         )
         self.assertEqual(rows[0]['patch_id'], next(
             row['patch_id'] for row in analyze(self.locator, **args) if row['status'] == 'leaf'

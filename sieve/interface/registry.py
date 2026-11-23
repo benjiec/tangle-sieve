@@ -15,20 +15,22 @@ class InterfaceProfile:
     feasibility: Callable
     classify: Callable
     columns: tuple[str, ...] = ()
+    side_fields: tuple[str, ...] = ()
 
 
 DEATH_DOMAINS = frozenset(death.RULES)
 INTERFACES = (
     InterfaceProfile('death', DEATH_DOMAINS, DEATH_DOMAINS, death.extract,
                      death.confidence, death.feasibility, death.classify_interface,
-                     ('rules_id', 'merge kinked helices', 'kink connector length', 'kink angle')),
+                     ('rules_id', 'merge kinked helices', 'kink connector length', 'kink angle'),
+                     ('candidate face', 'face status')),
     InterfaceProfile('traf_slim', traf_slim.TRAF_DOMAINS, traf_slim.MOTIF_DOMAINS,
                      traf_slim.extract, traf_slim.confidence, traf_slim.feasibility,
                      traf_slim.classify_interface, traf_slim.COLUMNS),
 )
 
 
-def resolve(chains, domains, profiles=INTERFACES):
+def resolve(chains, domains, profiles=INTERFACES, *, allow_unmatched=False):
     left, right = chains
     a, b = domains[left], domains[right]
     matches = []
@@ -39,6 +41,9 @@ def resolve(chains, domains, profiles=INTERFACES):
             matches.append((profile, (right, left)))
     pair = f'{left}:{a}, {right}:{b}'
     if not matches:
+        known = {domain for profile in profiles for domain in profile.domains_a | profile.domains_b}
+        if allow_unmatched and {a, b} <= known:
+            return None
         raise ValueError(f'unsupported interface domains ({pair})')
     if len(matches) > 1:
         names = ', '.join(profile.name for profile, _ in matches)
