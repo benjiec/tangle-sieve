@@ -48,6 +48,40 @@ def append_copy(chain, residues, first, offset):
 
 
 class TrafTests(TestCase):
+    def test_confidence_threshold_boundaries(self):
+        for score, label in (
+            (None, None), (float('nan'), None), (float('inf'), None),
+            (0, 'Reject'), (0.229999, 'Reject'), (0.23, 'Low'),
+            (0.499999, 'Low'), (0.50, 'Medium'), (0.699999, 'Medium'), (0.70, 'High'),
+        ):
+            with self.subTest(score=score):
+                self.assertEqual(traf.confidence({'pDockQ2 max': score}), label)
+
+    def test_cli_confidence_uses_higher_direction(self):
+        model = load_model('1LB5')
+        for atom in model.get_atoms():
+            atom.set_bfactor(95)
+        rows = self.run_cli(model, '--motif-window', 'B:603-608', reverse_pae=30)
+        forward, reverse = (float(row['pDockQ2 to partner']) for row in rows)
+        self.assertGreaterEqual(forward, 0.70)
+        self.assertLess(reverse, 0.23)
+        self.assertEqual([row['confidence'] for row in rows], ['High', 'High'])
+        self.assertEqual(float(rows[0]['pDockQ2 max']), forward)
+
+    def test_pose_labels_map_to_shared_classification(self):
+        for pose, label, face in (
+            ('traf6', 'Canonical', 'traf6'),
+            ('traf2/3', 'Canonical', 'traf2/3'),
+            ('atypical', 'Atypical', None),
+            ('unresolved', None, None),
+            ('no_contact', None, None),
+        ):
+            with self.subTest(pose=pose):
+                result = traf.classify_interface({'traf_pose': pose}, None, {}, chains=('T', 'P'))
+                self.assertEqual(result.interface, label)
+                self.assertEqual(result.sides['T'].get('candidate face'), face)
+                self.assertIsNone(result.sides['P'].get('candidate face'))
+
     def test_registry_orients_traf5(self):
         profile, chains = resolve(('P', 'T'), {'P': 'SLiM', 'T': 'TRAF5'})
         self.assertEqual((profile.name, chains), ('traf_slim', ('T', 'P')))
@@ -128,14 +162,15 @@ class TrafTests(TestCase):
         self.assertEqual(inferred[0]['traf_motif_source'], 'inferred')
         self.assertEqual(supplied[0]['traf_motif_source'], 'supplied')
         self.assertEqual(inferred[0]['traf_motif_register'], supplied[0]['traf_motif_register'])
-        self.assertEqual([row['interface'] for row in inferred + supplied], ['traf6'] * 4)
+        self.assertEqual([row['interface'] for row in inferred + supplied], ['Canonical'] * 4)
+        self.assertEqual([row['candidate face'] for row in inferred + supplied], ['traf6', ''] * 2)
         forward, reverse = (float(row['pDockQ2 to partner']) for row in inferred)
-        self.assertEqual(float(inferred[0]['confidence']), min(forward, reverse))
+        self.assertEqual(float(inferred[0]['pDockQ2 max']), max(forward, reverse))
         self.assertEqual({row['contact basis'] for row in inferred}, {'heavy atom'})
         self.assertEqual({row['backbone hydrogen bonds'] for row in supplied}, {'5'})
         self.assertEqual(supplied[0]['hydrogen-bond atom pairs'].count('A:472/'), 2)
         self.assertEqual({row['region mean pLDDT'] == '' for row in supplied}, {False})
-        self.assertNotIn('candidate face', inferred[0])
+        self.assertNotIn('face status', inferred[0])
         self.assertNotIn('traf_nonpolar_pairs', inferred[0])
         self.assertTrue(all(row['patch hydropathy mean'] and row['interface structure']
                             for row in inferred))
@@ -210,12 +245,18 @@ class TrafTests(TestCase):
             self.assertEqual(len(rows), 4)
             self.assertEqual(len({row['fold_id'] for row in rows}), 1)
             self.assertEqual(len({row['patch_id'] for row in rows}), 2)
+            self.assertEqual(reader.fieldnames.count('candidate face'), 1)
             for family in ('death', 'traf_slim'):
                 pair = [r for r in rows if r['interface_family'] == family]
                 self.assertEqual([r['sequence_index'] for r in pair], ['1', '2'])
                 self.assertTrue(all(r['total buried surface area'] for r in pair))
                 self.assertTrue(all(r['kink angle'] == ('75' if family == 'death' else '') for r in pair))
                 self.assertTrue(all(bool(r['traf_pose_evidence']) == (family == 'traf_slim') for r in pair))
+                self.assertTrue(all(r['confidence'] in ('High', 'Medium', 'Low', 'Reject') for r in pair))
+                self.assertTrue(all(r['chemical feasibility'] in ('true', 'false', 'NULL') for r in pair))
+                if family == 'traf_slim':
+                    self.assertEqual([r['interface'] for r in pair], ['Canonical', 'Canonical'])
+                    self.assertEqual([r['candidate face'] for r in pair], ['traf6', ''])
             self.assertNotIn('\tNA\t', output.read_text())
 
     def test_inferred_windows_recover_fixture_pose_without_labels(self):
@@ -235,7 +276,7 @@ class TrafTests(TestCase):
         append_copy(peptide, original, 609, 100)
         append_copy(peptide, original, 617, 0)
         result = self.run_cli(model)[0]
-        self.assertEqual(result['interface'], 'unresolved')
+        self.assertEqual(result['interface'], '')
         self.assertIn('competing inferred motif sites', result['traf_status'])
         self.assertIn(',', result['traf_motif_candidates'])
 
@@ -253,17 +294,18 @@ class TrafTests(TestCase):
                         elif atom.name in other:
                             atom.coord = other[atom.name].coord
                 row = self.run_cli(model, '--motif-window', 'B:603-608')[0]
-                self.assertNotEqual(row['interface'], 'traf6')
+                self.assertNotEqual(row['candidate face'], 'traf6')
 
     def test_no_contact_and_missing_coverage(self):
         model = load_model('1LB5')
         for atom in model['B'].get_atoms():
             atom.coord += 100
         row = self.run_cli(model)[0]
-        self.assertEqual((row['interface'], row['confidence']), ('no_contact', 'NULL'))
+        self.assertEqual((row['interface'], row['confidence']), ('', 'NULL'))
+        self.assertEqual(row['traf_status'], 'no_contact')
         self.assertEqual((row['contact count'], row['tight-contact residues']), ('0', '0'))
         row = self.run_cli(model, '--motif-window', 'B:603-609')[0]
-        self.assertEqual((row['interface'], row['traf_status']), ('unresolved', 'missing motif coordinates'))
+        self.assertEqual((row['interface'], row['traf_status']), ('', 'missing motif coordinates'))
 
     def test_shared_descriptors_agree_for_identical_full_chain_selections(self):
         model = load_model('1LB5')
@@ -282,7 +324,7 @@ class TrafTests(TestCase):
     def test_explicit_partial_math_window_retains_confidence_and_chemistry(self):
         row = self.run_cli(load_model('1LB5'), '--math-window', 'A:405-479',
                            '--motif-window', 'B:603-608')[0]
-        self.assertEqual(row['interface'], 'unresolved')
+        self.assertEqual(row['interface'], '')
         self.assertEqual(row['traf_pose_evidence'], 'groove landmarks unresolved')
         self.assertNotEqual(row['confidence'], 'NULL')
         self.assertNotEqual(row['chemical feasibility'], 'NULL')
@@ -301,7 +343,7 @@ class TrafTests(TestCase):
                                          ({c: [] for c in chains}, None), contacts, tight)
         return candidates, row
 
-    def run_cli(self, model, *extra):
+    def run_cli(self, model, *extra, reverse_pae=4):
         script = load_script(Path(__file__).resolve().parents[2] / 'scripts/alphafold-interface.py')
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -312,7 +354,7 @@ class TrafTests(TestCase):
             keys = [(c.id, r.id[1]) for c in model for r in traf.protein_residues(c)]
             data.write_text(json.dumps(dict(token_chain_ids=[c for c, _ in keys],
                                             token_res_ids=[n for _, n in keys],
-                                            pae=[[1 if c == d or c == 'A' else 4 for d, _ in keys]
+                                            pae=[[1 if c == d or c == 'A' else reverse_pae for d, _ in keys]
                                                  for c, _ in keys])))
             self.assertEqual(script.main([str(cif), '--full-data', str(data), '--output', str(output),
                                           '--chains', 'B', 'A', '--domain', 'A:TRAF_MATH',

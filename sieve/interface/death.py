@@ -1,12 +1,10 @@
 """Death-family patch evaluation using the interactome face rules."""
-from math import isfinite
-
 from sieve.alphafold_death_rules import FACES, candidate_interface, classify
 from sieve.alphafold_helix_normalization import normalize_helices
 from sieve.alphafold_patch_metrics import extract_patch_metrics
 from sieve.alphafold_pdockq2_patches import Options
 from sieve.alphafold_structure import canonical, digest
-from sieve.interface.results import Classification, Evaluation
+from sieve.interface.results import Classification, Evaluation, InterfaceLabel, available_number, confidence_level
 
 # Transcribed from coral/notes/interactome/dd_face_rules.tsv.
 # Domain, face, element, minimum contacting residues, requirement, notes.
@@ -86,22 +84,11 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, distance_cuto
     return Evaluation(result.leaves(), result.fold_ids, result.sequence_ids, result.descriptions.models)
 
 
-def available_number(value):
-    return isinstance(value, (int, float)) and isfinite(value)
-
-
 def confidence(patch):
-    score = patch.get('pDockQ2 max')
     area = patch.get('total buried surface area')
-    if not all(available_number(value) for value in (score, area)):
+    if not available_number(area):
         return None
-    if score < 0.23:
-        return 'Reject'
-    if score >= 0.70:
-        return 'High'
-    if (area < 1000 and score >= 0.40) or score >= 0.50:
-        return 'Medium'
-    return 'Low'
+    return confidence_level(patch.get('pDockQ2 max'), medium_cutoff=0.40 if area < 1000 else 0.50)
 
 
 def feasibility(patch):
@@ -169,4 +156,6 @@ def classify_interface(patch, structure, domains, *, chains, rules=RULES,
         'kink connector length': connector_length,
         'kink angle': angle,
     }
-    return Classification(interface, sides, settings)
+    # The face rules use a legacy string for patches without a candidate face.
+    label = None if interface in (None, 'None') else InterfaceLabel(interface)
+    return Classification(label, sides, settings)

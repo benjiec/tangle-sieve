@@ -17,7 +17,7 @@ from sieve.interface.measurements import (
     ContactEvidence, TIGHT_CONTACT_CUTOFF, atom_model_ca_metrics, donor_hydrogens,
     heavy_contacts, selected_confidence,
 )
-from sieve.interface.results import Classification, Evaluation
+from sieve.interface.results import Classification, Evaluation, InterfaceLabel, confidence_level
 from sieve.patch_description_summary import PatchDescriptions
 from sieve.interface.traf_topology import complete_backbone, find_groove
 
@@ -157,7 +157,7 @@ def feasibility_rule(metrics, span, limits):
 
 
 def confidence(row):
-    return row.get('traf_confidence')
+    return confidence_level(row.get('pDockQ2 max'))
 
 
 def feasibility(row):
@@ -168,7 +168,12 @@ def feasibility(row):
 
 
 def classify_interface(row, structure, domains, *, chains):
-    return Classification(row['traf_pose'], {chain: {} for chain in chains}, {})
+    pose = row['traf_pose']
+    sides = {chain: {} for chain in chains}
+    if pose in ('traf6', 'traf2/3'):
+        sides[chains[0]]['candidate face'] = pose
+        return Classification(InterfaceLabel.CANONICAL, sides, {})
+    return Classification(InterfaceLabel.ATYPICAL if pose == 'atypical' else None, sides, {})
 
 
 def select_window(residues, window):
@@ -208,13 +213,13 @@ class Candidate:
     def ranking(self):
         m = self.metrics
         chemistry_known = self.evidence is not None
-        confidence = m.get('traf_confidence')
+        ranking_score = m.get('traf_motif_ranking_score')
         plddt = m.get('region mean pLDDT 2')
         return (self.density, chemistry_known,
                 -m['steric clash residue pairs'] if chemistry_known else 0,
                 m['backbone hydrogen bonds'] + m['side-chain hydrogen bonds'] if chemistry_known else 0,
                 m['total buried surface area'] / len(self.window) if chemistry_known else 0,
-                confidence if confidence is not None else -1,
+                ranking_score if ranking_score is not None else -1,
                 plddt if plddt is not None else -1)
 
     def comparable(self, other):
@@ -243,7 +248,7 @@ def evaluate_sites(descriptions, row, domain, windows, thresholds, parsed, conta
                    **atom_model_ca_metrics(model, chains, selected)}
         scores = [metrics.get(key) for key in ('pDockQ2 1 to 2', 'pDockQ2 2 to 1')]
         if all(score is not None for score in scores):
-            metrics['traf_confidence'] = min(scores)
+            metrics['traf_motif_ranking_score'] = min(scores)
         partners = {a for a, _ in selected}
         evidence = detail['evidence']
         if all(all(atom in r for atom in ('N', 'CA', 'C', 'O')) for r in domain if r.id[1] in partners):

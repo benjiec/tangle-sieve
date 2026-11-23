@@ -16,6 +16,7 @@ from sieve.alphafold_result_format import PatchInput, ResultRecord, write_result
 from sieve.alphafold_secondary import load_secondary
 from sieve.interface import death
 from sieve.interface.registry import INTERFACES, resolve
+from sieve.interface.results import Confidence, InterfaceLabel, result_fields
 from tests.scripts.helpers import load_script
 from tests.sieve.test_alphafold_dd_faces import structure
 from tests.sieve.test_alphafold_overlap import fixture
@@ -26,6 +27,15 @@ SCRIPT = load_script(ROOT / 'scripts/alphafold-interface.py')
 
 
 class DeathTests(unittest.TestCase):
+    def test_shared_result_vocabulary_validates_values_and_missing_fields(self):
+        self.assertEqual(result_fields(Confidence.HIGH, False, InterfaceLabel.VARIANT),
+                         {'confidence': 'High', 'chemical feasibility': False, 'interface': 'Variant'})
+        self.assertEqual(result_fields(None, None, None),
+                         {'confidence': None, 'chemical feasibility': None, 'interface': ''})
+        for invalid in ((0.7, True, None), (None, 1, None), (None, None, 'traf6')):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                result_fields(*invalid)
+
     def test_confidence_boundaries(self):
         for score, area, expected in (
             (0.229, 700, 'Reject'), (0.23, 700, 'Low'), (0.399, 700, 'Low'),
@@ -189,7 +199,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual({row['fold_id'] for row in rows}, {fold_id(42, ['AAAA', 'CCCC', 'GGGG'])})
         self.assertEqual({row['iptm'] for row in rows}, {'0.600000'})
         self.assertEqual({row['interface_family'] for row in rows}, {'death'})
-        self.assertEqual({row['interface'] for row in rows}, {'NULL'})
+        self.assertEqual({row['interface'] for row in rows}, {''})
         self.assertEqual({row['salt bridge candidate heavy-atom distance min'] for row in rows}, {''})
         self.assertEqual({row['chemical feasibility'] for row in rows}, {'false'})
         self.assertEqual({row['kink angle'] for row in rows}, {'75'})
@@ -276,6 +286,23 @@ class PipelineTests(unittest.TestCase):
                          [('A', 'Ia'), ('B', 'Ib')])
         self.assertEqual({row['face status'] for row in after}, {'eligible; merged example'})
         self.assertEqual({row['interface'] for row in after}, {'Canonical'})
+
+    def test_death_classifications_keep_labels_and_render_no_face_as_blank(self):
+        request = PatchInput(self.locator, 1)
+        record = next(input_models(self.locator, selected_model=1))
+        model, _, _, _ = load_secondary(record[2], None)
+        with patch('sieve.patch_description_summary.load_secondary',
+                   return_value=(model, {}, [], {'status': 'assigned'})), patch(
+                   'sieve.interface.death.normalize_helices', return_value=([], '')), patch(
+                   'sieve.interface.death.classify') as classify:
+            for second, label in (('Ib (partial)', 'Variant'), ('IIb', 'Atypical'), ('none', '')):
+                with self.subTest(second=second):
+                    classify.side_effect = lambda chain, *_: ('Ia' if chain == 'A' else second, [], 'eligible')
+                    self.assertEqual(run([request], self.output, chains=('A', 'B'),
+                                         domains=['A:DD', 'B:DED']), 0)
+                    rows = self.read()
+                    self.assertEqual([row['candidate face'] for row in rows], ['Ia', second])
+                    self.assertEqual({row['interface'] for row in rows}, {label})
 
     def test_unmatched_pair_and_failed_atomic_write_preserve_output(self):
         self.output.write_text('original')

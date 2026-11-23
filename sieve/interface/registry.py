@@ -23,7 +23,7 @@ INTERFACES = (
     InterfaceProfile('death', DEATH_DOMAINS, DEATH_DOMAINS, death.extract,
                      death.confidence, death.feasibility, death.classify_interface,
                      ('rules_id', 'merge kinked helices', 'kink connector length', 'kink angle'),
-                     ('candidate face', 'face status')),
+                     ('face status',)),
     InterfaceProfile('traf_slim', traf_slim.TRAF_DOMAINS, traf_slim.MOTIF_DOMAINS,
                      traf_slim.extract, traf_slim.confidence, traf_slim.feasibility,
                      traf_slim.classify_interface, traf_slim.COLUMNS),

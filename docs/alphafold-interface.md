@@ -38,8 +38,12 @@ Each patch has two rows, identified by `patch_id` and `sequence_index`.
 Every export starts with the same identity, chain, shared measurement, and
 call columns. A death-only or TRAF-only run appends that profile's columns.
 A mixed run appends both blocks in registry order. Unavailable measurements
-and inapplicable profile fields are empty TSV fields. Unavailable
-`confidence`, `chemical feasibility`, and `interface` calls use `NULL`.
+and inapplicable profile fields are empty TSV fields. The shared `interface`
+column reports `Canonical`, `Atypical`, or `Variant` when classified, and is
+empty otherwise. The shared `candidate face` column gives the profile's
+face or pose on the corresponding chain row. All profiles use `High`,
+`Medium`, `Low`, or `Reject` for `confidence`, and `true` or `false` for
+`chemical feasibility`. Both fields use `NULL` for unavailable calls.
 
 Shared measurements include per-partner burial, tight-contact residue counts
 at 4.5 Å, region mean pLDDT, and Cα distance summaries. `contact basis`
@@ -68,11 +72,10 @@ connector and an angle strictly below 75°. The interface field comes from the
 face classifier. The confidence and chemical feasibility calculations use
 unrounded metrics. The electrostatic predicate uses the magnitude of the signed
 charge difference. Feasibility uses 100 Å when the minimum salt-bridge candidate
-distance is unavailable. The raw distance column is empty. Each unavailable
-result is written as `NULL`.
+distance is unavailable. The raw distance column is empty.
 
 DSSP discovery uses `--dssp`, then `SIEVE_DSSP`, then `mkdssp` on PATH. When DSSP
-assignments are unavailable, the interface result is `NULL` and the face status
+assignments are unavailable, the interface result is empty and the face status
 records the reason.
 
 The Python rule table in `sieve.interface.death` contains the DD, DED, and
@@ -167,11 +170,15 @@ three hydrogen bonds spanning at least four sequence steps on both partners.
 `traf2/3` requires a packing anchor followed by a β6–β7 loop polar anchor
 within a five-residue span. A polar anchor can be supported by a qualified
 hydrogen bond, a salt bridge, or two compatible side-chain contacts within
-3.8 Å. The last case supplies pose evidence only. The other results are
-`atypical`, `unresolved`, and `no_contact`.
+3.8 Å. The last case supplies pose evidence only. Both named poses export
+`Canonical` and put `traf6` or `traf2/3` in `candidate face` on the MATH
+row. An atypical pose exports `Atypical`. An unresolved or no-contact result
+leaves `interface` empty. See `traf_status` and `traf_pose_evidence` for
+the reason.
 
-Confidence reports both directional pDockQ2 scores using the existing
-8 Å Cα scoring contacts and uses their minimum as the numeric summary.
+Both directional pDockQ2 scores use the existing 8 Å Cα scoring contacts.
+TRAF confidence uses `pDockQ2 max` and assigns `High` at 0.70 or higher,
+`Medium` at 0.50 or higher, `Low` at 0.23 or higher, and `Reject` below 0.23.
 Chemical feasibility uses summed buried area and geometric contacts.
 The provisional area floors are 250 Å² for mixed support, 400 Å² for
 packing-only support, and 150 Å² for backbone pairing, with no upper area

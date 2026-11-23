@@ -11,11 +11,13 @@ from sieve.alphafold_pdockq2 import collect_regions, parse_model
 from sieve.alphafold_pdockq2_patches import PATCH_COLUMNS, input_models, patch_export_rows
 from sieve.alphafold_secondary import find_dssp
 from sieve.interface.registry import INTERFACES, resolve
+from sieve.interface.results import RESULT_COLUMNS, result_fields
 from sieve.interface import traf_slim
 
 SIDE_FIELDS = {
     'sequence name': 'sequence name {side}',
     'domain': 'domain {side}',
+    'candidate face': 'candidate face {side}',
     'buried surface area': 'buried surface area {side}',
     'tight-contact residues': 'tight-contact residues {side}',
     'region mean pLDDT': 'region mean pLDDT {side}',
@@ -26,7 +28,6 @@ EXTRA_COLUMNS = (
     'backbone hydrogen bonds', 'side-chain hydrogen bonds', 'unresolved hydrogen-bond candidates',
     'hydrogen-bond atom pairs', 'iptm', 'ptm', 'interface_family',
 )
-RESULT_COLUMNS = ('confidence', 'chemical feasibility', 'interface')
 COLUMNS = (*PATCH_COLUMNS, *SIDE_FIELDS, *EXTRA_COLUMNS, *RESULT_COLUMNS)
 
 
@@ -109,17 +110,16 @@ def evaluate_model(locator, number, request, *, groups, domain_table, overrides,
                 structure = metrics.structures.get((patch['source'], patch['model']))
                 classification = profile.classify(patch, structure, domains, chains=oriented)
                 patch.update(classification.settings)
-                patch.update({
-                    'interface_family': profile.name,
-                    'confidence': profile.confidence(patch),
-                    'chemical feasibility': profile.feasibility(patch),
-                    'interface': classification.interface,
-                })
+                patch['interface_family'] = profile.name
+                patch.update(result_fields(
+                    profile.confidence(patch), profile.feasibility(patch), classification.interface,
+                ))
                 for side in (1, 2):
                     chain = patch[f'chain {side}']
                     details = classification.sides[chain]
                     patch.update({f'sequence name {side}': names.get(chain),
-                                  f'domain {side}': domains[chain]})
+                                  f'domain {side}': domains[chain],
+                                  f'candidate face {side}': details.get('candidate face')})
                     patch.update({f'{field} {side}': details.get(field) for field in profile.side_fields})
                 current.append(patch)
             all_rows.extend(current)
