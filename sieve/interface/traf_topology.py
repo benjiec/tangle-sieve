@@ -1,4 +1,4 @@
-"""Infer the TRAF MATH strand topology from backbone coordinates."""
+"""Infer the TRAF MATH strand topology from DSSP or backbone coordinates."""
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -67,6 +67,92 @@ def complete_backbone(residues):
     ) and all(b.id[1] == a.id[1] + 1 for a, b in zip(residues, residues[1:]))
 
 
+def dssp_strands(residues, codes, chain):
+    """Collect DSSP strands backward, joining short breaks along one strand."""
+    spans = []
+    end = None
+    for index in range(len(residues) - 1, -1, -1):
+        if codes.get((chain, residues[index].id[1])) in ('E', 'B'):
+            if end is None:
+                end = index
+        elif end is not None:
+            spans.append((index + 1, end))
+            end = None
+    if end is not None:
+        spans.append((0, end))
+
+    merged = []
+    for start, stop in spans:
+        if merged:
+            next_start, next_stop = merged[-1]
+            gap = residues[stop + 1:next_start]
+            if len(gap) <= 4 and all(
+                codes.get((chain, r.id[1]), '?') in ('-', 'T', 'S', 'P') for r in gap
+            ):
+                left = residues[start]['CA'].coord
+                right = residues[next_stop]['CA'].coord
+                axis = right - left
+                first = residues[stop]['CA'].coord - left
+                second = right - residues[next_start]['CA'].coord
+                if (np.dot(first, axis) >= 0 and np.dot(second, axis) >= 0
+                        and residues[stop]['CA'] - residues[next_start]['CA'] <= 4 * (len(gap) + 1)):
+                    merged[-1] = (start, next_stop)
+                    continue
+        merged.append((start, stop))
+    return [(start, stop) for start, stop in merged if stop > start and any(
+        codes.get((chain, r.id[1])) == 'E' for r in residues[start:stop + 1]
+    )]
+
+
+def strand_neighbors(residues, spans):
+    """Find DSSP strands with at least two antiparallel Cα contacts."""
+    coordinates = [np.array([r['CA'].coord for r in residues[start:stop + 1]])
+                   for start, stop in spans]
+    neighbors = {i: set() for i in range(len(spans))}
+    for first, second in combinations(neighbors, 2):
+        a, b = coordinates[first], coordinates[second]
+        if np.dot(a[-1] - a[0], b[-1] - b[0]) >= 0:
+            continue
+        pairs = np.argwhere(np.linalg.norm(a[:, None] - b[None, :], axis=2) <= 6)
+        if any(i < k and j > l for (i, j), (k, l) in combinations(pairs, 2)):
+            neighbors[first].add(second)
+            neighbors[second].add(first)
+    return neighbors
+
+
+def find_dssp_groove(residues, codes, chain, *, terminal):
+    """Assign MATH landmarks from C-to-N DSSP order and strand adjacency."""
+    spans = dssp_strands(residues, codes, chain)
+    if len(spans) < 8:
+        return None
+    neighbors = strand_neighbors(residues, spans)
+    candidates = set()
+    for beta8 in range(1 if terminal else len(spans) - 7):
+        for beta7 in range(beta8 + 1, len(spans) - 6):
+            for beta6 in range(beta7 + 1, len(spans) - 5):
+                for beta5 in neighbors[beta8] & neighbors[beta6]:
+                    if beta5 <= beta6:
+                        continue
+                    for beta4 in neighbors[beta7]:
+                        if beta4 <= beta5:
+                            continue
+                        for beta3 in neighbors[beta4]:
+                            if beta3 <= beta4:
+                                continue
+                            for beta2 in neighbors[beta3]:
+                                if beta2 <= beta3:
+                                    continue
+                                for beta1 in neighbors[beta8]:
+                                    if beta1 > beta2 and spans[beta8][0] - spans[beta1][1] >= 75:
+                                        candidates.add((beta1, beta2, beta3, beta4, beta5, beta6, beta7, beta8))
+                                        if len(candidates) > 1:
+                                            return None
+    if len(candidates) != 1:
+        return None
+    beta1, _, _, _, _, beta6, beta7, _ = next(iter(candidates))
+    return groove_from_bounds(residues, spans[beta1], spans[beta6], spans[beta7], terminal=terminal)
+
+
 def find_groove(residues, donor_hydrogens, *, terminal):
     """Identify the two MATH sheets by their connectivity in sequence order."""
     ladders = strand_ladders(residues, donor_hydrogens) if residues else []
@@ -95,7 +181,11 @@ def find_groove(residues, donor_hydrogens, *, terminal):
                     candidates.add((beta1, beta5, beta6, beta7, beta8))
     if len(candidates) != 1:
         return None
-    beta1, _, beta6, beta7, beta8 = next(iter(candidates))
+    beta1, _, beta6, beta7, _ = next(iter(candidates))
+    return groove_from_bounds(residues, beta1, beta6, beta7, terminal=terminal)
+
+
+def groove_from_bounds(residues, beta1, beta6, beta7, *, terminal):
     # Include β7 edge residues just upstream of the first observed ladder bond.
     beta7_start = max(beta6[1] + 1, beta7[0] - 2)
     start = beta1[0]

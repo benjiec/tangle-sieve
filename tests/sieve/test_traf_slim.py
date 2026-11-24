@@ -5,19 +5,24 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
 from Bio.PDB import MMCIFIO, MMCIFParser
+from Bio.Data.PDBData import protein_letters_3to1
 from Bio.PDB.Chain import Chain
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 
 from sieve.alphafold_interface import COLUMNS, run
 from sieve.alphafold_manifest import fold_id, sequence_id
+from sieve.alphafold_pdockq2 import parse_model
 from sieve.alphafold_result_format import PatchInput
+from sieve.alphafold_secondary import load_secondary
 from sieve.interface import traf_slim as traf
 from sieve.interface.measurements import donor_hydrogens, heavy_contacts
+from sieve.interface.traf_motif import match_motifs, motif_faces
 from sieve.patch_description_summary import PatchDescriptions
 from sieve.interface.registry import resolve
-from sieve.interface.traf_topology import find_groove
+from sieve.interface.traf_topology import find_dssp_groove, find_groove
 from tests.scripts.helpers import load_script
 from tests.sieve.test_alphafold_results import zip_bytes
 
@@ -31,6 +36,29 @@ CASES = (
     ('1L0A', 'A', 'B', 3, 7, 'traf2/3'),
     ('4GHU', 'A', 'B', 143, 147, 'traf2/3'),
 )
+DSSP_STRANDS = {
+    '1LB5': [(351, 357), (373, 376), (380, 381), (388, 395), (406, 414), (429, 434),
+             (446, 451), (466, 466), (469, 478), (488, 489), (492, 500)],
+    '1LB6': [(351, 357), (373, 376), (380, 381), (388, 395), (406, 414), (429, 434),
+             (446, 451), (466, 466), (469, 478), (489, 489), (492, 500)],
+    '1CZZ': [(353, 359), (376, 377), (381, 382), (389, 395), (406, 414), (430, 434),
+             (443, 447), (463, 463), (467, 474), (486, 486), (489, 496)],
+    '1CA9': [(353, 359), (376, 377), (381, 382), (389, 395), (406, 414), (430, 434),
+             (443, 447), (448, 448), (463, 463), (467, 474), (486, 486), (489, 496)],
+    '1L0A': [(353, 359), (375, 377), (381, 382), (389, 395), (406, 414), (430, 434),
+             (444, 448), (464, 464), (468, 475), (486, 486), (489, 496)],
+    '4GHU': [(416, 421), (439, 440), (444, 445), (452, 458), (469, 477), (493, 497),
+             (507, 511), (527, 527), (531, 538), (549, 549), (552, 552), (553, 559)],
+}
+RANK_MOTIF_FACES = 'traf6_binding_strict; traf2_binding_variant'
+
+
+def fixture_dssp(residues, code, chain):
+    codes = {(chain, r.id[1]): '-' for r in residues}
+    for start, stop in DSSP_STRANDS[code]:
+        for number in range(start, stop + 1):
+            codes[chain, number] = 'B' if start == stop else 'E'
+    return codes
 
 
 def load_model(code):
@@ -68,19 +96,62 @@ class TrafTests(TestCase):
         self.assertEqual([row['confidence'] for row in rows], ['High', 'High'])
         self.assertEqual(float(rows[0]['pDockQ2 max']), forward)
 
-    def test_pose_labels_map_to_shared_classification(self):
-        for pose, label, face in (
-            ('traf6', 'Canonical', 'traf6'),
-            ('traf2/3', 'Canonical', 'traf2/3'),
-            ('atypical', 'Atypical', None),
-            ('unresolved', None, None),
-            ('no_contact', None, None),
+    def test_motif_rules_and_precedence(self):
+        for sequence, family, name in (
+            ('PQEINF', 'traf6', 'strict'),
+            ('PQQINH', 'traf6', 'permissive'),
+            ('PAQAT', 'traf2/3', 'strict'),
+            ('PANAA', 'traf2/3', 'variant'),
+            ('PAAQFLE', 'traf2/3', 'permissive'),
+            ('PAEE', 'traf2/3', 'major_consensus'),
+            ('SAQE', 'traf2/3', 'major_consensus'),
+            ('AAQE', 'traf2/3', 'major_consensus'),
+            ('TAQE', 'traf2/3', 'major_consensus'),
         ):
-            with self.subTest(pose=pose):
-                result = traf.classify_interface({'traf_pose': pose}, None, {}, chains=('T', 'P'))
+            with self.subTest(sequence=sequence):
+                matches, _ = match_motifs(dict(enumerate(sequence, 1)), 1)
+                prefix = 'traf2' if family == 'traf2/3' else family
+                self.assertEqual(matches[family].name, f'{prefix}_binding_{name}')
+
+    def test_pose_and_local_motif_jointly_determine_interface(self):
+        template = load_model('1LB5')['B'][603]
+        names = {aa: name for name, aa in protein_letters_3to1.items()}
+        for pose, sequence, label, motif_face in (
+            ('traf6', 'PQEINF', 'Canonical', 'traf6_binding_strict'),
+            ('traf2/3', 'SAQE', 'Canonical', 'traf2_binding_major_consensus'),
+            ('traf2/3', 'PANAA', 'Canonical', 'traf2_binding_variant'),
+            ('traf6', 'PQQINH', 'Variant', 'traf6_binding_permissive'),
+            ('traf2/3', 'PAAQFLE', 'Variant', 'traf2_binding_permissive'),
+            ('traf6', 'PAEEAF', 'Canonical', 'traf6_binding_strict; traf2_binding_major_consensus'),
+            ('traf6', 'PAQATG', 'Atypical', 'traf2_binding_strict'),
+            ('traf6', 'AAAAAAAPQEINF', 'Atypical', None),
+            ('traf6', 'PQEIN', None, None),
+            ('atypical', 'PQEINF', 'Atypical', 'traf6_binding_strict'),
+            ('unresolved', 'PQEINF', None, 'traf6_binding_strict'),
+            ('no_contact', 'PQEINF', None, None),
+        ):
+            with self.subTest(pose=pose, sequence=sequence):
+                peptide = Chain('P')
+                append_copy(peptide, [template] * len(sequence), 1, 0)
+                for residue, aa in zip(peptide, sequence):
+                    residue.resname = names[aa]
+                row = {
+                    'traf_pose': pose, 'traf_motif_bounds': (1, 6),
+                    'traf_motif_anchor': 1 if pose in ('traf6', 'traf2/3') else None,
+                    'interface residues 2': '' if pose == 'no_contact' else '2,3,4,5,6',
+                }
+                result = traf.classify_interface(row, ({'P': peptide},), {}, chains=('T', 'P'))
                 self.assertEqual(result.interface, label)
-                self.assertEqual(result.sides['T'].get('candidate face'), face)
-                self.assertIsNone(result.sides['P'].get('candidate face'))
+                self.assertEqual(result.sides['T'].get('candidate face'),
+                                 pose if pose in ('traf6', 'traf2/3') else None)
+                self.assertEqual(result.sides['P'].get('candidate face'), motif_face)
+
+    def test_unanchored_motif_requires_a_unique_contacting_register(self):
+        sequence = dict(enumerate('PQEINFAPQEINF', 1))
+        matches, _ = motif_faces(sequence, {3, 5}, anchor=None, window=(1, 13))
+        self.assertEqual(matches['traf6'].name, 'traf6_binding_strict')
+        matches, _ = motif_faces(sequence, {3, 5, 10, 12}, anchor=None, window=(1, 13))
+        self.assertEqual(matches, {})
 
     def test_registry_orients_traf5(self):
         profile, chains = resolve(('P', 'T'), {'P': 'SLiM', 'T': 'TRAF5'})
@@ -152,6 +223,50 @@ class TrafTests(TestCase):
         self.assertIsNone(find_groove(native[:-16], donor_hydrogens, terminal=True))
         self.assertIsNone(find_groove(native[30:], donor_hydrogens, terminal=True))
 
+    def test_dssp_backward_scan_recovers_fixture_poses(self):
+        for code, a, b, start, stop, label in CASES:
+            with self.subTest(code=code):
+                model = load_model(code)
+                receptor = traf.protein_residues(model[a])
+                groove = find_dssp_groove(receptor, fixture_dssp(receptor, code, a), a, terminal=True)
+                self.assertIsNotNone(groove)
+                motif = [model[b][n] for n in range(start, stop + 1)]
+                candidates, row = self.evaluate(model, (a, b), groove, motif, supplied=True)
+                traf.update_site(row, candidates, groove)
+                self.assertEqual(row['traf_pose'], label)
+                result = traf.classify_interface(row, (model,), {}, chains=(a, b))
+                self.assertEqual(result.interface, 'Canonical')
+                if code == '1CA9':
+                    self.assertEqual(result.sides[b]['candidate face'], 'traf2_binding_major_consensus')
+
+    def test_dssp_scan_can_pass_a_terminal_helix_and_split_strands(self):
+        model = load_model('1LB5')
+        native = list(model['A'])
+        append_copy(model['A'], native[:21], 502, 100)
+
+        def reported_dssp(cif, executable):
+            parsed, _, _, _ = load_secondary(cif, None)
+            codes = fixture_dssp(list(parsed['A']), '1LB5', 'A')
+            codes.update({('A', n): 'H' for n in range(502, 523)})
+            return parsed, codes, [], {'status': 'assigned'}
+
+        with patch('sieve.patch_description_summary.load_secondary', side_effect=reported_dssp), patch(
+                'sieve.interface.traf_slim.find_groove', side_effect=AssertionError('used coordinate fallback')):
+            row = self.run_cli(model, '--motif-window', 'B:603-608')[0]
+        self.assertEqual((row['traf_math_window'], row['traf_beta7']), ('351-522', '464-478'))
+        self.assertEqual((row['interface'], row['candidate face']), ('Canonical', 'traf6'))
+
+    def test_dssp_scan_rejects_two_backward_assignments(self):
+        residues = list(load_model('1LB5')['A'])
+        spans = [(i, i + 1) for i in (145, 125, 105, 85, 65, 45, 25, 10, 0)]
+        neighbors = {i: set() for i in range(len(spans))}
+        for a, b in ((0, 3), (0, 7), (0, 8), (1, 4), (2, 3), (4, 5), (5, 6)):
+            neighbors[a].add(b)
+            neighbors[b].add(a)
+        with patch('sieve.interface.traf_topology.dssp_strands', return_value=spans), patch(
+                'sieve.interface.traf_topology.strand_neighbors', return_value=neighbors):
+            self.assertIsNone(find_dssp_groove(residues, {}, 'A', terminal=True))
+
     def test_cli_infers_motif_on_long_tail_and_accepts_explicit_window(self):
         model = load_model('1LB5')
         core = [model['B'][n] for n in range(603, 609)]
@@ -163,7 +278,8 @@ class TrafTests(TestCase):
         self.assertEqual(supplied[0]['traf_motif_source'], 'supplied')
         self.assertEqual(inferred[0]['traf_motif_register'], supplied[0]['traf_motif_register'])
         self.assertEqual([row['interface'] for row in inferred + supplied], ['Canonical'] * 4)
-        self.assertEqual([row['candidate face'] for row in inferred + supplied], ['traf6', ''] * 2)
+        self.assertEqual([row['candidate face'] for row in inferred + supplied],
+                         ['traf6', RANK_MOTIF_FACES] * 2)
         forward, reverse = (float(row['pDockQ2 to partner']) for row in inferred)
         self.assertEqual(float(inferred[0]['pDockQ2 max']), max(forward, reverse))
         self.assertEqual({row['contact basis'] for row in inferred}, {'heavy atom'})
@@ -256,7 +372,7 @@ class TrafTests(TestCase):
                 self.assertTrue(all(r['chemical feasibility'] in ('true', 'false', 'NULL') for r in pair))
                 if family == 'traf_slim':
                     self.assertEqual([r['interface'] for r in pair], ['Canonical', 'Canonical'])
-                    self.assertEqual([r['candidate face'] for r in pair], ['traf6', ''])
+                    self.assertEqual([r['candidate face'] for r in pair], ['traf6', RANK_MOTIF_FACES])
             self.assertNotIn('\tNA\t', output.read_text())
 
     def test_inferred_windows_recover_fixture_pose_without_labels(self):
@@ -328,6 +444,58 @@ class TrafTests(TestCase):
         self.assertEqual(row['traf_pose_evidence'], 'groove landmarks unresolved')
         self.assertNotEqual(row['confidence'], 'NULL')
         self.assertNotEqual(row['chemical feasibility'], 'NULL')
+
+    def test_unresolved_topology_keeps_metrics_on_full_chain(self):
+        def unmatched_dssp(cif, executable):
+            model, _, _, _ = load_secondary(cif, None)
+            codes = {('A', r.id[1]): 'H' for r in model['A']}
+            return model, codes, [], {'status': 'assigned'}
+
+        with patch('sieve.patch_description_summary.load_secondary', side_effect=unmatched_dssp), patch(
+                'sieve.interface.traf_slim.find_groove', side_effect=AssertionError('used coordinate fallback')):
+            model = load_model('1LB5')
+            rows = self.run_cli(model, '--motif-window', 'B:603-608')
+            for row in rows:
+                self.assertEqual((row['interface'], row['traf_math_window']), ('', ''))
+                self.assertIn('full-chain scoring fallback', row['traf_status'])
+                self.assertIn('groove landmarks unresolved', row['traf_pose_evidence'])
+                self.assertTrue(all(row[field] for field in (
+                    'normalized PAE to partner', 'pDockQ2 to partner', 'interface pLDDT',
+                    'total buried surface area',
+                )))
+                self.assertEqual(row['chemical feasibility'], 'true')
+                self.assertNotEqual(row['confidence'], 'NULL')
+            self.assertEqual(rows[0]['region'], '347-501')
+            self.assertEqual([row['candidate face'] for row in rows], ['', RANK_MOTIF_FACES])
+
+            row = self.run_cli(
+                model, '--motif-window', 'B:603-608',
+                '--traf-threshold', 'paired_area=100000',
+                '--traf-threshold', 'mixed_area=100000',
+                '--traf-threshold', 'packing_area=100000',
+            )[0]
+            self.assertEqual(row['chemical feasibility'], 'false')
+            self.assertEqual(row['traf_feasibility_rule'], 'insufficient_support')
+
+            incomplete = load_model('1LB5')
+            incomplete['A'][472].detach_child('N')
+            row = self.run_cli(incomplete, '--motif-window', 'B:603-608')[0]
+            self.assertIn('full-chain scoring fallback', row['traf_status'])
+            self.assertEqual(row['chemical feasibility'], 'NULL')
+            self.assertEqual(row['traf_feasibility_rule'], 'unresolved')
+            self.assertNotEqual(row['confidence'], 'NULL')
+
+            with patch('sieve.alphafold_interface.parse_model',
+                       side_effect=lambda cif, data: (parse_model(cif, data)[0], None)):
+                row = self.run_cli(model)[0]
+            self.assertEqual((row['normalized PAE to partner'], row['pDockQ2 to partner']), ('', ''))
+            self.assertTrue(row['interface pLDDT'])
+            self.assertEqual(row['chemical feasibility'], 'true')
+            for atom in model['B'].get_atoms():
+                atom.coord += 100
+            row = self.run_cli(model)[0]
+            self.assertIn('full-chain scoring fallback; no_contact', row['traf_status'])
+            self.assertEqual((row['contact count'], row['pDockQ2 to partner']), ('0', ''))
 
     @staticmethod
     def evaluate(model, chains, groove, motif, supplied=False):

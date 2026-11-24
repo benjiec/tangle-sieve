@@ -152,11 +152,20 @@ python scripts/alphafold-interface.py fold.zip --output traf.tsv \
 ```
 
 Without `--math-window`, use an input construct with a complete MATH domain
-at its C terminus. The strand connectivity can accommodate different lengths
-of upstream coil. Use `--math-window A:50-201` for known boundaries, tags,
-and extensions. The terminal fold check allows a short structural cap after
-the last backbone ladder. Use an explicit window if the chain includes a tag
-or appended sequence that could be mistaken for this cap.
+at its C terminus. The evaluator scans DSSP β segments backward from the
+last strand and checks their order and antiparallel Cα contacts to assign the
+MATH landmarks. It can join short interruptions in a strand and scan past
+terminal helices and loops. If DSSP has no assignments for the receptor,
+the backbone hydrogen-bond detector is used instead. Use
+`--math-window A:50-201` for known boundaries, tags, or extensions.
+
+If automatic MATH assignment is unresolved, the evaluator searches the full
+annotated receptor chain and reports the measured contacts, burial, pLDDT,
+PAE, and pDockQ2 whenever the inputs support them. `region` records the
+scoring span and `traf_status` identifies the full-chain fallback. Confidence
+and chemical feasibility describe the selected patch and use the usual
+thresholds when the inputs support them. The inferred MATH window and pose
+classification are empty.
 
 Use `--motif-window B:24-32` to supply an inclusive peptide interval. Otherwise
 the evaluator finds peptide contacts within 6 Å and selects among overlapping
@@ -170,11 +179,28 @@ three hydrogen bonds spanning at least four sequence steps on both partners.
 `traf2/3` requires a packing anchor followed by a β6–β7 loop polar anchor
 within a five-residue span. A polar anchor can be supported by a qualified
 hydrogen bond, a salt bridge, or two compatible side-chain contacts within
-3.8 Å. The last case supplies pose evidence only. Both named poses export
-`Canonical` and put `traf6` or `traf2/3` in `candidate face` on the MATH
-row. An atypical pose exports `Atypical`. An unresolved or no-contact result
-leaves `interface` empty. See `traf_status` and `traf_pose_evidence` for
-the reason.
+3.8 Å. The last case supplies pose evidence only. The MATH row puts
+`traf6` or `traf2/3` in `candidate face` when the pose is assigned.
+The SLiM row puts the strongest matching rule per family in `candidate face`.
+The sequence check starts one residue before the TRAF6 β7 register or
+at the TRAF2/3 packing anchor. It can read adjacent sequence outside the
+scored window. For an unresolved pose with a selected contact site, a unique
+motif supported by contacts can still appear on the SLiM row.
+
+| SLiM rule | Pattern | Interface label with a matching MATH pose |
+| --- | --- | --- |
+| `traf6_binding_strict` | `P.E..[FYWDE]` | `Canonical` |
+| `traf6_binding_permissive` | `P.[QE]..[FYWHDEILVKR]` | `Variant` |
+| `traf2_binding_strict` | `P.[QE].[ST]` | `Canonical` |
+| `traf2_binding_major_consensus` | `[PSAT].[QE]E` | `Canonical` |
+| `traf2_binding_variant` | `P.[QEN].[STEDAG]` | `Canonical` |
+| `traf2_binding_permissive` | `P.{1,2}[QEN].{1,2}[STEDAG]` | `Variant` |
+
+Rules are checked in the order shown within each family. An atypical pose
+or a named pose without a same-family motif exports `Atypical` when there
+is enough evidence for the call. Unresolved poses, no-contact results, and
+insufficient sequence evidence for a named pose leave `interface` empty.
+See `traf_status` and `traf_pose_evidence` for the structural diagnostics.
 
 Both directional pDockQ2 scores use the existing 8 Å Cα scoring contacts.
 TRAF confidence uses `pDockQ2 max` and assigns `High` at 0.70 or higher,

@@ -18,8 +18,9 @@ from sieve.interface.measurements import (
     heavy_contacts, selected_confidence,
 )
 from sieve.interface.results import Classification, Evaluation, InterfaceLabel, confidence_level
+from sieve.interface.traf_motif import motif_faces
 from sieve.patch_description_summary import PatchDescriptions
-from sieve.interface.traf_topology import complete_backbone, find_groove
+from sieve.interface.traf_topology import complete_backbone, find_dssp_groove, find_groove
 
 TRAF_PARALOGS = frozenset(('TRAF2', 'TRAF3', 'TRAF5', 'TRAF6'))
 TRAF_DOMAINS = TRAF_PARALOGS | {'MATH', 'TRAF_MATH'}
@@ -107,10 +108,10 @@ def assess_pose(groove, motif, interactions):
         numbers = sorted({b for _, b in extended_pairing})
         if numbers[-1] - numbers[0] > 5:
             return 'unresolved', None, 'competing beta7 registers ' + evidence[0]
-        return 'traf6', f'{numbers[0]}-{numbers[-1]}', evidence[0]
+        return 'traf6', (numbers[0], numbers[-1]), evidence[0]
     if len(pocket_registers) == 1:
         start, stop = next(iter(pocket_registers))
-        return 'traf2/3', f'{start}-{stop}', evidence[0]
+        return 'traf2/3', (start, stop), evidence[0]
     if pocket_registers:
         return 'unresolved', None, 'competing pocket registers ' + evidence[0]
     return 'atypical', None, 'no matching pose signature'
@@ -169,10 +170,26 @@ def feasibility(row):
 
 def classify_interface(row, structure, domains, *, chains):
     pose = row['traf_pose']
-    sides = {chain: {} for chain in chains}
+    math_chain, motif_chain = chains
+    sides = {math_chain: {}, motif_chain: {}}
+    matches, uncertain = {}, set()
+    contacts = {int(n) for n in row.get('interface residues 2', '').split(',') if n}
+    if structure is not None and contacts:
+        model = structure[0]
+        sequence = {r.id[1]: residue_label(r) for r in protein_residues(model[motif_chain])}
+        matches, uncertain = motif_faces(sequence, contacts, anchor=row.get('traf_motif_anchor'),
+                                         window=row.get('traf_motif_bounds'))
+        if matches:
+            sides[motif_chain]['candidate face'] = '; '.join(rule.name for rule in matches.values())
     if pose in ('traf6', 'traf2/3'):
-        sides[chains[0]]['candidate face'] = pose
-        return Classification(InterfaceLabel.CANONICAL, sides, {})
+        sides[math_chain]['candidate face'] = pose
+        if structure is None or row.get('traf_motif_anchor') is None or pose in uncertain:
+            return Classification(None, sides, {})
+        rule = matches.get(pose)
+        if rule is None:
+            return Classification(InterfaceLabel.ATYPICAL, sides, {})
+        label = InterfaceLabel.CANONICAL if rule.canonical else InterfaceLabel.VARIANT
+        return Classification(label, sides, {})
     return Classification(InterfaceLabel.ATYPICAL if pose == 'atypical' else None, sides, {})
 
 
@@ -276,7 +293,7 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
     model_id = '' if number is None else number
     residues, pae = parsed
     descriptions = PatchDescriptions({(source, model_id): cif}, dssp)
-    model = descriptions.models[(source, model_id)][0]
+    model, codes, _, _ = descriptions.models[(source, model_id)]
     math_chain, peptide_chain = chains
     receptor = protein_residues(model[math_chain])
     peptide = protein_residues(model[peptide_chain])
@@ -286,8 +303,13 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
     explicit_motif = motif_windows.get(peptide_chain)
     if explicit_math:
         receptor = select_window(receptor, explicit_math)
-    groove = find_groove(receptor, donor_hydrogens, terminal=not explicit_math)
-    math_domain = receptor if explicit_math else list(groove.domain) if groove else []
+    if any(codes.get((math_chain, r.id[1]), '?') != '?' for r in receptor):
+        groove = find_dssp_groove(receptor, codes, math_chain, terminal=not explicit_math)
+    else:
+        groove = find_groove(receptor, donor_hydrogens, terminal=not explicit_math)
+    math_domain = receptor if explicit_math else groove.domain if groove else ()
+    full_chain_fallback = not explicit_math and not math_domain and bool(receptor)
+    scoring_region = receptor if full_chain_fallback else math_domain
     motif = select_window(peptide, explicit_motif) if explicit_motif else peptide
 
     seed = seeds.get((source, model_id))
@@ -312,7 +334,7 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
         'traf_math_source': 'supplied' if explicit_math else 'inferred',
         'traf_motif_source': 'supplied' if explicit_motif else 'inferred',
         'traf_motif_window': residue_span(motif) if explicit_motif else None,
-        'region 1': residue_span(math_domain),
+        'region 1': residue_span(scoring_region),
         'region 2': residue_span(motif) if explicit_motif else None,
         'traf_thresholds': json.dumps(asdict(thresholds), sort_keys=True),
         'traf_pose': 'unresolved',
@@ -323,13 +345,13 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
                    traf_polar_loop=residue_span(groove.loop), traf_pocket=residue_span(groove.pocket))
     if '_assembly' in data:
         row['confidence origin'] = 'inherited per-chain values; no assembled confidence'
-    if not math_domain:
+    if not scoring_region:
         row['traf_status'] = ('missing MATH window coordinates' if explicit_math
                               else 'complete terminal MATH topology unresolved')
     elif not motif:
         row['traf_status'] = 'missing motif coordinates'
     else:
-        contacts = heavy_contacts(math_domain, motif, 6.0)
+        contacts = heavy_contacts(scoring_region, motif, 6.0)
         tight = {pair for pair, distance in contacts.items() if distance <= TIGHT_CONTACT_CUTOFF}
         if not contacts:
             row.update(with_contacts(row, contacts))
@@ -341,11 +363,13 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
                        if explicit_motif else candidate_windows(motif, contacts, tight))
             if pae is not None and not all(math.isfinite(float(x)) and float(x) >= 0 for line in pae for x in line):
                 parsed = residues, None
-            candidates = evaluate_sites(descriptions, row, math_domain, windows, thresholds, parsed, contacts, tight)
+            candidates = evaluate_sites(descriptions, row, scoring_region, windows, thresholds, parsed, contacts, tight)
             if not candidates:
                 row['traf_status'] = 'contacting motif lacks a contiguous backbone window'
             else:
                 update_site(row, candidates, groove)
+    if full_chain_fallback:
+        row['traf_status'] = f"complete terminal MATH topology unresolved; full-chain scoring fallback; {row['traf_status']}"
     attach_patch_identity(row, model_identity(cif, data, seed), number)
     return Evaluation([row], {source: fold}, {source: sequence}, descriptions.models)
 
@@ -353,7 +377,6 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
 def update_site(row, candidates, groove):
     best = candidates[0]
     row.update(best.metrics)
-    row['region 1'] = row['traf_math_window']
     row['region 2'] = row['traf_motif_window'] = residue_span(best.window)
     if best.evidence is not None:
         pose, register, evidence = assess_pose(groove, best.window, best.evidence)
@@ -375,5 +398,11 @@ def update_site(row, candidates, groove):
         row.update(traf_pose='unresolved', traf_status='competing inferred motif sites or registers',
                    traf_motif_candidates=','.join((residue_span(best.window), *competitors)))
     else:
-        row.update(traf_pose=pose, traf_status='evaluated', traf_motif_register=register)
+        row.update(traf_pose=pose, traf_status='evaluated',
+                   traf_motif_bounds=(best.window[0].id[1], best.window[-1].id[1]))
+        if register is not None:
+            start, stop = register
+            row['traf_motif_register'] = f'{start}-{stop}'
+            # The TRAF6 proline precedes the first peptide residue in the β7 ladder.
+            row['traf_motif_anchor'] = start - 1 if pose == 'traf6' else start
     row['traf_pose_evidence'] = evidence
