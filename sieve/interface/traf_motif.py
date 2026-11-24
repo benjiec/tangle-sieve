@@ -13,6 +13,13 @@ class MotifRule:
     patterns: tuple[tuple[str, ...], ...]
 
 
+@dataclass(frozen=True)
+class MotifMatch:
+    rule: MotifRule
+    start: int
+    end: int
+
+
 # An empty selector is a wildcard for an observed standard amino acid.
 RULES = {
     'traf6': (
@@ -45,15 +52,16 @@ def match_pattern(sequence, start, pattern, contacts):
 
 
 def match_motifs(sequence, start, contacts=None):
-    """Return the strongest observed rule per family and uncertain classifications."""
+    """Return the strongest rule and shortest matching span per family."""
     matches = {}
     uncertain = set()
     for family, rules in RULES.items():
         possible = False
         for rule in rules:
             states = [match_pattern(sequence, start, pattern, contacts) for pattern in rule.patterns]
-            if True in states:
-                matches[family] = rule
+            lengths = [len(pattern) for pattern, state in zip(rule.patterns, states) if state is True]
+            if lengths:
+                matches[family] = MotifMatch(rule, start, start + min(lengths) - 1)
                 if rule.canonical:
                     possible = False
                 break

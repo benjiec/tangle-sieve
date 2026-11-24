@@ -111,7 +111,9 @@ class TrafTests(TestCase):
             with self.subTest(sequence=sequence):
                 matches, _ = match_motifs(dict(enumerate(sequence, 1)), 1)
                 prefix = 'traf2' if family == 'traf2/3' else family
-                self.assertEqual(matches[family].name, f'{prefix}_binding_{name}')
+                match = matches[family]
+                self.assertEqual(match.rule.name, f'{prefix}_binding_{name}')
+                self.assertEqual((match.start, match.end), (1, len(sequence)))
 
     def test_pose_and_local_motif_jointly_determine_interface(self):
         template = load_model('1LB5')['B'][603]
@@ -149,7 +151,7 @@ class TrafTests(TestCase):
     def test_unanchored_motif_requires_a_unique_contacting_register(self):
         sequence = dict(enumerate('PQEINFAPQEINF', 1))
         matches, _ = motif_faces(sequence, {3, 5}, anchor=None, window=(1, 13))
-        self.assertEqual(matches['traf6'].name, 'traf6_binding_strict')
+        self.assertEqual(matches['traf6'].rule.name, 'traf6_binding_strict')
         matches, _ = motif_faces(sequence, {3, 5, 10, 12}, anchor=None, window=(1, 13))
         self.assertEqual(matches, {})
 
@@ -301,6 +303,48 @@ class TrafTests(TestCase):
                                max(contact_distances.values()), places=5)
         self.assertAlmostEqual(sum(float(row['buried surface area']) for row in supplied),
                                float(supplied[0]['total buried surface area']), places=5)
+
+    def test_cli_rescores_traf6_chemistry_without_changing_geometry(self):
+        model = load_model('1LB5')
+        automatic = self.run_cli(model)
+        geometry = automatic[1]['region']
+        original = self.run_cli(model, '--motif-window', f'B:{geometry}')
+        complete = self.run_cli(model, '--motif-window', 'B:603-608')
+        self.assertEqual(geometry, '604-608')
+        for auto, core, full in zip(automatic, original, complete):
+            self.assertEqual((auto['traf_chemistry_window'], core['traf_chemistry_window']),
+                             ('603-608', '604-608'))
+            for key in ('region', 'contact count', 'pDockQ2 max', 'interface', 'candidate face',
+                        'interface structure', 'patch hydropathy mean'):
+                self.assertEqual(auto[key], core[key], key)
+            for key in ('total buried surface area', 'chemical feasibility', 'nonpolar residue pairs',
+                        'steric clash residue pairs', 'tight-contact residues', 'traf_feasibility_rule'):
+                self.assertEqual(auto[key], full[key], key)
+            self.assertGreater(float(auto['total buried surface area']), float(core['total buried surface area']))
+
+    def test_cli_uses_short_traf2_consensus_for_chemistry(self):
+        model = load_model('1CA9')
+        rows = self.run_cli(model, chains=('B', 'H'))
+        self.assertEqual(rows[1]['candidate face'], 'traf2_binding_major_consensus')
+        self.assertEqual(rows[1]['interface'], 'Canonical')
+        self.assertEqual(rows[1]['traf_chemistry_window'], '424-427')
+        self.assertNotEqual(rows[1]['region'], '424-427')
+
+    def test_cli_permissive_motif_rescores_and_distant_motif_does_not(self):
+        for name, residue, label, bounds in (
+            ('permissive', (608, 'HIS'), 'Variant', '603-608'),
+            ('distant', (603, 'ALA'), 'Atypical', '604-608'),
+        ):
+            with self.subTest(name=name):
+                model = load_model('1LB5')
+                chain = model['B']
+                append_copy(chain, [chain[n] for n in range(603, 609)], 609, 100)
+                number, amino_acid = residue
+                chain[number].resname = amino_acid
+                rows = self.run_cli(model)
+                self.assertEqual(rows[1]['region'], '604-608')
+                self.assertEqual(rows[1]['interface'], label)
+                self.assertEqual(rows[1]['traf_chemistry_window'], bounds)
 
     def test_mixed_manifest_export_keeps_one_header_and_two_rows_per_patch(self):
         model = load_model('1LB5')
@@ -511,7 +555,7 @@ class TrafTests(TestCase):
                                          ({c: [] for c in chains}, None), contacts, tight)
         return candidates, row
 
-    def run_cli(self, model, *extra, reverse_pae=4):
+    def run_cli(self, model, *extra, reverse_pae=4, chains=('A', 'B')):
         script = load_script(Path(__file__).resolve().parents[2] / 'scripts/alphafold-interface.py')
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -520,12 +564,13 @@ class TrafTests(TestCase):
             writer.set_structure(model)
             writer.save(str(cif))
             keys = [(c.id, r.id[1]) for c in model for r in traf.protein_residues(c)]
+            receptor, peptide = chains
             data.write_text(json.dumps(dict(token_chain_ids=[c for c, _ in keys],
                                             token_res_ids=[n for _, n in keys],
-                                            pae=[[1 if c == d or c == 'A' else reverse_pae for d, _ in keys]
+                                            pae=[[1 if c == d or c == receptor else reverse_pae for d, _ in keys]
                                                  for c, _ in keys])))
             self.assertEqual(script.main([str(cif), '--full-data', str(data), '--output', str(output),
-                                          '--chains', 'B', 'A', '--domain', 'A:TRAF_MATH',
-                                          '--domain', 'B:SLiM', *extra]), 0)
+                                          '--chains', peptide, receptor, '--domain', f'{receptor}:TRAF_MATH',
+                                          '--domain', f'{peptide}:SLiM', *extra]), 0)
             with output.open() as stream:
                 return list(csv.DictReader(stream, delimiter='\t'))

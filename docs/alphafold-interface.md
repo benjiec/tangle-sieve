@@ -61,8 +61,10 @@ exclude geometry-qualified hydrogen-bond atom overlaps. The legacy contact
 columns retain their existing counting rules, including the death profile's
 expanded salt-candidate neighborhood. In the death profile, burial is
 measured in the full chain-pair context and summed over patch residues. In
-TRAF, burial and chemistry use the selected MATH and motif windows, and
-structure and hydropathy summarize their contacting residues.
+TRAF, burial, tight-contact counts, and chemistry use the selected receptor
+region and `traf_chemistry_window`. Contact counts and Cα distances,
+structure, hydropathy, and confidence summarize the original geometry window
+reported in `region`.
 
 ## Death-family profile
 
@@ -201,6 +203,12 @@ or a named pose without a same-family motif exports `Atypical` when there
 is enough evidence for the call. Unresolved poses, no-contact results, and
 insufficient sequence evidence for a named pose leave `interface` empty.
 See `traf_status` and `traf_pose_evidence` for the structural diagnostics.
+
+The automatic selector evaluates feasibility on the geometry window first.
+After pose selection, a match in the same family sets `traf_chemistry_window`
+to the exact motif span and recalculates feasibility and its input metrics.
+For a rule with multiple matching lengths, the shortest matching span is
+used. An explicit `--motif-window` is used as supplied for chemistry.
 
 Both directional pDockQ2 scores use the existing 8 Å Cα scoring contacts.
 TRAF confidence uses `pDockQ2 max` and assigns `High` at 0.70 or higher,

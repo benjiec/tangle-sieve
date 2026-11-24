@@ -27,7 +27,7 @@ TRAF_DOMAINS = TRAF_PARALOGS | {'MATH', 'TRAF_MATH'}
 MOTIF_DOMAINS = frozenset(('SLiM', 'SLIM'))
 COLUMNS = (
     'traf_paralog', 'traf_math_window', 'traf_math_source',
-    'traf_motif_window', 'traf_motif_source', 'traf_motif_candidates',
+    'traf_motif_window', 'traf_chemistry_window', 'traf_motif_source', 'traf_motif_candidates',
     'traf_motif_register', 'traf_beta6', 'traf_beta7', 'traf_polar_loop',
     'traf_pocket', 'traf_pose_evidence',
     'traf_other_protomers', 'traf_status', 'traf_feasibility_rule',
@@ -168,27 +168,33 @@ def feasibility(row):
     return rule in ('small_but_well_paired', 'hydrogen_bond_supported', 'packing_supported_provisional')
 
 
+def site_motifs(row, peptide):
+    contacts = {int(n) for n in row.get('interface residues 2', '').split(',') if n}
+    if not contacts:
+        return {}, set()
+    sequence = {r.id[1]: residue_label(r) for r in peptide}
+    return motif_faces(sequence, contacts, anchor=row.get('traf_motif_anchor'),
+                       window=row.get('traf_motif_bounds'))
+
+
 def classify_interface(row, structure, domains, *, chains):
     pose = row['traf_pose']
     math_chain, motif_chain = chains
     sides = {math_chain: {}, motif_chain: {}}
-    matches, uncertain = {}, set()
-    contacts = {int(n) for n in row.get('interface residues 2', '').split(',') if n}
-    if structure is not None and contacts:
-        model = structure[0]
-        sequence = {r.id[1]: residue_label(r) for r in protein_residues(model[motif_chain])}
-        matches, uncertain = motif_faces(sequence, contacts, anchor=row.get('traf_motif_anchor'),
-                                         window=row.get('traf_motif_bounds'))
-        if matches:
-            sides[motif_chain]['candidate face'] = '; '.join(rule.name for rule in matches.values())
+    site = row.get('traf_site_motifs')
+    if site is None:
+        site = site_motifs(row, protein_residues(structure[0][motif_chain])) if structure else ({}, set())
+    matches, uncertain = site
+    if matches:
+        sides[motif_chain]['candidate face'] = '; '.join(match.rule.name for match in matches.values())
     if pose in ('traf6', 'traf2/3'):
         sides[math_chain]['candidate face'] = pose
         if structure is None or row.get('traf_motif_anchor') is None or pose in uncertain:
             return Classification(None, sides, {})
-        rule = matches.get(pose)
-        if rule is None:
+        match = matches.get(pose)
+        if match is None:
             return Classification(InterfaceLabel.ATYPICAL, sides, {})
-        label = InterfaceLabel.CANONICAL if rule.canonical else InterfaceLabel.VARIANT
+        label = InterfaceLabel.CANONICAL if match.rule.canonical else InterfaceLabel.VARIANT
         return Classification(label, sides, {})
     return Classification(InterfaceLabel.ATYPICAL if pose == 'atypical' else None, sides, {})
 
@@ -256,26 +262,52 @@ def evaluate_sites(descriptions, row, domain, windows, thresholds, parsed, conta
         motif = {r.id[1] for r in window}
         selected = {pair: distance for pair, distance in contacts.items() if pair[1] in motif}
         patch_row = with_contacts(row, selected)
-        context = dict(zip(chains, (receptor, motif)))
-        detail = descriptions.describe(
-            patch_row, context=context, tight_contacts={pair for pair in tight if pair[1] in motif},
+        chemistry, evidence = describe_site(
+            descriptions, patch_row, dict(zip(chains, (receptor, motif))), selected, tight, thresholds,
         )
-        metrics = {**patch_row, **detail['metrics'],
+        metrics = {**patch_row, **chemistry,
                    **selected_confidence(chains, (receptor, motif), parsed),
                    **atom_model_ca_metrics(model, chains, selected)}
         scores = [metrics.get(key) for key in ('pDockQ2 1 to 2', 'pDockQ2 2 to 1')]
         if all(score is not None for score in scores):
             metrics['traf_motif_ranking_score'] = min(scores)
-        partners = {a for a, _ in selected}
-        evidence = detail['evidence']
-        if all(all(atom in r for atom in ('N', 'CA', 'C', 'O')) for r in domain if r.id[1] in partners):
-            span = min(len({bond[i] for bond in evidence.backbone_bonds}) for i in (0, 1))
-            metrics['traf_feasibility_rule'] = feasibility_rule(metrics, span, thresholds)
-        else:
-            metrics['traf_feasibility_rule'] = 'unresolved'
-            evidence = None
         candidates.append(Candidate(window, sites, density, metrics, evidence))
     return sorted(candidates, key=Candidate.ranking, reverse=True)
+
+
+def describe_site(descriptions, patch, context, contacts, tight, thresholds):
+    chains = (patch['chain 1'], patch['chain 2'])
+    detail = descriptions.describe(
+        patch, context=context, tight_contacts={pair for pair in tight if pair[1] in context[chains[1]]},
+    )
+    metrics = dict(detail['metrics'])
+    evidence = detail['evidence']
+    model = descriptions.models[(patch['source'], patch['model'])][0]
+    for index, chain in enumerate(chains):
+        numbers = {pair[index] for pair in contacts}
+        if any(any(atom not in r for atom in ('N', 'CA', 'C', 'O'))
+               for r in protein_residues(model[chain]) if r.id[1] in numbers):
+            metrics['traf_feasibility_rule'] = 'unresolved'
+            return metrics, None
+    span = min(len({bond[i] for bond in evidence.backbone_bonds}) for i in (0, 1))
+    metrics['traf_feasibility_rule'] = feasibility_rule(metrics, span, thresholds)
+    return metrics, evidence
+
+
+def rescore_motif_chemistry(row, descriptions, domain, match, contacts, tight, thresholds):
+    bounds = (match.start, match.end)
+    if bounds == row['traf_motif_bounds']:
+        return
+    receptor = {r.id[1] for r in domain}
+    motif = set(range(match.start, match.end + 1))
+    selected = {pair: distance for pair, distance in contacts.items() if pair[1] in motif}
+    patch = with_contacts(row, selected)
+    context = {row['chain 1']: receptor, row['chain 2']: motif}
+    chemistry, _ = describe_site(descriptions, patch, context, selected, tight, thresholds)
+    for side in (1, 2):
+        del chemistry[f'interface structure {side}']
+        del chemistry[f'patch {side} hydropathy mean']
+    row.update(chemistry, traf_chemistry_window=f'{match.start}-{match.end}')
 
 
 def with_contacts(row, contacts):
@@ -368,6 +400,13 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
                 row['traf_status'] = 'contacting motif lacks a contiguous backbone window'
             else:
                 update_site(row, candidates, groove)
+                row['traf_chemistry_window'] = row['traf_motif_window']
+                matches, uncertain = site_motifs(row, peptide)
+                row['traf_site_motifs'] = (matches, uncertain)
+                pose = row['traf_pose']
+                if not explicit_motif and pose in matches and pose not in uncertain:
+                    rescore_motif_chemistry(row, descriptions, scoring_region, matches[pose],
+                                           contacts, tight, thresholds)
     if full_chain_fallback:
         row['traf_status'] = f"complete terminal MATH topology unresolved; full-chain scoring fallback; {row['traf_status']}"
     attach_patch_identity(row, model_identity(cif, data, seed), number)
