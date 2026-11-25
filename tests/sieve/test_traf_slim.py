@@ -102,6 +102,7 @@ class TrafTests(TestCase):
             ('PQEINF', 'traf6', 'strict'),
             ('PQQINH', 'traf6', 'permissive'),
             ('PAQAT', 'traf2/3', 'strict'),
+            ('PFEES', 'traf2/3', 'strict'),
             ('PANAA', 'traf2/3', 'variant'),
             ('PAAQFLE', 'traf2/3', 'permissive'),
             ('PAEE', 'traf2/3', 'major_consensus'),
@@ -115,6 +116,7 @@ class TrafTests(TestCase):
                 match = matches[family]
                 self.assertEqual(match.rule.name, f'{prefix}_binding_{name}')
                 self.assertEqual((match.start, match.end), (1, len(sequence)))
+                self.assertEqual(match.sequence, sequence)
 
     def test_pose_and_local_motif_jointly_determine_interface(self):
         template = load_model('1LB5')['B'][603]
@@ -148,6 +150,12 @@ class TrafTests(TestCase):
                 self.assertEqual(result.sides['T'].get('candidate face'),
                                  pose if pose in ('traf6', 'traf2/3') else None)
                 self.assertEqual(result.sides['P'].get('candidate face'), motif_face)
+                if motif_face is None:
+                    self.assertNotIn('traf_motif_matches', result.settings)
+                elif sequence == 'PAEEAF':
+                    self.assertEqual(result.settings['traf_motif_matches'],
+                                     'traf6_binding_strict:P:1-6:PAEEAF; '
+                                     'traf2_binding_major_consensus:P:1-4:PAEE')
 
     def test_unanchored_motif_requires_a_unique_contacting_register(self):
         sequence = dict(enumerate('PQEINFAPQEINF', 1))
@@ -281,6 +289,9 @@ class TrafTests(TestCase):
         self.assertEqual([row['interface'] for row in inferred + supplied], ['Canonical'] * 4)
         self.assertEqual([row['candidate face'] for row in inferred + supplied],
                          ['traf6', RANK_MOTIF_FACES] * 2)
+        self.assertEqual({row['traf_motif_matches'] for row in inferred + supplied},
+                         {'traf6_binding_strict:B:603-608:PTEDEY; '
+                          'traf2_binding_variant:B:603-607:PTEDE'})
         forward, reverse = (float(row['pDockQ2 to partner']) for row in inferred)
         self.assertEqual(float(inferred[0]['pDockQ2 max']), max(forward, reverse))
         self.assertEqual({row['contact basis'] for row in inferred}, {'heavy atom'})
@@ -311,6 +322,8 @@ class TrafTests(TestCase):
         complete = self.run_cli(model, '--motif-window', 'B:603-608')
         self.assertEqual(geometry, '604-608')
         for auto, core, full in zip(automatic, original, complete):
+            self.assertEqual(auto['traf_scoring_sequence'], 'TEDEY')
+            self.assertEqual(full['traf_scoring_sequence'], 'PTEDEY')
             self.assertEqual((auto['traf_chemistry_window'], core['traf_chemistry_window']),
                              ('603-608', '604-608'))
             for key in ('region', 'contact count', 'pDockQ2 max', 'interface', 'candidate face',
@@ -344,6 +357,9 @@ class TrafTests(TestCase):
                 self.assertEqual(rows[1]['region'], '604-608')
                 self.assertEqual(rows[1]['interface'], label)
                 self.assertEqual(rows[1]['traf_chemistry_window'], bounds)
+                if name == 'distant':
+                    self.assertEqual(rows[1]['traf_scoring_sequence'], 'TEDEY')
+                    self.assertEqual(rows[1]['traf_motif_matches'], '')
 
     def test_mixed_manifest_export_keeps_one_header_and_two_rows_per_patch(self):
         model = load_model('1LB5')
@@ -477,6 +493,7 @@ class TrafTests(TestCase):
         self.assertIn('competing inferred motif sites', result['traf_status'])
         self.assertIn(',', result['traf_motif_candidates'])
         self.assertIn('competing pose registers', result['traf_pose_evidence'])
+        self.assertEqual(result['traf_motif_matches'], '')
 
     def test_reversed_and_shifted_poses_lack_traf6_signature(self):
         for transform in ('reverse', 'shift'):
@@ -501,6 +518,7 @@ class TrafTests(TestCase):
         row = self.run_cli(model)[0]
         self.assertEqual((row['interface'], row['confidence']), ('', 'NULL'))
         self.assertEqual(row['traf_status'], 'no_contact')
+        self.assertEqual(row['traf_scoring_sequence'], '')
         self.assertEqual((row['contact count'], row['tight-contact residues']), ('0', '0'))
         row = self.run_cli(model, '--motif-window', 'B:603-609')[0]
         self.assertEqual((row['interface'], row['traf_status']), ('', 'missing motif coordinates'))

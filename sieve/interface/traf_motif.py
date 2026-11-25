@@ -18,6 +18,7 @@ class MotifMatch:
     rule: MotifRule
     start: int
     end: int
+    sequence: str
 
 
 # An empty selector is a wildcard for an observed standard amino acid.
@@ -61,7 +62,9 @@ def match_motifs(sequence, start, contacts=None):
             states = [match_pattern(sequence, start, pattern, contacts) for pattern in rule.patterns]
             lengths = [len(pattern) for pattern, state in zip(rule.patterns, states) if state is True]
             if lengths:
-                matches[family] = MotifMatch(rule, start, start + min(lengths) - 1)
+                end = start + min(lengths) - 1
+                matched_sequence = ''.join(sequence[number] for number in range(start, end + 1))
+                matches[family] = MotifMatch(rule, start, end, matched_sequence)
                 if rule.canonical:
                     possible = False
                 break

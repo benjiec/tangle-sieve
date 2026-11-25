@@ -28,8 +28,9 @@ TRAF_DOMAINS = TRAF_PARALOGS | {'MATH', 'TRAF_MATH'}
 MOTIF_DOMAINS = frozenset(('SLiM', 'SLIM'))
 COLUMNS = (
     'traf_paralog', 'traf_math_window', 'traf_math_source',
-    'traf_motif_window', 'traf_pose_window', 'traf_chemistry_window', 'traf_motif_source', 'traf_motif_candidates',
-    'traf_motif_register', 'traf_beta6', 'traf_beta7', 'traf_polar_loop',
+    'traf_motif_window', 'traf_scoring_sequence', 'traf_pose_window', 'traf_chemistry_window',
+    'traf_motif_source', 'traf_motif_candidates',
+    'traf_motif_register', 'traf_motif_matches', 'traf_beta6', 'traf_beta7', 'traf_polar_loop',
     'traf_pocket', 'traf_pose_evidence',
     'traf_other_protomers', 'traf_status', 'traf_feasibility_rule',
     'traf_thresholds',
@@ -232,18 +233,23 @@ def classify_interface(row, structure, domains, *, chains):
     if site is None:
         site = site_motifs(row, protein_residues(structure[0][motif_chain])) if structure else ({}, set())
     matches, uncertain = site
+    settings = {}
     if matches:
         sides[motif_chain]['candidate face'] = '; '.join(match.rule.name for match in matches.values())
+        settings['traf_motif_matches'] = '; '.join(
+            f'{match.rule.name}:{motif_chain}:{match.start}-{match.end}:{match.sequence}'
+            for match in matches.values()
+        )
     if pose in ('traf6', 'traf2/3'):
         sides[math_chain]['candidate face'] = pose
         if structure is None or row.get('traf_motif_anchor') is None or pose in uncertain:
-            return Classification(None, sides, {})
+            return Classification(None, sides, settings)
         match = matches.get(pose)
         if match is None:
-            return Classification(InterfaceLabel.ATYPICAL, sides, {})
+            return Classification(InterfaceLabel.ATYPICAL, sides, settings)
         label = InterfaceLabel.CANONICAL if match.rule.canonical else InterfaceLabel.VARIANT
-        return Classification(label, sides, {})
-    return Classification(InterfaceLabel.ATYPICAL if pose == 'atypical' else None, sides, {})
+        return Classification(label, sides, settings)
+    return Classification(InterfaceLabel.ATYPICAL if pose == 'atypical' else None, sides, settings)
 
 
 def select_window(residues, window):
@@ -464,6 +470,7 @@ def update_site(row, candidates):
     best = candidates[0]
     row.update(best.metrics)
     row['region 2'] = row['traf_motif_window'] = residue_span(best.window)
+    row['traf_scoring_sequence'] = ''.join(residue_label(residue) for residue in best.window)
     competitors = []
     for candidate in candidates[1:]:
         if not best.comparable(candidate):

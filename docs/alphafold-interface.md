@@ -172,7 +172,9 @@ classification are empty.
 Use `--motif-window B:24-32` to supply an inclusive peptide interval for
 scoring, pose determination, and chemistry. Otherwise the evaluator finds
 peptide contacts within 6 Å and selects a compact five- or six-residue
-`traf_motif_window` for scoring. Pose determination uses all peptide residues
+`traf_motif_window` for scoring. `traf_scoring_sequence` records that window's
+sequence on both patch rows, including when no motif rule matches. Pose
+determination uses all peptide residues
 in those 6 Å heavy-atom contacts and records their ranges in `traf_pose_window`.
 Separated contacting runs are assessed independently. Competing poses or
 registers leave the MATH face unresolved.
@@ -186,6 +188,9 @@ hydrogen bond, a salt bridge, or two compatible side-chain contacts within
 3.8 Å. The last case supplies pose evidence only. The MATH row puts
 `traf6` or `traf2/3` in `candidate face` when the pose is assigned.
 The SLiM row puts the strongest matching rule per family in `candidate face`.
+The patch column `traf_motif_matches` records each of those matches as
+`rule:chain:start-end:sequence`. Multiple entries are separated by semicolons.
+`traf_motif_candidates` lists competing scoring windows when present.
 The sequence check starts one residue before the TRAF6 β7 register or
 at the TRAF2/3 packing anchor. It can read adjacent sequence outside the
 scored window. For an unresolved pose with a selected contact site, a unique
