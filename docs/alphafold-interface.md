@@ -169,11 +169,13 @@ and chemical feasibility describe the selected patch and use the usual
 thresholds when the inputs support them. The inferred MATH window and pose
 classification are empty.
 
-Use `--motif-window B:24-32` to supply an inclusive peptide interval. Otherwise
-the evaluator finds peptide contacts within 6 Å and selects among overlapping
-five- and six-residue windows. Comparable sites or registers are reported as
-unresolved. The TSV records the inferred or supplied windows, the assigned
-groove landmarks, and the evidence behind the call.
+Use `--motif-window B:24-32` to supply an inclusive peptide interval for
+scoring, pose determination, and chemistry. Otherwise the evaluator finds
+peptide contacts within 6 Å and selects a compact five- or six-residue
+`traf_motif_window` for scoring. Pose determination uses all peptide residues
+in those 6 Å heavy-atom contacts and records their ranges in `traf_pose_window`.
+Separated contacting runs are assessed independently. Competing poses or
+registers leave the MATH face unresolved.
 
 Pose classes use backbone and side-chain geometry from the input model.
 `traf6` requires an ordered antiparallel β7 backbone ladder with at least

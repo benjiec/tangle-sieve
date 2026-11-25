@@ -10,12 +10,13 @@ import numpy as np
 from sieve.alphafold_composition import chain_compositions
 from sieve.alphafold_manifest import fold_id, sequence_id
 from sieve.alphafold_patch_identity import attach_patch_identity, model_identity
+from sieve.alphafold_pdockq2_patches import ranges
 from sieve.interface_description import (
-    BACKBONE, HYDROPHOBIC, hydrogen_bond_roles, protein_residues, residue_label,
+    BACKBONE, HYDROPHOBIC, atom_interactions, hydrogen_bond_roles, protein_residues, residue_label,
 )
 from sieve.interface.measurements import (
     ContactEvidence, TIGHT_CONTACT_CUTOFF, atom_model_ca_metrics, donor_hydrogens,
-    heavy_contacts, selected_confidence,
+    heavy_contacts, qualify_contacts, selected_confidence,
 )
 from sieve.interface.results import Classification, Evaluation, InterfaceLabel, confidence_level
 from sieve.interface.traf_motif import motif_faces
@@ -27,7 +28,7 @@ TRAF_DOMAINS = TRAF_PARALOGS | {'MATH', 'TRAF_MATH'}
 MOTIF_DOMAINS = frozenset(('SLiM', 'SLIM'))
 COLUMNS = (
     'traf_paralog', 'traf_math_window', 'traf_math_source',
-    'traf_motif_window', 'traf_chemistry_window', 'traf_motif_source', 'traf_motif_candidates',
+    'traf_motif_window', 'traf_pose_window', 'traf_chemistry_window', 'traf_motif_source', 'traf_motif_candidates',
     'traf_motif_register', 'traf_beta6', 'traf_beta7', 'traf_polar_loop',
     'traf_pocket', 'traf_pose_evidence',
     'traf_other_protomers', 'traf_status', 'traf_feasibility_rule',
@@ -117,6 +118,52 @@ def assess_pose(groove, motif, interactions):
     return 'atypical', None, 'no matching pose signature'
 
 
+def assign_patch_pose(row, model, groove, peptide, contacts, options):
+    """Assess all 6 Å contacts, keeping separated peptide runs independent."""
+    chains = (row['chain 1'], row['chain 2'])
+    selections = {chain: {pair[i] for pair in contacts} for i, chain in enumerate(chains)}
+    runs = ranges(selections[chains[1]])
+    row['traf_pose_window'] = ','.join(f'{start}-{end}' if start != end else str(start) for start, end in runs)
+    if groove is None or not (groove.loop and groove.pocket):
+        row['traf_pose_evidence'] = 'groove landmarks unresolved'
+        return
+
+    features = [item for item in atom_interactions(model, chains, options, selections=selections)
+                if (item['residue_1'], item['residue_2']) in contacts]
+    known_receptor = {r.id[1] for r in protein_residues(model[chains[0]]) if has_backbone(r)}
+    by_number = {r.id[1]: r for r in peptide}
+    observed, unresolved = [], []
+    for start, end in runs:
+        site = [by_number[n] for n in range(start, end + 1)]
+        if (any(not has_backbone(r) for r in site)
+                or any(a not in known_receptor for a, b in contacts if start <= b <= end)):
+            unresolved.append('incomplete contacting backbone')
+            continue
+        _, evidence = qualify_contacts(model, chains, [
+            item for item in features if start <= item['residue_2'] <= end
+        ])
+        pose, register, detail = assess_pose(groove, site, evidence)
+        if pose == 'unresolved':
+            unresolved.append(detail)
+        elif register is not None:
+            observed.append((pose, register, detail))
+
+    if len(observed) > 1:
+        unresolved.insert(0, 'competing pose registers: ' + '; '.join(detail for _, _, detail in observed))
+    if unresolved:
+        row['traf_pose_evidence'] = '; '.join(dict.fromkeys(unresolved))
+    elif observed:
+        pose, (start, end), detail = observed[0]
+        row.update(traf_pose=pose, traf_pose_evidence=detail, traf_motif_register=f'{start}-{end}',
+                   traf_motif_anchor=start - 1 if pose == 'traf6' else start)
+    else:
+        row.update(traf_pose='atypical', traf_pose_evidence='no matching pose signature')
+
+
+def has_backbone(residue):
+    return all(atom in residue for atom in ('N', 'CA', 'C', 'O'))
+
+
 def contact_pairs_nonpolar(peptide, pocket):
     if residue_label(peptide) not in HYDROPHOBIC | {'S', 'T'}:
         return set()
@@ -169,12 +216,12 @@ def feasibility(row):
 
 
 def site_motifs(row, peptide):
+    anchor = row.get('traf_motif_anchor')
     contacts = {int(n) for n in row.get('interface residues 2', '').split(',') if n}
-    if not contacts:
+    if not contacts and anchor is None:
         return {}, set()
     sequence = {r.id[1]: residue_label(r) for r in peptide}
-    return motif_faces(sequence, contacts, anchor=row.get('traf_motif_anchor'),
-                       window=row.get('traf_motif_bounds'))
+    return motif_faces(sequence, contacts, anchor=anchor, window=row.get('traf_motif_bounds'))
 
 
 def classify_interface(row, structure, domains, *, chains):
@@ -285,8 +332,7 @@ def describe_site(descriptions, patch, context, contacts, tight, thresholds):
     model = descriptions.models[(patch['source'], patch['model'])][0]
     for index, chain in enumerate(chains):
         numbers = {pair[index] for pair in contacts}
-        if any(any(atom not in r for atom in ('N', 'CA', 'C', 'O'))
-               for r in protein_residues(model[chain]) if r.id[1] in numbers):
+        if any(not has_backbone(r) for r in protein_residues(model[chain]) if r.id[1] in numbers):
             metrics['traf_feasibility_rule'] = 'unresolved'
             return metrics, None
     span = min(len({bond[i] for bond in evidence.backbone_bonds}) for i in (0, 1))
@@ -399,49 +445,36 @@ def extract(locator, chains, *, record, seeds, model_scores, dssp, domains,
             if not candidates:
                 row['traf_status'] = 'contacting motif lacks a contiguous backbone window'
             else:
-                update_site(row, candidates, groove)
+                update_site(row, candidates)
                 row['traf_chemistry_window'] = row['traf_motif_window']
-                matches, uncertain = site_motifs(row, peptide)
-                row['traf_site_motifs'] = (matches, uncertain)
-                pose = row['traf_pose']
-                if not explicit_motif and pose in matches and pose not in uncertain:
-                    rescore_motif_chemistry(row, descriptions, scoring_region, matches[pose],
-                                           contacts, tight, thresholds)
+            assign_patch_pose(row, model, groove, motif, contacts, descriptions.options)
+            matches, uncertain = site_motifs(row, peptide)
+            row['traf_site_motifs'] = (matches, uncertain)
+            pose = row['traf_pose']
+            if candidates and not explicit_motif and pose in matches and pose not in uncertain:
+                rescore_motif_chemistry(row, descriptions, scoring_region, matches[pose],
+                                       contacts, tight, thresholds)
     if full_chain_fallback:
         row['traf_status'] = f"complete terminal MATH topology unresolved; full-chain scoring fallback; {row['traf_status']}"
     attach_patch_identity(row, model_identity(cif, data, seed), number)
     return Evaluation([row], {source: fold}, {source: sequence}, descriptions.models)
 
 
-def update_site(row, candidates, groove):
+def update_site(row, candidates):
     best = candidates[0]
     row.update(best.metrics)
     row['region 2'] = row['traf_motif_window'] = residue_span(best.window)
-    if best.evidence is not None:
-        pose, register, evidence = assess_pose(groove, best.window, best.evidence)
-    else:
-        pose, register, evidence = 'unresolved', None, 'incomplete contacting MATH backbone'
     competitors = []
     for candidate in candidates[1:]:
         if not best.comparable(candidate):
             continue
-        alternate_pose, alternate_register, _ = (assess_pose(groove, candidate.window, candidate.evidence)
-                                                 if candidate.evidence is not None else (None, None, None))
         shared = len(best.sites & candidate.sites)
         same_site = shared >= max(1, min(len(best.sites), len(candidate.sites)) - 1)
-        competing_register = (alternate_register is not None and register is not None
-                              and (alternate_pose, alternate_register) != (pose, register))
-        if not same_site or competing_register:
+        if not same_site:
             competitors.append(residue_span(candidate.window))
     if competitors:
-        row.update(traf_pose='unresolved', traf_status='competing inferred motif sites or registers',
+        row.update(traf_status='competing inferred motif sites',
                    traf_motif_candidates=','.join((residue_span(best.window), *competitors)))
     else:
-        row.update(traf_pose=pose, traf_status='evaluated',
+        row.update(traf_status='evaluated',
                    traf_motif_bounds=(best.window[0].id[1], best.window[-1].id[1]))
-        if register is not None:
-            start, stop = register
-            row['traf_motif_register'] = f'{start}-{stop}'
-            # The TRAF6 proline precedes the first peptide residue in the β7 ladder.
-            row['traf_motif_anchor'] = start - 1 if pose == 'traf6' else start
-    row['traf_pose_evidence'] = evidence

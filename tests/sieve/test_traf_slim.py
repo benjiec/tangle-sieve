@@ -18,8 +18,9 @@ from sieve.alphafold_pdockq2 import parse_model
 from sieve.alphafold_result_format import PatchInput
 from sieve.alphafold_secondary import load_secondary
 from sieve.interface import traf_slim as traf
-from sieve.interface.measurements import donor_hydrogens, heavy_contacts
+from sieve.interface.measurements import donor_hydrogens, heavy_contacts, qualify_contacts
 from sieve.interface.traf_motif import match_motifs, motif_faces
+from sieve.interface_description import DescriptionOptions, atom_interactions
 from sieve.patch_description_summary import PatchDescriptions
 from sieve.interface.registry import resolve
 from sieve.interface.traf_topology import find_dssp_groove, find_groove
@@ -203,7 +204,6 @@ class TrafTests(TestCase):
                 motif = [model[b][n] for n in range(start + 1000, stop + 1001)]
                 candidates, row = self.evaluate(model, (a, b), domain, motif, supplied=True)
                 self.assertTrue(traf.feasibility(candidates[0].metrics))
-                traf.update_site(row, candidates, domain)
                 self.assertEqual(row['traf_pose'], label)
 
     def test_topology_terminal_extension_truncation_and_explicit_window(self):
@@ -234,7 +234,6 @@ class TrafTests(TestCase):
                 self.assertIsNotNone(groove)
                 motif = [model[b][n] for n in range(start, stop + 1)]
                 candidates, row = self.evaluate(model, (a, b), groove, motif, supplied=True)
-                traf.update_site(row, candidates, groove)
                 self.assertEqual(row['traf_pose'], label)
                 result = traf.classify_interface(row, (model,), {}, chains=(a, b))
                 self.assertEqual(result.interface, 'Canonical')
@@ -426,8 +425,46 @@ class TrafTests(TestCase):
                 groove = find_groove(traf.protein_residues(model[a]), donor_hydrogens, terminal=True)
                 motif = traf.protein_residues(model[b])
                 candidates, row = self.evaluate(model, (a, b), groove, motif)
-                traf.update_site(row, candidates, groove)
-                self.assertEqual(row['traf_pose'], label)
+                if code == '1L0A':
+                    self.assertEqual(row['traf_pose'], 'unresolved')
+                    self.assertEqual(row['traf_pose_evidence'],
+                                     'competing pocket registers pocket/loop=1:5,3:5')
+                else:
+                    self.assertEqual(row['traf_pose'], label)
+
+    def test_full_patch_recovers_packing_anchor_outside_scoring_window(self):
+        model = load_model('1CZZ')
+
+        def clipped_core(peptide, contacts, tight):
+            window = [r for r in peptide if 251 <= r.id[1] <= 255]
+            pairs = {(a, b) for a, b in tight if 251 <= b <= 255}
+            return [(window, {b for _, b in pairs}, len(pairs) / len(window))]
+
+        with patch('sieve.interface.traf_slim.candidate_windows', side_effect=clipped_core):
+            _, full = self.run_cli(model, chains=('A', 'D'))
+        _, explicit = self.run_cli(model, '--motif-window', 'D:251-255', chains=('A', 'D'))
+        self.assertEqual(full['region'], explicit['region'])
+        self.assertEqual(full['pDockQ2 max'], explicit['pDockQ2 max'])
+        self.assertEqual(full['traf_pose_window'], '250-256')
+        self.assertEqual(full['traf_pose_evidence'], 'pocket/loop=250:252')
+        self.assertEqual(full['interface'], 'Canonical')
+        self.assertEqual(explicit['traf_pose_window'], '251-255')
+        self.assertEqual(explicit['interface'], 'Atypical')
+
+    def test_pose_cannot_combine_anchors_across_contact_runs(self):
+        model = load_model('1CZZ')
+        chains = ('A', 'D')
+        groove = find_groove(traf.protein_residues(model['A']), donor_hydrogens, terminal=True)
+        motif = [model['D'][250], model['D'][252]]
+        contacts = heavy_contacts(groove.domain, motif, 6)
+        selections = {chain: {pair[i] for pair in contacts} for i, chain in enumerate(chains)}
+        options = DescriptionOptions()
+        _, evidence = qualify_contacts(model, chains, atom_interactions(model, chains, options, selections=selections))
+        self.assertEqual(traf.assess_pose(groove, motif, evidence)[0], 'traf2/3')
+        row = {'chain 1': 'A', 'chain 2': 'D', 'traf_pose': 'unresolved'}
+        traf.assign_patch_pose(row, model, groove, motif, contacts, options)
+        self.assertEqual(row['traf_pose_window'], '250,252')
+        self.assertEqual(row['traf_pose'], 'atypical')
 
     def test_ambiguous_distinct_sites_report_both_windows(self):
         model = load_model('1LB5')
@@ -439,6 +476,7 @@ class TrafTests(TestCase):
         self.assertEqual(result['interface'], '')
         self.assertIn('competing inferred motif sites', result['traf_status'])
         self.assertIn(',', result['traf_motif_candidates'])
+        self.assertIn('competing pose registers', result['traf_pose_evidence'])
 
     def test_reversed_and_shifted_poses_lack_traf6_signature(self):
         for transform in ('reverse', 'shift'):
@@ -546,13 +584,15 @@ class TrafTests(TestCase):
         descriptions = PatchDescriptions({}, None)
         descriptions.models[('fixture', 0)] = model, {}, [], {'status': 'unavailable'}
         row = {'source': 'fixture', 'model': 0, 'chain 1': chains[0], 'chain 2': chains[1],
-               'traf_math_window': traf.residue_span(groove.domain)}
+               'traf_math_window': traf.residue_span(groove.domain), 'traf_pose': 'unresolved'}
         contacts = heavy_contacts(groove.domain, motif, 6.0)
         tight = {pair for pair, distance in contacts.items() if distance <= 4.5}
         windows = ([(motif, {b for _, b in tight}, len(tight) / len(motif))] if supplied
                    else traf.candidate_windows(motif, contacts, tight))
         candidates = traf.evaluate_sites(descriptions, row, groove.domain, windows, traf.Thresholds(),
                                          ({c: [] for c in chains}, None), contacts, tight)
+        traf.update_site(row, candidates)
+        traf.assign_patch_pose(row, model, groove, motif, contacts, descriptions.options)
         return candidates, row
 
     def run_cli(self, model, *extra, reverse_pae=4, chains=('A', 'B')):

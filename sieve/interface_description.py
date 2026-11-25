@@ -163,11 +163,15 @@ def hydrogen_bond_roles(residue, atom):
     return donor, acceptor
 
 
-def atom_interactions(model, chains, options):
+def atom_interactions(model, chains, options, *, selections=None):
     """Explicit geometric candidates, not bond energies or hydrogen-bond assignments."""
     result = []
-    first = [(r, a) for r in protein_residues(model[chains[0]]) for a in r if a.element not in ('H', 'D')]
-    second = [(r, a) for r in protein_residues(model[chains[1]]) for a in r if a.element not in ('H', 'D')]
+    first, second = (
+        [(r, a) for r in protein_residues(model[chain])
+         if selections is None or r.id[1] in selections[chain]
+         for a in r if a.element not in ('H', 'D')]
+        for chain in chains
+    )
     xyz = np.array([a.coord for _, a in second])
     for _, atom in first + second:
         if atom.element not in VDW:
